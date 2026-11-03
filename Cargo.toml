@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = ["crates/kvt-core", "crates/kvt-service", "app/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+kvt-core = { path = "crates/kvt-core" }
+anyhow = "1"
+base64 = "0.22"
+percent-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+thiserror = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = "1"
+zeroize = "1"
+proptest = "1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+unwrap_used = "warn"
+
+# Отладочная сборка без полной отладочной информации: target\debug в разы меньше,
+# номера строк в стеках и точки останова по строкам остаются.
+[profile.dev]
+debug = "line-tables-only"
+
+# Зависимости (tauri, tokio, reqwest...) отлаживать не нужно.
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,0 +1,7 @@
+{
+  "max_new_tls_per_sni": 2,
+  "window": 60,
+  "min_spacing": 2,
+  "freeze_cooldown": 180,
+  "max_parallel_probes": 4
+}

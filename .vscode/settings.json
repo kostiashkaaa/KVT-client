@@ -1,0 +1,17 @@
+{
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.cargo.targetDir": true,
+  "editor.formatOnSave": true,
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "[svelte]": {
+    "editor.defaultFormatter": "svelte.svelte-vscode"
+  },
+  "files.eol": "\n",
+  "search.exclude": {
+    "**/target": true,
+    "**/node_modules": true,
+    "app/dist": true
+  }
+}

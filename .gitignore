@@ -1,0 +1,11 @@
+/target
+node_modules/
+/app/dist
+/app/src-tauri/gen
+/app/.svelte-kit
+*.log
+.DS_Store
+Thumbs.db
+
+# бинарники ядер кладутся при сборке установщика, в репозиторий не коммитятся
+/app/src-tauri/binaries/

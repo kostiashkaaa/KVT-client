@@ -1,0 +1,232 @@
+<script lang="ts">
+  import AddSubscription from "./AddSubscription.svelte";
+  import {
+    listSubscriptions,
+    onSubscriptionsChanged,
+    refreshSubscription,
+    removeSubscription,
+    selectSubscription,
+    type SubscriptionItem,
+  } from "./api";
+
+  let { onadd, busy }: { onadd: (body: string) => Promise<void>; busy: boolean } = $props();
+
+  let items = $state<SubscriptionItem[]>([]);
+  let refreshing = $state<string | null>(null);
+  let confirmRemove = $state<string | null>(null);
+  let error = $state<string | null>(null);
+
+  async function reload() {
+    items = await listSubscriptions();
+  }
+
+  $effect(() => {
+    void reload();
+    return onSubscriptionsChanged(() => void reload());
+  });
+
+  async function act(fn: () => Promise<unknown>) {
+    error = null;
+    try {
+      await fn();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+    await reload();
+  }
+
+  async function refresh(id: string) {
+    refreshing = id;
+    await act(() => refreshSubscription(id));
+    refreshing = null;
+  }
+
+  const GB = 2 ** 30;
+  const gb = (b: number) => (b / GB).toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+
+  function ago(unix: number): string {
+    const min = Math.max(0, Math.round((Date.now() / 1000 - unix) / 60));
+    if (min < 1) return "только что";
+    if (min < 60) return `${min} мин назад`;
+    const h = Math.round(min / 60);
+    if (h < 24) return `${h} ч назад`;
+    return `${Math.round(h / 24)} дн назад`;
+  }
+
+  function details(s: SubscriptionItem): string {
+    return [
+      `${s.servers} серв.`,
+      `обновлена ${ago(s.updatedAt)}`,
+      s.expire ? until(s.expire) : null,
+      s.byUrl ? null : "без ссылки, не обновляется",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  function until(unix: number): string {
+    const days = Math.ceil((unix * 1000 - Date.now()) / 86_400_000);
+    if (days < 0) return "закончилась";
+    return `до ${new Date(unix * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}`;
+  }
+</script>
+
+{#if error}
+  <div class="banner" role="alert">{error}</div>
+{/if}
+
+{#if items.length > 0}
+  <ul class="list">
+    {#each items as s (s.id)}
+      <li class="card" class:active={s.active}>
+        <div class="main">
+          <div class="title-row">
+            <h2>{s.title}</h2>
+            {#if s.active}<span class="badge">Основная</span>{/if}
+          </div>
+          <p class="caption">{details(s)}</p>
+          {#if s.usedBytes != null && s.totalBytes}
+            <div class="usage">
+              <div class="bar" class:warn={s.usedBytes / s.totalBytes > 0.9}>
+                <span style:width={`${Math.min(100, (s.usedBytes / s.totalBytes) * 100)}%`}></span>
+              </div>
+              <span class="caption">{gb(s.usedBytes)} из {gb(s.totalBytes)} ГБ</span>
+            </div>
+          {/if}
+        </div>
+
+        <div class="actions">
+          {#if confirmRemove === s.id}
+            <span class="caption">Удалить подписку?</span>
+            <button class="btn danger" onclick={() => act(() => removeSubscription(s.id)).then(() => (confirmRemove = null))}>
+              Удалить
+            </button>
+            <button class="btn" onclick={() => (confirmRemove = null)}>Отмена</button>
+          {:else}
+            {#if !s.active}
+              <button class="btn" onclick={() => act(() => selectSubscription(s.id))}>Сделать основной</button>
+            {/if}
+            {#if s.byUrl}
+              <button class="btn" disabled={refreshing !== null} onclick={() => refresh(s.id)}>
+                {refreshing === s.id ? "Обновление…" : "Обновить"}
+              </button>
+            {/if}
+            <button class="btn subtle" onclick={() => (confirmRemove = s.id)} aria-label={`Удалить ${s.title}`}>
+              Удалить
+            </button>
+          {/if}
+        </div>
+      </li>
+    {/each}
+  </ul>
+  <p class="caption note">
+    Ссылки подписок и ключи серверов хранятся зашифрованными (DPAPI Windows) — прочитать их может только ваша учётная
+    запись. Подписки по ссылке обновляются автоматически по расписанию провайдера, не чаще раза в час.
+  </p>
+{/if}
+
+<AddSubscription onadd={(body) => void onadd(body).then(reload)} {busy} />
+
+<style>
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5);
+  }
+
+  li.active {
+    border-color: var(--accent);
+  }
+
+  .main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .badge {
+    padding: 0 var(--space-2);
+    border-radius: 10px;
+    background: var(--accent-subtle);
+    color: var(--accent);
+    font-size: 12px;
+    line-height: 20px;
+  }
+
+  .caption {
+    margin: 0;
+  }
+
+  .usage {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .bar {
+    width: 160px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--stroke);
+    overflow: hidden;
+  }
+
+  .bar span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
+
+  .bar.warn span {
+    background: var(--warn);
+  }
+
+  .actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .btn.subtle {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-2);
+  }
+
+  .btn.danger {
+    border-color: transparent;
+    background: var(--danger);
+    color: #fff;
+  }
+
+  .note {
+    max-width: 640px;
+  }
+
+  .banner {
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--stroke);
+    border-left: 3px solid var(--warn);
+    border-radius: var(--radius-s);
+    background: var(--warn-subtle);
+  }
+</style>
