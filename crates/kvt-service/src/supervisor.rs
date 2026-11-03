@@ -6,7 +6,7 @@
 use crate::net::NetClient;
 use crate::wfp::{self, KillSwitch};
 use crate::win::Job;
-use kvt_core::compile::{compile, CompileInput, DnsPlan, TUN_INTERFACE};
+use kvt_core::compile::{compile, CompileInput, TUN_INTERFACE};
 use kvt_core::core_select::CoreKind;
 use kvt_core::ipc::ConnectPlan;
 use kvt_core::rulesync;
@@ -108,7 +108,30 @@ impl Supervisor {
         log.iter().rev().take(n).rev().cloned().collect()
     }
 
+    /// Запуск или переподключение. При смене сервера с kill switch прежние фильтры
+    /// держатся, пока не встанут новые: интернет на это время закрыт, но мимо
+    /// туннеля не уходит ни одного пакета. Подуровни WFP у сессий разные, поэтому
+    /// два набора фильтров не конфликтуют.
     pub async fn start(&mut self, plan: &ConnectPlan) -> Result<(), String> {
+        let previous = if plan.kill_switch {
+            self.kill_switch.take()
+        } else {
+            None
+        };
+        let result = self.start_inner(plan).await;
+        if let (Err(e), Some(previous)) = (&result, previous) {
+            if self.kill_switch.is_none() {
+                // Защиту включали до переподключения — не снимаем её из-за сбоя.
+                self.kill_switch = Some(previous);
+                return Err(format!(
+                    "{e}. Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново"
+                ));
+            }
+        }
+        result
+    }
+
+    async fn start_inner(&mut self, plan: &ConnectPlan) -> Result<(), String> {
         self.stop().await;
         plan.routing.validate().map_err(|e| e.to_string())?;
         if !crate::win::is_elevated() {
@@ -140,13 +163,12 @@ impl Supervisor {
         }
 
         let rules = self.paths.rules.to_string_lossy().replace('\\', "/");
-        let dns = DnsPlan::default();
         let compiled = compile(
             plan.core,
             &CompileInput {
                 server: &plan.server,
                 routing: &plan.routing,
-                dns: &dns,
+                dns: &plan.dns,
                 rule_set_dir: &rules,
             },
         )

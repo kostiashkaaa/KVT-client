@@ -39,6 +39,36 @@ impl Default for DnsPlan {
     }
 }
 
+impl DnsPlan {
+    /// План из выбора пользователя: id резолверов из [`crate::dns::RESOLVERS`].
+    pub fn from_ids(local: &str, remote: &str) -> Result<Self, CompileError> {
+        let local = crate::dns::resolver(local).ok_or(CompileError::Dns(local.to_owned()))?;
+        let remote = crate::dns::resolver(remote)
+            .filter(|r| r.tunnel)
+            .and_then(|r| r.doh)
+            .ok_or(CompileError::Dns(remote.to_owned()))?;
+        Ok(Self {
+            remote_doh: remote.ip.to_string(),
+            local: local.udp.to_string(),
+        })
+    }
+
+    /// Адреса попадают в конфиг ядра, поэтому принимаются только из каталога KVT.
+    pub fn validate(&self) -> Result<(), CompileError> {
+        let catalog = crate::dns::RESOLVERS;
+        if !catalog.iter().any(|r| r.udp.to_string() == self.local) {
+            return Err(CompileError::Dns(self.local.clone()));
+        }
+        if !catalog
+            .iter()
+            .any(|r| r.tunnel && r.doh.is_some_and(|d| d.ip.to_string() == self.remote_doh))
+        {
+            return Err(CompileError::Dns(self.remote_doh.clone()));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompileInput<'a> {
     pub server: &'a Server,
@@ -65,10 +95,13 @@ pub enum CompileError {
     },
     #[error(transparent)]
     Routing(#[from] crate::routing::RoutingError),
+    #[error("DNS-сервер «{0}» не из списка KVT")]
+    Dns(String),
 }
 
 pub fn compile(core: CoreKind, input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
     input.routing.validate()?;
+    input.dns.validate()?;
     match core {
         CoreKind::Xray => compile_xray(input),
         CoreKind::SingBox => compile_sing_box(input),
@@ -200,6 +233,39 @@ mod tests {
         assert!(matches!(
             compile(CoreKind::Xray, &input),
             Err(CompileError::Routing(_))
+        ));
+    }
+
+    #[test]
+    fn dns_plan_accepts_only_catalog() {
+        assert_eq!(
+            DnsPlan::from_ids("yandex", "cloudflare").unwrap(),
+            DnsPlan::default()
+        );
+        let plan = DnsPlan::from_ids("adguard", "quad9").unwrap();
+        assert_eq!(plan.local, "94.140.14.14");
+        assert_eq!(plan.remote_doh, "9.9.9.9");
+        assert!(plan.validate().is_ok());
+        // Яндекс по IP для DoH в туннеле не подходит, а чужие адреса — тем более.
+        assert!(DnsPlan::from_ids("yandex", "yandex").is_err());
+        assert!(DnsPlan::from_ids("evil", "cloudflare").is_err());
+        let injected = DnsPlan {
+            remote_doh: "1.1.1.1/dns-query?x=".into(),
+            local: "77.88.8.8".into(),
+        };
+        assert!(injected.validate().is_err());
+
+        let s = server(REALITY);
+        let plan = hybrid_plan(&s);
+        let input = CompileInput {
+            server: &s,
+            routing: &plan,
+            dns: &injected,
+            rule_set_dir: "r",
+        };
+        assert!(matches!(
+            compile(CoreKind::Xray, &input),
+            Err(CompileError::Dns(_))
         ));
     }
 

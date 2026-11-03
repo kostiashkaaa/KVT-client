@@ -1,30 +1,69 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  import { leakTest, type CheckResult, type LeakReport } from "./api";
+  import {
+    currentNetwork,
+    dnsCatalog,
+    onNetworkChanged,
+    type DnsChoice,
+    type Mode,
+    type NetworkProfile,
+    type NetworkView,
+    type OnJoin,
+    type Resolver,
+  } from "./api";
 
-  let { killSwitch = $bindable(), connected }: { killSwitch: boolean; connected: boolean } = $props();
+  let {
+    killSwitch = $bindable(),
+    autoSwitch = $bindable(),
+    dns = $bindable(),
+    networks = $bindable(),
+  }: {
+    killSwitch: boolean;
+    autoSwitch: boolean;
+    dns: DnsChoice;
+    networks: NetworkProfile[];
+  } = $props();
 
-  let report = $state<LeakReport | null>(null);
-  let running = $state(false);
+  let resolvers = $state<Resolver[]>([]);
+  $effect(() => {
+    void dnsCatalog().then((r) => (resolvers = r));
+  });
+  const tunnelResolvers = $derived(resolvers.filter((r) => r.tunnel));
 
-  async function run() {
-    running = true;
-    try {
-      report = await leakTest(connected);
-    } finally {
-      running = false;
-    }
+  let here = $state<NetworkView>({ network: null, profile: null });
+  $effect(() => {
+    void currentNetwork().then((v) => (here = v));
+    return onNetworkChanged((v) => (here = v));
+  });
+
+  const known = $derived(here.network ? networks.some((p) => p.key === here.network?.key) : false);
+
+  function remember() {
+    const n = here.network;
+    if (!n || known) return;
+    networks = [...networks, { key: n.key, name: n.label, onJoin: "nothing", mode: null }];
   }
 
-  const rows = $derived<[string, CheckResult][]>(
-    report
-      ? [
-          ["Маршрут IPv4", report.ipv4Route],
-          ["Маршрут IPv6", report.ipv6Route],
-          ["DNS", report.dns],
-        ]
-      : [],
-  );
+  function update(key: string, patch: Partial<NetworkProfile>) {
+    networks = networks.map((p) => (p.key === key ? { ...p, ...patch } : p));
+  }
+
+  function forget(key: string) {
+    networks = networks.filter((p) => p.key !== key);
+  }
+
+  const kinds = { wifi: "Wi-Fi", ethernet: "Кабель", mobile: "Мобильная сеть", other: "Сеть" } as const;
+  const onJoinOptions: { id: OnJoin; label: string }[] = [
+    { id: "nothing", label: "Не трогать VPN" },
+    { id: "connect", label: "Включать VPN" },
+    { id: "disconnect", label: "Выключать VPN" },
+  ];
+  const modeOptions: { id: Mode | ""; label: string }[] = [
+    { id: "", label: "Не менять режим" },
+    { id: "vpn", label: "Режим VPN" },
+    { id: "hybrid", label: "Режим «Гибрид»" },
+    { id: "zapret", label: "Режим Zapret" },
+  ];
 </script>
 
 <section class="card block">
@@ -48,41 +87,95 @@
 <section class="card block">
   <div class="row">
     <div>
-      <h2>Проверка утечек</h2>
+      <h2>Автопереключение сервера</h2>
       <p class="muted">
-        Ищет на компьютере открытые прокси других VPN-клиентов, проверяет маршруты IPv4/IPv6 и DNS. Почти всё
-        проверяется локально — в интернет уходит один DNS-запрос.
+        Раз в минуту KVT проверяет одним маленьким запросом, идут ли данные через туннель. Если сервер перестал
+        отвечать, KVT подключится к следующему рабочему серверу подписки — не чаще трёх раз за полчаса.
       </p>
     </div>
-    <button class="btn" disabled={running} onclick={run}>
-      <Icon name="shield" size={16} />{running ? "Проверка…" : "Проверить"}
-    </button>
+    <label class="switch">
+      <input type="checkbox" role="switch" bind:checked={autoSwitch} />
+      <span aria-hidden="true"></span>
+      <span class="sr">Автопереключение сервера</span>
+    </label>
+  </div>
+</section>
+
+<section class="card block">
+  <h2>DNS</h2>
+  <div class="field">
+    <label for="dns-local">
+      <span>Для сайтов, которые открываются напрямую</span>
+      <span class="caption">Обычный DNS. Российский резолвер отдаёт ближайшие узлы российских CDN.</span>
+    </label>
+    <select id="dns-local" value={dns.local} onchange={(e) => (dns = { ...dns, local: e.currentTarget.value })}>
+      {#each resolvers as r (r.id)}
+        <option value={r.id}>{r.title} · {r.udp}</option>
+      {/each}
+    </select>
+  </div>
+  <div class="field">
+    <label for="dns-remote">
+      <span>Для всего остального</span>
+      <span class="caption">Зашифрованный DoH внутри туннеля: провайдер не видит, какие сайты вы открываете.</span>
+    </label>
+    <select id="dns-remote" value={dns.remote} onchange={(e) => (dns = { ...dns, remote: e.currentTarget.value })}>
+      {#each tunnelResolvers as r (r.id)}
+        <option value={r.id}>{r.title} (DoH)</option>
+      {/each}
+    </select>
+  </div>
+  <p class="caption">Изменения применятся при следующем подключении. Подсказку даст «Проверка DNS» в разделе «Проверка».</p>
+</section>
+
+<section class="card block">
+  <h2>Сети</h2>
+  <p class="muted intro">
+    KVT узнаёт сеть по роутеру и может сам включать VPN дома, выключать его в доверенной сети или менять режим.
+  </p>
+
+  <div class="here">
+    <Icon name="wifi" size={16} />
+    {#if here.network}
+      <span>Сейчас: <strong>{here.network.label}</strong> <span class="caption">· {kinds[here.network.kind]}</span></span>
+      {#if !known}
+        <button class="btn" onclick={remember}>Запомнить эту сеть</button>
+      {/if}
+    {:else}
+      <span class="muted">Нет подключения к сети</span>
+    {/if}
   </div>
 
-  {#if report}
-    <ul class="results">
-      {#if report.openProxies.length === 0}
-        <li class="ok">
-          <strong>Открытые прокси</strong>
-          <span>Не найдено. Программы на компьютере не смогут узнать адрес VPN-сервера через локальный порт.</span>
-        </li>
-      {:else}
-        {#each report.openProxies as p (p.port)}
-          <li class="warning">
-            <strong>Открытый SOCKS5 на порту {p.port}</strong>
-            <span>
-              {p.process ?? "Неизвестная программа"} принимает подключения без пароля: любое приложение может узнать
-              через него IP вашего VPN-сервера.{#if p.knownScanPort}
-                Этот порт из списка, по которому ищут прокси.{/if}
-              Включите в той программе пароль для локального прокси или используйте режим TUN.
-            </span>
-          </li>
-        {/each}
-      {/if}
-      {#each rows as [label, r] (label)}
-        <li class={r.verdict}>
-          <strong>{label}</strong>
-          <span>{r.detail}</span>
+  {#if networks.length > 0}
+    <ul class="profiles">
+      {#each networks as p (p.key)}
+        <li class:current={p.key === here.network?.key}>
+          <input
+            class="name"
+            aria-label="Название сети"
+            value={p.name}
+            maxlength="40"
+            onchange={(e) => update(p.key, { name: e.currentTarget.value.trim() || p.name })}
+          />
+          <select
+            aria-label="При подключении к сети"
+            value={p.onJoin}
+            onchange={(e) => update(p.key, { onJoin: e.currentTarget.value as OnJoin })}
+          >
+            {#each onJoinOptions as o (o.id)}
+              <option value={o.id}>{o.label}</option>
+            {/each}
+          </select>
+          <select
+            aria-label="Режим в этой сети"
+            value={p.mode ?? ""}
+            onchange={(e) => update(p.key, { mode: (e.currentTarget.value || null) as Mode | null })}
+          >
+            {#each modeOptions as o (o.id)}
+              <option value={o.id}>{o.label}</option>
+            {/each}
+          </select>
+          <button class="btn forget" aria-label="Забыть сеть «{p.name}»" onclick={() => forget(p.key)}>Забыть</button>
         </li>
       {/each}
     </ul>
@@ -104,7 +197,8 @@
     gap: var(--space-6);
   }
 
-  .row p {
+  .row p,
+  .intro {
     margin: var(--space-1) 0 0;
     max-width: 560px;
   }
@@ -113,67 +207,36 @@
     margin: 0;
   }
 
-  /* Переключатель в стиле Windows 11. */
-  .switch {
-    position: relative;
+  .field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .field label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .field select {
     flex: none;
-    width: 40px;
-    height: 20px;
-    margin-top: var(--space-1);
-    cursor: pointer;
+    min-width: 220px;
   }
 
-  .switch input {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    margin: 0;
-    cursor: pointer;
+  .here {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 32px;
   }
 
-  .switch span[aria-hidden] {
-    position: absolute;
-    inset: 0;
-    border: 1px solid var(--text-2);
-    border-radius: 10px;
-    transition: background 120ms var(--ease);
+  .here .btn {
+    margin-left: auto;
   }
 
-  .switch span[aria-hidden]::after {
-    content: "";
-    position: absolute;
-    top: 4px;
-    left: 4px;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--text-2);
-    transition: transform 120ms var(--ease);
-  }
-
-  .switch input:checked + span {
-    border-color: var(--accent);
-    background: var(--accent);
-  }
-
-  .switch input:checked + span::after {
-    background: var(--accent-text);
-    transform: translateX(20px);
-  }
-
-  .switch input:focus-visible + span {
-    box-shadow: var(--focus);
-  }
-
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-  }
-
-  .results {
+  .profiles {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
@@ -182,22 +245,44 @@
     list-style: none;
   }
 
-  .results li {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: var(--space-2) var(--space-3);
-    border-left: 3px solid var(--stroke-strong);
+  .profiles li {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) auto auto auto;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--stroke);
     border-radius: var(--radius-s);
-    background: var(--bg);
   }
 
-  .results li.ok {
-    border-left-color: var(--ok);
+  .profiles li.current {
+    border-color: var(--accent);
   }
 
-  .results li.warning {
-    border-left-color: var(--warn);
-    background: var(--warn-subtle);
+  .name {
+    min-width: 0;
+    height: 30px;
+    padding: 0 var(--space-2);
+    border: 1px solid transparent;
+    border-radius: var(--radius-s);
+    background: transparent;
+    user-select: text;
+  }
+
+  .name:hover,
+  .name:focus {
+    border-color: var(--stroke);
+    background: var(--surface);
+  }
+
+  @media (max-width: 720px) {
+    .field {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .profiles li {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

@@ -2,25 +2,34 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+mod catalog;
 mod diagnostics;
+mod dnscheck;
 mod dpapi;
 mod fetch;
+mod health;
+mod netinfo;
+mod netprofile;
 mod prober;
 mod service_client;
 mod store;
 mod subs;
 mod tray;
+mod troubleshoot;
+mod watchdog;
 
+use kvt_core::compile::DnsPlan;
 use kvt_core::core_select::{select_core, CoreKind};
 use kvt_core::governor::{NetGovernor, NetPolicy};
 use kvt_core::ipc::{ConnectPlan, Request, Response, ServiceStatus};
 use kvt_core::model::{FingerprintAdvice, Security, Server, Transport};
 use kvt_core::routing::presets::{self, RoutingSettings};
 use kvt_core::subscription::SubscriptionMeta;
-use kvt_core::tester::{self, QuickResult};
+use kvt_core::tester::{self, Outcome, QuickResult};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
 /// Подписки, серверы и ключи живут в Rust; в WebView уходит только
@@ -28,27 +37,78 @@ use tauri::{AppHandle, Manager, State};
 pub(crate) struct AppState {
     /// Сохранённые подписки (загружаются при старте из каталога данных).
     store: Mutex<Option<store::Store>>,
-    /// Серверы активной подписки.
-    servers: Mutex<Vec<Server>>,
+    /// Серверы всех подписок подряд, с ключами.
+    servers: Mutex<Vec<catalog::Entry>>,
     governor: Mutex<NetGovernor>,
-    /// Активная подписка в виде для интерфейса: окно может быть закрыто
-    /// (WebView выгружен), а при открытии интерфейс восстанавливается отсюда.
-    last: Mutex<Option<ParsedSubscription>>,
+    /// Подписки в виде для интерфейса: окно может быть закрыто (WebView
+    /// выгружен), а при открытии интерфейс восстанавливается отсюда.
+    groups: Mutex<Vec<catalog::Group>>,
     /// Идёт полная проверка серверов (одновременно — только одна).
     checking: std::sync::atomic::AtomicBool,
     /// Выбранный сервер, режим и kill switch — ими пользуется и трей.
     choice: Mutex<Choice>,
+    /// Итоги полной проверки по ключам серверов.
+    outcomes: Mutex<HashMap<String, Outcome>>,
+    /// Последняя проверка DNS: повтор в течение минуты отдаёт её же.
+    dns_report: Mutex<Option<(Instant, kvt_core::dns::DnsReport)>>,
+    /// Клиент проверки туннеля: держит соединение открытым между проверками.
+    health: reqwest::Client,
+    /// Сеть, через которую сейчас идёт трафик.
+    network: Mutex<Option<netinfo::Network>>,
 }
 
 /// Выбор пользователя. Секретов не содержит, поэтому хранится в settings.json
 /// в каталоге настроек приложения.
-#[derive(Clone, Default, Serialize, serde::Deserialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Choice {
+    /// Ключ выбранного сервера (`catalog::key`).
+    server: Option<String>,
+    /// Номер сервера в «основной» подписке — из версий до единого списка.
+    /// Читается один раз при запуске и переводится в `server`.
+    #[serde(skip_serializing)]
     server_index: Option<i64>,
     mode: Option<String>,
     kill_switch: bool,
     routing: RoutingSettings,
+    dns: DnsChoice,
+    /// Переключаться на другой сервер, если через текущий перестали идти данные.
+    auto_switch: bool,
+    networks: Vec<netprofile::NetworkProfile>,
+}
+
+impl Default for Choice {
+    fn default() -> Self {
+        Self {
+            server: None,
+            server_index: None,
+            mode: None,
+            kill_switch: false,
+            routing: RoutingSettings::default(),
+            dns: DnsChoice::default(),
+            auto_switch: true,
+            networks: Vec::new(),
+        }
+    }
+}
+
+/// Резолверы из `kvt_core::dns::RESOLVERS` (по id).
+#[derive(Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DnsChoice {
+    /// Для сайтов, которые открываются напрямую.
+    local: String,
+    /// DoH внутри туннеля для всего остального.
+    remote: String,
+}
+
+impl Default for DnsChoice {
+    fn default() -> Self {
+        Self {
+            local: "yandex".into(),
+            remote: "cloudflare".into(),
+        }
+    }
 }
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -77,17 +137,46 @@ impl Default for AppState {
             store: Mutex::default(),
             servers: Mutex::default(),
             governor: Mutex::new(NetGovernor::new(NetPolicy::default())),
-            last: Mutex::default(),
+            groups: Mutex::default(),
             checking: Default::default(),
             choice: Mutex::default(),
+            outcomes: Mutex::default(),
+            dns_report: Mutex::default(),
+            health: health::client(),
+            network: Mutex::default(),
         }
     }
+}
+
+impl AppState {
+    fn entry(&self, key: &str) -> Option<catalog::Entry> {
+        self.servers
+            .lock()
+            .ok()?
+            .iter()
+            .find(|e| e.key == key)
+            .cloned()
+    }
+
+    /// Выбранный сервер; `None` — не выбран или его больше нет в подписках.
+    fn selected(&self) -> Option<catalog::Entry> {
+        let key = self.choice.lock().ok()?.server.clone()?;
+        self.entry(&key)
+    }
+}
+
+/// Название сервера без флага-эмодзи (флаг интерфейс рисует картинкой).
+pub(crate) fn display_name(s: &Server) -> String {
+    kvt_core::flag::split_flag(&s.name).1
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerSummary {
+    key: String,
     name: String,
+    /// Код страны из флага в названии (`nl`).
+    flag: Option<String>,
     address: String,
     port: u16,
     protocol: &'static str,
@@ -98,8 +187,8 @@ pub(crate) struct ServerSummary {
     fingerprint_advice: Option<FingerprintAdvice>,
 }
 
-impl From<&Server> for ServerSummary {
-    fn from(s: &Server) -> Self {
+impl ServerSummary {
+    fn new(s: &Server, key: &str) -> Self {
         let transport = match s.transport {
             Transport::Tcp => "tcp",
             Transport::Ws { .. } => "ws",
@@ -113,8 +202,11 @@ impl From<&Server> for ServerSummary {
             Security::Tls(t) => ("tls", t.fingerprint),
             Security::Reality(r) => ("reality", Some(r.fingerprint)),
         };
+        let (flag, name) = kvt_core::flag::split_flag(&s.name);
         Self {
-            name: s.name.clone(),
+            key: key.to_owned(),
+            name,
+            flag,
             address: s.address.clone(),
             port: s.port,
             protocol: s.protocol.kind(),
@@ -152,26 +244,10 @@ impl From<&SubscriptionMeta> for SubscriptionInfo {
     }
 }
 
-#[derive(Clone, Serialize)]
-pub(crate) struct LineError {
-    line: usize,
-    message: String,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct ParsedSubscription {
-    id: Option<String>,
-    servers: Vec<ServerSummary>,
-    info: Vec<String>,
-    errors: Vec<LineError>,
-    duplicates: usize,
-    meta: Option<SubscriptionInfo>,
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Snapshot {
-    subscription: Option<ParsedSubscription>,
+    groups: Vec<catalog::Group>,
     choice: Choice,
 }
 
@@ -179,8 +255,8 @@ struct Snapshot {
 #[tauri::command]
 fn snapshot(state: State<'_, AppState>) -> Result<Snapshot, String> {
     Ok(Snapshot {
-        subscription: state
-            .last
+        groups: state
+            .groups
             .lock()
             .map_err(|_| "внутренняя ошибка состояния")?
             .clone(),
@@ -203,21 +279,40 @@ fn set_choice(choice: Choice, app: AppHandle, state: State<'_, AppState>) -> Res
     Ok(())
 }
 
+/// Резолверы для настроек DNS.
+#[tauri::command]
+fn dns_catalog() -> &'static [kvt_core::dns::Resolver] {
+    kvt_core::dns::RESOLVERS
+}
+
 /// Списки itdoginfo (podkop) для раздела «Маршрутизация».
 #[tauri::command]
 fn list_catalog() -> &'static [kvt_core::lists::ListInfo] {
     kvt_core::lists::ITDOG_LISTS
 }
 
-/// Быстрая проверка (TCP-пинг без TLS): безопасна для ТСПУ, идёт параллельно.
-#[tauri::command]
-async fn quick_check(state: State<'_, AppState>) -> Result<Vec<QuickResult>, String> {
-    let servers = state
+/// Серверы одной подписки (`group`) или всех: ключи и серверы.
+fn servers_of(state: &AppState, group: Option<&str>) -> Result<(Vec<String>, Vec<Server>), String> {
+    Ok(state
         .servers
         .lock()
         .map_err(|_| "внутренняя ошибка состояния")?
-        .clone();
-    Ok(tester::quick_check(&servers, Duration::from_secs(3), 8).await)
+        .iter()
+        .filter(|e| group.map_or(true, |g| e.sub == g))
+        .map(|e| (e.key.clone(), e.server.clone()))
+        .unzip())
+}
+
+/// Быстрая проверка (TCP-пинг без TLS): безопасна для ТСПУ, идёт параллельно.
+/// Результат — по ключам серверов.
+#[tauri::command]
+async fn quick_check(
+    group: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<HashMap<String, QuickResult>, String> {
+    let (keys, servers) = servers_of(&state, group.as_deref())?;
+    let results = tester::quick_check(&servers, Duration::from_secs(3), 8).await;
+    Ok(keys.into_iter().zip(results).collect())
 }
 
 /// Строит план подключения по текущему выбору и отправляет его службе.
@@ -232,21 +327,11 @@ async fn connect_current(state: &AppState) -> Result<ServiceStatus, String> {
     if mode == "zapret" {
         return Err("Режим zapret появится на этапе 4.".into());
     }
-    let server = {
-        let servers = state
-            .servers
-            .lock()
-            .map_err(|_| "внутренняя ошибка состояния")?;
-        choice
-            .server_index
-            .and_then(|i| usize::try_from(i).ok())
-            .and_then(|i| servers.get(i))
-            .cloned()
-            .ok_or("Выберите сервер")?
-    };
+    let server = state.selected().ok_or("Выберите сервер")?.server;
 
-    let mut routing =
-        presets::from_settings(&choice.routing).with_servers([server.address.clone()]);
+    let mut routing = presets::from_settings(&choice.routing)
+        .with_servers([server.address.clone()])
+        .with_health_check();
     if mode == "hybrid" {
         routing.extend(presets::zapret_youtube_discord());
     }
@@ -256,6 +341,7 @@ async fn connect_current(state: &AppState) -> Result<ServiceStatus, String> {
         server,
         routing,
         kill_switch: choice.kill_switch,
+        dns: DnsPlan::from_ids(&choice.dns.local, &choice.dns.remote).map_err(|e| e.to_string())?,
     };
     match service_client::call(Request::Connect(Box::new(plan))).await? {
         Response::Status { status } => Ok(status),
@@ -308,6 +394,31 @@ async fn query_status() -> Result<Option<ServiceStatus>, String> {
     }
 }
 
+/// Выбор из версий до единого списка: номер сервера в «основной» подписке → ключ.
+fn migrate_choice(app: &AppHandle, state: &AppState) {
+    let active = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|s| s.as_ref()?.active.clone());
+    let Ok(mut choice) = state.choice.lock() else {
+        return;
+    };
+    let Some(index) = choice.server_index.take() else {
+        return;
+    };
+    if choice.server.is_none() {
+        choice.server = state.servers.lock().ok().and_then(|servers| {
+            servers
+                .iter()
+                .filter(|e| Some(&e.sub) == active.as_ref())
+                .nth(usize::try_from(index).ok()?)
+                .map(|e| e.key.clone())
+        });
+    }
+    let _ = save_choice(app, &choice);
+}
+
 fn main() {
     let app = tauri::Builder::default()
         // Должен регистрироваться первым: второй экземпляр завершится раньше,
@@ -326,16 +437,18 @@ fn main() {
             if let Ok(mut s) = state.store.lock() {
                 *s = Some(store);
             }
-            subs::activate(&state)?;
+            subs::rebuild(&state)?;
+            migrate_choice(app.handle(), &state);
             subs::spawn_updater(app.handle().clone());
             tray::create(app.handle())?;
+            netprofile::spawn(app.handle().clone());
+            watchdog::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             subs::parse_subscription,
             subs::add_subscription_url,
             subs::list_subscriptions,
-            subs::select_subscription,
             subs::remove_subscription,
             subs::refresh_subscription,
             quick_check,
@@ -346,7 +459,11 @@ fn main() {
             leak_test,
             snapshot,
             set_choice,
-            list_catalog
+            list_catalog,
+            dns_catalog,
+            dnscheck::dns_check,
+            troubleshoot::troubleshoot,
+            netprofile::current_network
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

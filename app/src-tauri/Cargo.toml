@@ -25,10 +25,20 @@ tauri-plugin-single-instance = "2"
 url.workspace = true
 # native-tls в Windows — это системный Schannel: TLS-отпечаток как у Edge и
 # системных программ, а не редкий отпечаток rustls/ring.
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "http2", "charset", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "native-tls-alpn", "http2", "charset", "socks"] }
+# DoT для проверки DNS — тот же системный Schannel, что и у reqwest.
+native-tls = "0.2"
+tokio-native-tls = "0.3"
+sha2.workspace = true
 
 [lints]
 workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }

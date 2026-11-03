@@ -63,6 +63,11 @@ async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
             message: e.to_string(),
         };
     }
+    if let Err(e) = plan.dns.validate() {
+        return Response::Error {
+            message: e.to_string(),
+        };
+    }
     state.status = ServiceStatus::Connecting;
     match state.supervisor.start(plan).await {
         Ok(()) => {
@@ -127,13 +132,26 @@ mod tests {
             server: *server,
             routing,
             kill_switch: true,
+            dns: Default::default(),
         };
         let mut st = state();
-        let Response::Error { message } = handle(&mut st, Request::Connect(Box::new(plan))).await
+        let Response::Error { message } =
+            handle(&mut st, Request::Connect(Box::new(plan.clone()))).await
         else {
             panic!("ожидалась ошибка")
         };
         assert!(message.contains("zapret"));
+        assert_eq!(st.status, ServiceStatus::Disconnected);
+
+        // DNS-адрес не из каталога — тоже отказ до запуска чего-либо.
+        let mut plan = plan;
+        plan.routing = RoutingPlan::new(Action::Proxy);
+        plan.dns.local = "127.0.0.1:5353".into();
+        let Response::Error { message } = handle(&mut st, Request::Connect(Box::new(plan))).await
+        else {
+            panic!("ожидалась ошибка")
+        };
+        assert!(message.contains("DNS"));
         assert_eq!(st.status, ServiceStatus::Disconnected);
     }
 }

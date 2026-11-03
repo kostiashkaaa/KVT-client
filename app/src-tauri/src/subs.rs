@@ -1,15 +1,15 @@
-//! Подписки: добавление, выбор, удаление, ручное и фоновое обновление.
+//! Подписки: добавление, удаление, ручное и фоновое обновление.
 
-use crate::store::{Store, Subscription};
-use crate::{fetch, AppState, LineError, ParsedSubscription, ServerSummary, SubscriptionInfo};
+use crate::store::Store;
+use crate::{catalog, fetch, AppState};
 use kvt_core::parser::parse_subscription_body;
 use kvt_core::subscription::{SubscriptionMeta, MAX_BODY_BYTES};
-use kvt_core::{Secret, Server};
+use kvt_core::Secret;
 use serde::Serialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// Событие для интерфейса: список подписок или активная подписка изменились.
+/// Событие для интерфейса: подписки или их серверы изменились.
 pub const CHANGED_EVENT: &str = "subscriptions-changed";
 const STORE_FILE: &str = "subscriptions.json";
 
@@ -29,39 +29,51 @@ pub fn load(app: &AppHandle) -> Result<Store, String> {
     Ok(Store::load(dir.join(STORE_FILE)))
 }
 
-fn view(sub: &Subscription) -> (ParsedSubscription, Vec<Server>) {
-    let content = parse_subscription_body(sub.body.expose());
-    let parsed = ParsedSubscription {
-        id: Some(sub.id.clone()),
-        servers: content.servers.iter().map(ServerSummary::from).collect(),
-        info: content.info,
-        errors: content
-            .errors
-            .into_iter()
-            .map(|(line, e)| LineError {
-                line,
-                message: e.to_string(),
-            })
-            .collect(),
-        duplicates: content.duplicates,
-        meta: Some(SubscriptionInfo::from(&sub.meta)),
+/// Пересобирает единый список серверов и группы для интерфейса.
+pub fn rebuild(state: &AppState) -> Result<(), String> {
+    let (groups, entries) = {
+        let store = state.store.lock().map_err(lock_err)?;
+        store.as_ref().map(catalog::build).unwrap_or_default()
     };
-    (parsed, content.servers)
+    // Итоги проверок привязаны к ключам: у исчезнувших серверов они не нужны.
+    state
+        .outcomes
+        .lock()
+        .map_err(lock_err)?
+        .retain(|key, _| entries.iter().any(|e| &e.key == key));
+    *state.servers.lock().map_err(lock_err)? = entries;
+    *state.groups.lock().map_err(lock_err)? = groups;
+    Ok(())
 }
 
-/// Пересобирает данные активной подписки (серверы для подключения и вид для интерфейса).
-pub fn activate(state: &AppState) -> Result<Option<ParsedSubscription>, String> {
-    let view = {
-        let store = state.store.lock().map_err(lock_err)?;
-        store.as_ref().and_then(Store::active).map(view)
-    };
-    let (parsed, servers) = match view {
-        Some((p, s)) => (Some(p), s),
-        None => (None, Vec::new()),
-    };
-    *state.servers.lock().map_err(lock_err)? = servers;
-    *state.last.lock().map_err(lock_err)? = parsed.clone();
-    Ok(parsed)
+/// Что добавилось: интерфейс сразу выбирает первый сервер новой подписки.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Added {
+    group: String,
+    first: Option<String>,
+    servers: usize,
+}
+
+/// `body` — что добавили: выбираем первый сервер из него, а не из всей группы
+/// (ручные ключи дописываются в общую группу).
+fn added(state: &AppState, id: String, body: &str) -> Result<Added, String> {
+    rebuild(state)?;
+    let new = parse_subscription_body(body).servers;
+    let servers = state.servers.lock().map_err(lock_err)?;
+    let first = new
+        .first()
+        .and_then(|s| {
+            let key = catalog::key(&id, s);
+            servers.iter().find(|e| e.key == key)
+        })
+        .or_else(|| servers.iter().find(|e| e.sub == id))
+        .map(|e| e.key.clone());
+    Ok(Added {
+        group: id,
+        first,
+        servers: new.len(),
+    })
 }
 
 fn with_store<R>(state: &AppState, f: impl FnOnce(&mut Store) -> R) -> Result<R, String> {
@@ -91,17 +103,17 @@ pub fn parse_subscription(
     body: String,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<ParsedSubscription, String> {
+) -> Result<Added, String> {
     if body.len() > MAX_BODY_BYTES {
         return Err("Подписка слишком большая".into());
     }
     ensure_servers(&body)?;
-    with_store(&state, |s| {
-        s.add(None, body, SubscriptionMeta::default(), now())
+    let id = with_store(&state, |s| {
+        s.add(None, body.clone(), SubscriptionMeta::default(), now())
     })?;
-    let parsed = activate(&state)?.ok_or("подписка не сохранилась")?;
+    let result = added(&state, id, &body)?;
     notify(&app);
-    Ok(parsed)
+    Ok(result)
 }
 
 #[tauri::command]
@@ -109,12 +121,13 @@ pub async fn add_subscription_url(
     url: String,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<ParsedSubscription, String> {
+) -> Result<Added, String> {
     let url = fetch::validate_url(&url)?;
     fetch::acquire(&state.governor, url.host_str().unwrap_or_default())?;
     let fetched = fetch::fetch(&url).await?;
     ensure_servers(&fetched.body)?;
-    with_store(&state, |s| {
+    let body = fetched.body.clone();
+    let id = with_store(&state, |s| {
         s.add(
             Some(Secret::new(url.as_str())),
             fetched.body,
@@ -122,9 +135,9 @@ pub async fn add_subscription_url(
             now(),
         )
     })?;
-    let parsed = activate(&state)?.ok_or("подписка не сохранилась")?;
+    let result = added(&state, id, &body)?;
     notify(&app);
-    Ok(parsed)
+    Ok(result)
 }
 
 #[derive(Serialize)]
@@ -138,7 +151,6 @@ pub struct SubscriptionItem {
     total_bytes: Option<u64>,
     expire: Option<u64>,
     updated_at: u64,
-    active: bool,
 }
 
 #[tauri::command]
@@ -152,37 +164,15 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
         .iter()
         .map(|s| SubscriptionItem {
             id: s.id.clone(),
-            // Хост ссылки не секрет (токен — в пути), им удобно подписать безымянную подписку.
-            title: s.meta.title.clone().unwrap_or_else(|| {
-                s.url
-                    .as_ref()
-                    .and_then(|u| url::Url::parse(u.expose()).ok())
-                    .and_then(|u| u.host_str().map(str::to_owned))
-                    .unwrap_or_else(|| "Добавлена вручную".into())
-            }),
+            title: catalog::title(s),
             by_url: s.url.is_some(),
             servers: parse_subscription_body(s.body.expose()).servers.len(),
             used_bytes: s.meta.used_bytes(),
             total_bytes: s.meta.total,
             expire: s.meta.expire,
             updated_at: s.updated_at,
-            active: store.active.as_deref() == Some(s.id.as_str()),
         })
         .collect())
-}
-
-#[tauri::command]
-pub fn select_subscription(
-    id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<Option<ParsedSubscription>, String> {
-    if !with_store(&state, |s| s.set_active(&id))? {
-        return Err("Подписка не найдена".into());
-    }
-    let parsed = activate(&state)?;
-    notify(&app);
-    Ok(parsed)
 }
 
 #[tauri::command]
@@ -192,7 +182,7 @@ pub fn remove_subscription(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     with_store(&state, |s| s.remove(&id))?;
-    activate(&state)?;
+    rebuild(&state)?;
     notify(&app);
     Ok(())
 }
@@ -234,7 +224,7 @@ pub async fn refresh_subscription(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let result = refresh_one(&state, &id).await;
-    activate(&state)?;
+    rebuild(&state)?;
     notify(&app);
     result
 }
@@ -259,7 +249,7 @@ pub fn spawn_updater(app: AppHandle) {
                         eprintln!("подписка не обновилась: {e}");
                     }
                 }
-                let _ = activate(&state);
+                let _ = rebuild(&state);
                 notify(&app);
             }
             tokio::time::sleep(Duration::from_secs(10 * 60)).await;

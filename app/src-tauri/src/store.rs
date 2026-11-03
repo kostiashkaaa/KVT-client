@@ -157,25 +157,12 @@ impl Store {
         std::fs::rename(tmp, &self.path)
     }
 
-    pub fn active(&self) -> Option<&Subscription> {
-        let id = self.active.as_ref()?;
-        self.subscriptions.iter().find(|s| &s.id == id)
-    }
-
     pub fn get(&self, id: &str) -> Option<&Subscription> {
         self.subscriptions.iter().find(|s| s.id == id)
     }
 
-    pub fn set_active(&mut self, id: &str) -> bool {
-        let exists = self.subscriptions.iter().any(|s| s.id == id);
-        if exists {
-            self.active = Some(id.to_owned());
-        }
-        exists
-    }
-
-    /// Добавляет подписку и делает её активной. Та же ссылка второй раз —
-    /// обновление существующей подписки, а не дубликат.
+    /// Добавляет подписку. Та же ссылка второй раз — обновление существующей,
+    /// а не дубликат. Ключи без ссылки собираются в одну группу «Добавлено вручную».
     pub fn add(
         &mut self,
         url: Option<Secret>,
@@ -194,6 +181,16 @@ impl Store {
                 self.active = Some(id.clone());
                 return id;
             }
+        } else if let Some(manual) = self.subscriptions.iter_mut().find(|s| s.url.is_none()) {
+            // Повторы разбор подписки отбросит сам.
+            manual.body = Secret::new(format!(
+                "{}
+{}",
+                manual.body.expose(),
+                body
+            ));
+            manual.updated_at = now;
+            return manual.id.clone();
         }
         let id = new_id();
         self.subscriptions.push(Subscription {
@@ -272,7 +269,7 @@ mod tests {
 
         let loaded = Store::load(path.clone());
         assert_eq!(loaded.active.as_deref(), Some(id.as_str()));
-        let s = loaded.active().unwrap();
+        let s = loaded.get(&id).unwrap();
         assert_eq!(s.url.as_ref().unwrap().expose(), URL);
         assert_eq!(s.body.expose(), BODY);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -295,7 +292,21 @@ mod tests {
         );
         assert_eq!(a, b);
         assert_eq!(store.subscriptions.len(), 1);
-        assert_eq!(store.active().unwrap().body.expose(), "new");
+        assert_eq!(store.get(&a).unwrap().body.expose(), "new");
+    }
+
+    #[test]
+    fn manual_keys_share_one_group() {
+        let mut store = Store::load(tmp("manual"));
+        let a = store.add(None, "vless://a".into(), SubscriptionMeta::default(), 1);
+        let b = store.add(None, "vless://b".into(), SubscriptionMeta::default(), 2);
+        assert_eq!(a, b);
+        assert_eq!(store.subscriptions.len(), 1);
+        assert_eq!(
+            store.get(&a).unwrap().body.expose(),
+            "vless://a
+vless://b"
+        );
     }
 
     #[test]

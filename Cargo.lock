@@ -2049,13 +2049,16 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "kvt-core",
+ "native-tls",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
  "tokio",
+ "tokio-native-tls",
  "url",
  "windows-sys 0.61.2",
 ]

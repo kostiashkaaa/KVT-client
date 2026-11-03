@@ -214,9 +214,11 @@
     cursor: pointer;
   }
 
+  /* Выбранный вариант — акцентом: в тёмной теме фон почти не отличается. */
   .segmented button.selected {
-    background: var(--surface);
-    box-shadow: 0 0 0 1px var(--stroke);
+    background: var(--accent-subtle);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    color: var(--accent);
     font-weight: 600;
   }
 

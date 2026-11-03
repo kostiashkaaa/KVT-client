@@ -56,6 +56,11 @@ pub struct RoutingPlan {
     server_addresses: Vec<String>,
 }
 
+/// Адрес проверки связи через туннель: ответ меньше 200 байт, в нём страна выхода.
+/// Обычный HTTP — запрос идёт внутри туннеля, снаружи виден только VPN.
+pub const HEALTH_URL: &str = "http://www.cloudflare.com/cdn-cgi/trace";
+pub const HEALTH_HOST: &str = "www.cloudflare.com";
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RoutingError {
     #[error("адрес VPN-сервера «{0}» попал под zapret")]
@@ -93,6 +98,17 @@ impl RoutingPlan {
             });
             self.server_addresses.push(addr);
         }
+        self
+    }
+
+    /// Проверка связи через туннель всегда идёт через VPN, в любом режиме
+    /// маршрутизации: иначе при «остальное напрямую» она проверяла бы не туннель.
+    pub fn with_health_check(mut self) -> Self {
+        self.rules.push(Rule {
+            layer: Layer::System,
+            matcher: Matcher::DomainSuffix(HEALTH_HOST.into()),
+            action: Action::Proxy,
+        });
         self
     }
 
@@ -339,6 +355,18 @@ mod tests {
 
     fn russia_smart(final_action: Action) -> RoutingPlan {
         super::presets::russia_smart(final_action, ListMode::Compact)
+    }
+
+    #[test]
+    fn health_check_goes_through_vpn_even_when_everything_else_is_direct() {
+        let mut plan = russia_smart(Action::Direct).with_health_check();
+        plan.push(Rule {
+            layer: Layer::User,
+            matcher: Matcher::DomainSuffix("cloudflare.com".into()),
+            action: Action::Direct,
+        });
+        assert!(plan.validate().is_ok());
+        assert_eq!(plan.resolve_domain(HEALTH_HOST), Action::Proxy);
     }
 
     #[test]

@@ -1,15 +1,15 @@
 <script lang="ts">
-  import AddSubscription from "./AddSubscription.svelte";
+  import Icon from "./Icon.svelte";
   import {
     listSubscriptions,
     onSubscriptionsChanged,
     refreshSubscription,
     removeSubscription,
-    selectSubscription,
     type SubscriptionItem,
   } from "./api";
 
-  let { onadd, busy }: { onadd: (body: string) => Promise<void>; busy: boolean } = $props();
+  /** Открывает панель добавления (та же, что у «+» на главной). */
+  let { onadd }: { onadd: () => void } = $props();
 
   let items = $state<SubscriptionItem[]>([]);
   let refreshing = $state<string | null>(null);
@@ -71,6 +71,11 @@
   }
 </script>
 
+<div class="top">
+  <p class="muted">Серверы всех подписок — в одном списке на главной. Здесь — обновление и удаление.</p>
+  <button class="btn btn-primary" onclick={onadd}><Icon name="plus" size={16} />Добавить</button>
+</div>
+
 {#if error}
   <div class="banner" role="alert">{error}</div>
 {/if}
@@ -78,11 +83,10 @@
 {#if items.length > 0}
   <ul class="list">
     {#each items as s (s.id)}
-      <li class="card" class:active={s.active}>
+      <li class="card">
         <div class="main">
           <div class="title-row">
             <h2>{s.title}</h2>
-            {#if s.active}<span class="badge">Основная</span>{/if}
           </div>
           <p class="caption">{details(s)}</p>
           {#if s.usedBytes != null && s.totalBytes}
@@ -103,9 +107,6 @@
             </button>
             <button class="btn" onclick={() => (confirmRemove = null)}>Отмена</button>
           {:else}
-            {#if !s.active}
-              <button class="btn" onclick={() => act(() => selectSubscription(s.id))}>Сделать основной</button>
-            {/if}
             {#if s.byUrl}
               <button class="btn" disabled={refreshing !== null} onclick={() => refresh(s.id)}>
                 {refreshing === s.id ? "Обновление…" : "Обновить"}
@@ -125,7 +126,6 @@
   </p>
 {/if}
 
-<AddSubscription onadd={(body) => void onadd(body).then(reload)} {busy} />
 
 <style>
   .list {
@@ -145,10 +145,6 @@
     padding: var(--space-4) var(--space-5);
   }
 
-  li.active {
-    border-color: var(--accent);
-  }
-
   .main {
     display: flex;
     flex-direction: column;
@@ -162,13 +158,19 @@
     gap: var(--space-2);
   }
 
-  .badge {
-    padding: 0 var(--space-2);
-    border-radius: 10px;
-    background: var(--accent-subtle);
-    color: var(--accent);
-    font-size: 12px;
-    line-height: 20px;
+  .top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .top p {
+    margin: 0;
+  }
+
+  .top .btn {
+    flex: none;
   }
 
   .caption {

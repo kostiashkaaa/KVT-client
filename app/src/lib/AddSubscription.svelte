@@ -1,8 +1,21 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
 
-  let { onadd, busy }: { onadd: (body: string) => void; busy: boolean } = $props();
+  let {
+    onadd,
+    busy,
+    oncancel,
+  }: {
+    onadd: (body: string) => void;
+    busy: boolean;
+    /** Есть — форма открыта поверх списка (кнопка «+»), её можно закрыть. */
+    oncancel?: () => void;
+  } = $props();
   let value = $state("");
+
+  function focus(node: HTMLTextAreaElement) {
+    if (oncancel) node.focus();
+  }
 
   // Буфер обмена читается только по нажатию — никакого фонового чтения.
   async function paste() {
@@ -14,9 +27,9 @@
   }
 </script>
 
-<section class="card empty">
+<section class="card empty" class:dialog={!!oncancel}>
   <div class="icon" aria-hidden="true"><Icon name="shield" size={32} /></div>
-  <h2>Добавьте подписку</h2>
+  <h2 id="add-title">{oncancel ? "Добавить подписку или ключ" : "Добавьте подписку"}</h2>
   <p class="muted">
     Вставьте ссылку на подписку (https://…), ссылки на серверы (vless://, trojan://, ss://, hy2://) или
     содержимое подписки.
@@ -29,9 +42,16 @@
     autocomplete="off"
     placeholder="https://… или vless://…"
     aria-label="Ссылки или подписка"
+    use:focus
+    onkeydown={(e) => {
+      if (e.key === "Escape" && oncancel) oncancel();
+    }}
   ></textarea>
 
   <div class="actions">
+    {#if oncancel}
+      <button class="btn" onclick={oncancel}>Отмена</button>
+    {/if}
     <button class="btn" onclick={paste}><Icon name="paste" size={16} />Вставить из буфера</button>
     <button class="btn btn-primary" disabled={!value.trim() || busy} onclick={() => onadd(value)}>
       <Icon name="plus" size={16} />Добавить
@@ -51,6 +71,12 @@
 
   .icon {
     color: var(--accent);
+  }
+
+  .dialog {
+    width: min(560px, calc(100vw - 32px));
+    padding: var(--space-6);
+    box-shadow: 0 8px 32px rgb(0 0 0 / 0.28);
   }
 
   p {

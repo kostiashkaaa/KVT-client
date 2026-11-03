@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type Page = "home" | "subscriptions" | "routing" | "journal" | "settings";
+  export type Page = "home" | "subscriptions" | "routing" | "diagnostics" | "journal" | "settings";
 </script>
 
 <script lang="ts">
@@ -11,6 +11,7 @@
     { id: "home", label: "Главная", icon: "home" },
     { id: "subscriptions", label: "Подписки", icon: "list" },
     { id: "routing", label: "Маршрутизация", icon: "route" },
+    { id: "diagnostics", label: "Проверка", icon: "pulse" },
     { id: "journal", label: "Журнал", icon: "log" },
   ];
 </script>

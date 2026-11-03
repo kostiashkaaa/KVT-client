@@ -1,33 +1,39 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  import type { Outcome, QuickResult, ServerSummary, SubscriptionInfo } from "./api";
+  import Flag from "./Flag.svelte";
+  import type { Group, Outcome, QuickResult, ServerSummary, SubscriptionInfo } from "./api";
 
   let {
-    title,
-    meta = null,
-    servers,
+    groups,
     selected = $bindable(),
-    results = null,
-    checking = false,
+    results,
+    checking,
     oncheck,
-    outcomes = null,
-    fullChecking = false,
+    outcomes,
+    fullChecking,
     fullCheckBlocked = null,
     onfullcheck,
+    refreshing,
+    onrefresh,
+    onadd,
   }: {
-    title: string;
-    meta?: SubscriptionInfo | null;
-    servers: ServerSummary[];
-    selected: number | null;
-    results?: QuickResult[] | null;
-    checking?: boolean;
-    oncheck: () => void;
-    /** Результаты полной проверки (приходят по одному). */
-    outcomes?: (Outcome | null)[] | null;
-    fullChecking?: boolean;
+    groups: Group[];
+    /** Ключ выбранного сервера. */
+    selected: string | null;
+    results: Record<string, QuickResult>;
+    /** Группа, которую сейчас пингуют. */
+    checking: string | null;
+    oncheck: (group: string) => void;
+    /** Итоги полной проверки (приходят по одному). */
+    outcomes: Record<string, Outcome>;
+    /** Группа, которую сейчас проверяют полностью. */
+    fullChecking: string | null;
     /** Причина, по которой полную проверку сейчас запустить нельзя. */
     fullCheckBlocked?: string | null;
-    onfullcheck: () => void;
+    onfullcheck: (group: string) => void;
+    refreshing: string | null;
+    onrefresh: (group: string) => void;
+    onadd: () => void;
   } = $props();
 
   type Cell = { text: string; tone: "" | "good" | "bad" | "muted" | "warn"; hint: string };
@@ -61,13 +67,6 @@
     }
   }
 
-  function cell(i: number): Cell {
-    const o = outcomes?.[i];
-    if (o) return outcomeCell(o);
-    if (fullChecking || checking) return { text: "…", tone: "muted", hint: "Проверяется" };
-    return latency(results?.[i]);
-  }
-
   function latency(r: QuickResult | undefined): Cell {
     switch (r?.kind) {
       case "reachable":
@@ -87,156 +86,220 @@
     }
   }
 
-  const GB = 2 ** 30;
-  const usedShare = $derived(
-    meta?.usedBytes != null && meta.totalBytes ? Math.min(1, meta.usedBytes / meta.totalBytes) : null,
-  );
-  const daysLeft = $derived(
-    meta?.expire != null ? Math.ceil((meta.expire * 1000 - Date.now()) / 86_400_000) : null,
-  );
-
-  function gb(bytes: number): string {
-    return (bytes / GB).toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+  function cell(group: string, key: string): Cell {
+    const o = outcomes[key];
+    if (o) return outcomeCell(o);
+    if (fullChecking === group || checking === group) return { text: "…", tone: "muted", hint: "Проверяется" };
+    return latency(results[key]);
   }
-
-  function expiryText(days: number): string {
-    if (days < 0) return "Подписка закончилась";
-    if (days === 0) return "Заканчивается сегодня";
-    const date = new Date((meta?.expire ?? 0) * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
-    return `До ${date}`;
-  }
-
-  /** Поиск появляется, когда серверов много. */
-  const SEARCH_FROM = 8;
-  let query = $state("");
-  const visible = $derived.by(() => {
-    const q = query.trim().toLowerCase();
-    const all = servers.map((s, i) => ({ s, i }));
-    return q ? all.filter(({ s }) => s.name.toLowerCase().includes(q)) : all;
-  });
 
   function label(s: ServerSummary): string {
     const parts = [s.protocol, s.transport, s.security].filter((p) => p && p !== "none" && p !== "tcp");
     return parts.join(" · ");
   }
+
+  const GB = 2 ** 30;
+  const gb = (bytes: number) => (bytes / GB).toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+
+  function usage(m: SubscriptionInfo): string | null {
+    if (m.usedBytes == null || !m.totalBytes) return null;
+    return `${gb(m.usedBytes)} из ${gb(m.totalBytes)} ГБ`;
+  }
+
+  /** «34 из 100 ГБ · до 19 декабря»; срок подсвечивается, когда кончается. */
+  function metaParts(m: SubscriptionInfo): { text: string; soon: boolean }[] {
+    const used = usage(m);
+    const exp = expiry(m);
+    return [...(used ? [{ text: used, soon: false }] : []), ...(exp ? [exp] : [])];
+  }
+
+  function expiry(m: SubscriptionInfo): { text: string; soon: boolean } | null {
+    if (m.expire == null) return null;
+    const days = Math.ceil((m.expire * 1000 - Date.now()) / 86_400_000);
+    if (days < 0) return { text: "закончилась", soon: true };
+    if (days === 0) return { text: "заканчивается сегодня", soon: true };
+    const date = new Date(m.expire * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+    return { text: `до ${date}`, soon: days <= 3 };
+  }
+
+  // Свёрнутые группы запоминаются на этом компьютере (только вид, не настройка).
+  const COLLAPSED_KEY = "kvt.collapsed";
+  function loadCollapsed(): string[] {
+    try {
+      const v: unknown = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]");
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+  let collapsed = $state<string[]>(loadCollapsed());
+  function toggle(id: string) {
+    collapsed = collapsed.includes(id) ? collapsed.filter((x) => x !== id) : [...collapsed, id];
+    try {
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed));
+    } catch {
+      /* хранилище недоступно — просто не запомним */
+    }
+  }
+
+  const total = $derived(groups.reduce((n, g) => n + g.servers.length, 0));
+
+  /** Поиск появляется, когда серверов много; ищет сразу во всех группах. */
+  const SEARCH_FROM = 8;
+  let query = $state("");
+  const searching = $derived(query.trim().length > 0);
+  const visible = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    return groups
+      .map((g) => ({ g, servers: q ? g.servers.filter((s) => s.name.toLowerCase().includes(q)) : g.servers }))
+      .filter(({ servers }) => !q || servers.length > 0);
+  });
+  const found = $derived(visible.reduce((n, v) => n + v.servers.length, 0));
 </script>
 
 <section class="card list">
-  <header>
-    <div class="title-row">
-      <h2>{title}</h2>
-      <span class="caption">{servers.length} серв.</span>
-      <button
-        class="btn check"
-        disabled={checking || fullChecking}
-        onclick={oncheck}
-        title="Пинг: только TCP-соединение, без TLS — не привлекает внимание DPI"
-      >
-        {checking ? "Пинг…" : "Пинг"}
-      </button>
-      <button
-        class="btn"
-        disabled={checking || fullChecking || fullCheckBlocked !== null}
-        onclick={onfullcheck}
-        title={fullCheckBlocked ??
-          "Подключается к каждому серверу и скачивает 200 КБ. Серверы с одинаковым SNI проверяются по очереди, чтобы не вызвать заморозку у провайдера"}
-      >
-        {fullChecking ? "Проверка…" : "Полная проверка"}
-      </button>
-    </div>
-    {#if meta && (usedShare !== null || daysLeft !== null)}
-      <div class="usage">
-        {#if usedShare !== null && meta.usedBytes != null && meta.totalBytes}
-          <div
-            class="bar"
-            class:warn={usedShare > 0.9}
-            role="meter"
-            aria-label="Израсходовано трафика"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(usedShare * 100)}
-          >
-            <span style:width={`${usedShare * 100}%`}></span>
-          </div>
-          <span class="caption">{gb(meta.usedBytes)} из {gb(meta.totalBytes)} ГБ</span>
-        {/if}
-        {#if daysLeft !== null}
-          <span class="caption" class:expiring={daysLeft <= 3}>{expiryText(daysLeft)}</span>
-        {/if}
-      </div>
+  <header class="toolbar">
+    <h2>Серверы</h2>
+    <span class="caption">{total}</span>
+    {#if total > SEARCH_FROM}
+      <input
+        class="search"
+        type="search"
+        placeholder="Поиск по всем подпискам"
+        aria-label="Поиск сервера"
+        autocomplete="off"
+        spellcheck="false"
+        bind:value={query}
+      />
+      {#if searching}<span class="caption">{found} из {total}</span>{/if}
     {/if}
-    {#if servers.length > SEARCH_FROM}
-      <div class="search">
-        <input
-          type="search"
-          placeholder="Поиск по названию"
-          aria-label="Поиск сервера"
-          autocomplete="off"
-          spellcheck="false"
-          bind:value={query}
-        />
-        {#if query.trim()}
-          <span class="caption">{visible.length} из {servers.length}</span>
-        {/if}
-      </div>
-    {/if}
+    <button class="btn add" onclick={onadd} title="Добавить подписку или ключ" aria-label="Добавить подписку или ключ">
+      <Icon name="plus" size={16} />
+    </button>
   </header>
 
-  <ul role="listbox" aria-label={title}>
-    {#if visible.length === 0}
-      <li class="empty caption">Ничего не найдено</li>
-    {/if}
-    {#each visible as { s, i } (i)}
-      {@const l = cell(i)}
-      <li>
-        <button class="row" role="option" aria-selected={selected === i} class:selected={selected === i} onclick={() => (selected = i)}>
-          <span class="radio" aria-hidden="true"></span>
-          <span class="name">{s.name}</span>
-          <!-- Ячейка есть всегда, чтобы колонки сетки не съезжали. -->
-          <span class="warn">
-            {#if s.fingerprintAdvice && s.fingerprintAdvice !== "ok"}
-              <span
-                class="warn-icon"
-                role="img"
-                aria-label="Подозрительный отпечаток TLS"
-                title="Отпечаток TLS этого сервера чаще попадает под подозрение у ТСПУ. Попросите провайдера сменить fp на firefox или edge."
-              >
-                <Icon name="warning" size={16} />
-              </span>
-            {/if}
-          </span>
-          <span class="tag">{label(s)}</span>
-          <span class="latency {l.tone}" title={l.hint}>{l.text}</span>
+  {#if searching && visible.length === 0}
+    <p class="empty caption">Ничего не найдено</p>
+  {/if}
+
+  {#each visible as { g, servers } (g.id)}
+    {@const open = searching || !collapsed.includes(g.id)}
+    <div class="group">
+      <div class="group-head">
+        <button class="toggle" aria-expanded={open} onclick={() => toggle(g.id)} disabled={searching}>
+          <span class="chevron" class:closed={!open}><Icon name="chevron" size={16} /></span>
+          <span class="group-title">{g.title}</span>
+          <span class="caption">{g.servers.length}</span>
         </button>
-      </li>
-    {/each}
-  </ul>
+        <span class="caption meta">
+          {#each metaParts(g.meta) as part, i (i)}{#if i > 0}{" · "}{/if}<span class:soon={part.soon}
+              >{part.text}</span
+            >{/each}
+        </span>
+        <div class="group-actions">
+          {#if g.byUrl}
+            <button
+              class="btn ghost"
+              disabled={refreshing !== null}
+              onclick={() => onrefresh(g.id)}
+              title="Обновить подписку"
+              aria-label={`Обновить ${g.title}`}
+            >
+              <span class:spin={refreshing === g.id}><Icon name="refresh" size={16} /></span>
+            </button>
+          {/if}
+          <button
+            class="btn ghost"
+            disabled={checking !== null || fullChecking !== null}
+            onclick={() => oncheck(g.id)}
+            title="Пинг: только TCP-соединение, без TLS — не привлекает внимание DPI"
+          >
+            {checking === g.id ? "Пинг…" : "Пинг"}
+          </button>
+          <button
+            class="btn ghost"
+            disabled={checking !== null || fullChecking !== null || fullCheckBlocked !== null}
+            onclick={() => onfullcheck(g.id)}
+            title={fullCheckBlocked ??
+              "Подключается к каждому серверу и скачивает 200 КБ. Серверы с одинаковым SNI проверяются по очереди, чтобы не вызвать заморозку у провайдера"}
+          >
+            {fullChecking === g.id ? "Проверка…" : "Проверить"}
+          </button>
+        </div>
+      </div>
+
+      {#if open}
+        {#if g.meta.announce}
+          <!-- Текст провайдера выводится только как текст, без разметки. -->
+          <p class="announce">{g.meta.announce}</p>
+        {/if}
+        <ul role="listbox" aria-label={g.title}>
+          {#each servers as s (s.key)}
+            {@const l = cell(g.id, s.key)}
+            <li>
+              <button
+                class="row"
+                role="option"
+                aria-selected={selected === s.key}
+                class:selected={selected === s.key}
+                onclick={() => (selected = s.key)}
+              >
+                <span class="radio" aria-hidden="true"></span>
+                <Flag code={s.flag} />
+                <span class="name">{s.name}</span>
+                <!-- Ячейка есть всегда, чтобы колонки сетки не съезжали. -->
+                <span class="warn">
+                  {#if s.fingerprintAdvice && s.fingerprintAdvice !== "ok"}
+                    <span
+                      class="warn-icon"
+                      role="img"
+                      aria-label="Подозрительный отпечаток TLS"
+                      title="Отпечаток TLS этого сервера чаще попадает под подозрение у ТСПУ. Попросите провайдера сменить fp на firefox или edge."
+                    >
+                      <Icon name="warning" size={16} />
+                    </span>
+                  {/if}
+                </span>
+                <span class="tag">{label(s)}</span>
+                <span class="latency {l.tone}" title={l.hint}>{l.text}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+        {#if g.errors > 0}
+          <p class="caption skipped">Пропущено строк с ошибками: {g.errors}</p>
+        {/if}
+      {/if}
+    </div>
+  {/each}
 </section>
 
 <style>
-  /* Заголовок с кнопками остаётся на месте, пока прокручивается длинный список. */
-  header {
+  .list {
+    padding-bottom: var(--space-2);
+  }
+
+  /* Панель с поиском и «+» остаётся на месте, пока прокручивается длинный список. */
+  .toolbar {
     position: sticky;
-    top: 0;
+    /* Прилипает к краю окна, а не к отступу страницы: сверху ничего не просвечивает. */
+    top: calc(-1 * var(--page-pad-top, 0px));
     z-index: 1;
     display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    padding: var(--space-4) var(--space-5) var(--space-2);
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5) var(--space-3);
+    border-bottom: 1px solid var(--stroke);
     border-radius: var(--radius-m) var(--radius-m) 0 0;
     background: var(--surface);
   }
 
   .search {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-  }
-
-  .search input {
     flex: 1;
+    min-width: 0;
     max-width: 320px;
     height: 30px;
+    margin-left: var(--space-3);
     padding: 0 var(--space-3);
     border: 1px solid var(--stroke);
     border-bottom-color: var(--text-3);
@@ -245,59 +308,122 @@
     user-select: text;
   }
 
-  .search input:focus {
+  .search:focus {
     outline: none;
     border-bottom: 2px solid var(--accent);
   }
 
-  .empty {
-    padding: var(--space-3);
+  .add {
+    width: 32px;
+    margin-left: auto;
+    padding: 0;
   }
 
-  .title-row {
+  .empty {
+    margin: 0;
+    padding: var(--space-4) var(--space-5);
+  }
+
+  .group + .group {
+    border-top: 1px solid var(--stroke);
+  }
+
+  .group-head {
     display: flex;
     align-items: center;
     gap: var(--space-3);
+    padding: var(--space-2) var(--space-3) var(--space-1) var(--space-2);
   }
 
-  .title-row .caption {
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    height: 32px;
+    padding: 0 var(--space-2);
+    border: 0;
+    border-radius: var(--radius-s);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .toggle:hover:not(:disabled) {
+    background: var(--surface-hover);
+  }
+
+  .toggle:disabled {
+    cursor: default;
+  }
+
+  .chevron {
+    display: inline-flex;
+    color: var(--text-2);
+    transition: transform 120ms var(--ease);
+  }
+
+  .chevron.closed {
+    transform: rotate(-90deg);
+  }
+
+  .group-title {
+    overflow: hidden;
+    font-weight: 600;
     white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
-  .title-row .btn {
-    min-height: 28px;
+  .meta {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
-  .check {
+  .soon {
+    color: var(--warn);
+  }
+
+  .group-actions {
+    display: flex;
+    flex: none;
+    gap: var(--space-1);
     margin-left: auto;
   }
 
-  .usage {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
+  .btn.ghost {
+    min-height: 28px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-2);
   }
 
-  .bar {
-    flex: 0 1 200px;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--stroke);
-    overflow: hidden;
+  .btn.ghost:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
   }
 
-  .bar span {
-    display: block;
-    height: 100%;
-    background: var(--accent);
+  .spin {
+    display: inline-flex;
+    animation: spin 900ms linear infinite;
   }
 
-  .bar.warn span {
-    background: var(--warn);
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
-  .expiring {
-    color: var(--warn);
+  .announce {
+    margin: 0 var(--space-5) var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-s);
+    background: var(--accent-subtle);
+    white-space: pre-line;
+  }
+
+  .skipped {
+    margin: 0;
+    padding: 0 var(--space-5) var(--space-2);
   }
 
   ul {
@@ -308,7 +434,7 @@
 
   .row {
     display: grid;
-    grid-template-columns: 16px 1fr auto auto 72px;
+    grid-template-columns: 16px 20px 1fr auto auto 72px;
     align-items: center;
     gap: var(--space-3);
     width: 100%;
@@ -340,8 +466,10 @@
     border: 4px solid var(--accent);
   }
 
+  /* Эмодзи в названиях (⚡, 🚀) — цветным шрифтом Windows. */
   .name {
     overflow: hidden;
+    font-family: var(--font), "Segoe UI Emoji";
     white-space: nowrap;
     text-overflow: ellipsis;
   }
@@ -382,5 +510,25 @@
 
   .latency.muted {
     color: var(--text-3);
+  }
+
+  @media (max-width: 720px) {
+    .group-head {
+      flex-wrap: wrap;
+    }
+
+    .meta {
+      order: 3;
+      width: 100%;
+      padding-left: var(--space-8);
+    }
+
+    .tag {
+      display: none;
+    }
+
+    .row {
+      grid-template-columns: 16px 20px 1fr auto 64px;
+    }
   }
 </style>

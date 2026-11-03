@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Flag from "./Flag.svelte";
   import type { Mode, ServerSummary, ServiceStatus } from "./api";
 
   let {
@@ -8,6 +9,7 @@
     status,
     onconnect,
     ondisconnect,
+    onwhy,
   }: {
     server: ServerSummary | null;
     mode: Mode;
@@ -15,6 +17,7 @@
     status: ServiceStatus | null;
     onconnect: () => void;
     ondisconnect: () => void;
+    onwhy: () => void;
   } = $props();
 
   const connected = $derived(status?.state === "connected");
@@ -40,7 +43,9 @@
       <h2>{title}</h2>
       <p class="muted">
         {#if server}
-          {server.name}{#if coreName}<span class="caption"> · {coreName}</span>{/if}
+          <span class="server"><Flag code={server.flag} />{server.name}</span>{#if coreName}<span class="caption">
+              · {coreName}</span
+            >{/if}
         {:else}
           Выберите сервер ниже
         {/if}
@@ -69,7 +74,10 @@
       </button>
     {/each}
   </div>
-  <p class="caption hint">{modes.find((m) => m.id === mode)?.hint}</p>
+  <p class="caption hint">
+    {modes.find((m) => m.id === mode)?.hint}
+    <button class="why" onclick={onwhy}>Почему не работает?</button>
+  </p>
 </section>
 
 <style>
@@ -89,6 +97,12 @@
 
   .state p {
     margin: 0;
+  }
+
+  .server {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
   }
 
   .dot {
@@ -138,14 +152,34 @@
     background: var(--surface-hover);
   }
 
+  /* Выбранный вариант — акцентом: в тёмной теме фон почти не отличается. */
   .modes button.selected {
-    background: var(--surface);
-    box-shadow: 0 0 0 1px var(--stroke);
+    background: var(--accent-subtle);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    color: var(--accent);
     font-weight: 600;
   }
 
   .hint {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-4);
     grid-column: 1 / -1;
     margin: calc(-1 * var(--space-2)) 0 0;
+  }
+
+  .why {
+    flex: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .why:hover {
+    text-decoration: underline;
   }
 </style>

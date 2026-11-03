@@ -1,0 +1,278 @@
+//! Автопереключение: если через туннель перестали идти данные, KVT подключается к
+//! следующему рабочему серверу подписки.
+//!
+//! Чтобы не создавать лишнего трафика, проверка — один маленький запрос раз в
+//! минуту по уже открытому соединению. Сбой подтверждается ещё двумя попытками,
+//! и только потом сервер считается нерабочим. Переключений не больше трёх за
+//! полчаса: если не помогает, KVT сообщает об этом и больше не пытается.
+
+use crate::catalog::Entry;
+use crate::{connect_current, display_name, health, query_status, save_choice, AppState};
+use kvt_core::ipc::ServiceStatus;
+use kvt_core::probe::Verdict;
+use kvt_core::tester::{self, Outcome, QuickResult};
+use kvt_core::Server;
+use serde::Serialize;
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager};
+
+const INTERVAL: Duration = Duration::from_secs(60);
+const RETRY_AFTER: Duration = Duration::from_secs(10);
+const CONFIRMATIONS: usize = 2;
+const MAX_INCIDENTS: usize = 3;
+const INCIDENT_WINDOW: Duration = Duration::from_secs(30 * 60);
+const CANDIDATES: usize = 3;
+
+pub const EVENT: &str = "watchdog";
+/// Выбор поменялся не из интерфейса (автопереключение, профиль сети).
+pub const CHOICE_EVENT: &str = "choice-changed";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Event {
+    Switched { from: String, to: String },
+    NoNetwork,
+    NoAlternative { server: String },
+    GaveUp,
+}
+
+/// Порядок замены среди `keys` (уже в порядке предпочтения подписок): сначала
+/// проверенные полной проверкой (рабочие, затем медленные, по задержке), затем
+/// отвечающие на TCP-пинг. Известно неработающие — исключаются.
+pub(crate) fn rank(
+    outcomes: &HashMap<String, Outcome>,
+    quick: &HashMap<String, QuickResult>,
+    keys: &[String],
+) -> Vec<String> {
+    let mut proven: Vec<(u8, u64, usize)> = Vec::new();
+    let mut pinged: Vec<(u64, usize)> = Vec::new();
+    for (i, key) in keys.iter().enumerate() {
+        match outcomes.get(key) {
+            Some(Outcome::Checked {
+                verdict: Verdict::Works,
+                latency_ms,
+            }) => proven.push((0, latency_ms.unwrap_or(u64::MAX), i)),
+            Some(Outcome::Checked {
+                verdict: Verdict::Slow,
+                latency_ms,
+            }) => proven.push((1, latency_ms.unwrap_or(u64::MAX), i)),
+            Some(Outcome::Checked { .. }) => {}
+            Some(Outcome::Deferred { .. }) | None => {
+                if let Some(QuickResult::Reachable { latency_ms }) = quick.get(key) {
+                    pinged.push((*latency_ms, i));
+                }
+            }
+        }
+    }
+    proven.sort();
+    pinged.sort();
+    proven
+        .into_iter()
+        .map(|(_, _, i)| keys[i].clone())
+        .chain(pinged.into_iter().map(|(_, i)| keys[i].clone()))
+        .collect()
+}
+
+/// Кандидаты на замену текущему серверу: сначала из той же подписки, потом из
+/// остальных. TCP-пинг (без TLS) — только если полной проверки не хватило.
+pub(crate) async fn alternatives(state: &AppState, current: Option<&Entry>) -> Vec<String> {
+    let entries = state.servers.lock().map(|s| s.clone()).unwrap_or_default();
+    let outcomes = state.outcomes.lock().map(|o| o.clone()).unwrap_or_default();
+    let others = |same: bool| -> Vec<&Entry> {
+        entries
+            .iter()
+            .filter(|e| current.map_or(true, |c| c.key != e.key))
+            .filter(|e| current.map_or(true, |c| (c.sub == e.sub) == same))
+            .collect()
+    };
+    let tiers = if current.is_some() {
+        vec![others(true), others(false)]
+    } else {
+        vec![others(true)]
+    };
+
+    let mut out = Vec::new();
+    for tier in tiers {
+        let keys: Vec<String> = tier.iter().map(|e| e.key.clone()).collect();
+        let mut ranked = rank(&outcomes, &HashMap::new(), &keys);
+        if out.len() + ranked.len() < CANDIDATES {
+            let servers: Vec<Server> = tier.iter().map(|e| e.server.clone()).collect();
+            let results = tester::quick_check(&servers, Duration::from_secs(3), 8).await;
+            let quick: HashMap<String, QuickResult> = keys.iter().cloned().zip(results).collect();
+            ranked = rank(&outcomes, &quick, &keys);
+        }
+        out.extend(ranked);
+        if out.len() >= CANDIDATES {
+            break;
+        }
+    }
+    out.truncate(CANDIDATES);
+    out
+}
+
+pub(crate) fn server_name(state: &AppState, key: &str) -> String {
+    state
+        .entry(key)
+        .map(|e| display_name(&e.server))
+        .unwrap_or_else(|| "сервер".into())
+}
+
+/// Сбой подтверждён несколькими попытками подряд.
+async fn tunnel_dead(client: &reqwest::Client) -> bool {
+    if health::check(client).await.is_ok() {
+        return false;
+    }
+    for _ in 0..CONFIRMATIONS {
+        tokio::time::sleep(RETRY_AFTER).await;
+        if health::check(client).await.is_ok() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Подключается к серверу `key` и проверяет, что данные пошли.
+pub(crate) async fn switch_to(app: &AppHandle, key: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let choice = {
+        let mut c = state
+            .choice
+            .lock()
+            .map_err(|_| "внутренняя ошибка состояния")?;
+        c.server = Some(key.to_owned());
+        c.clone()
+    };
+    save_choice(app, &choice)?;
+    let _ = app.emit(CHOICE_EVENT, ());
+    connect_current(&state).await?;
+    crate::tray::refresh(app).await;
+    // Ядру нужно несколько секунд, чтобы поднять TUN и маршруты.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    if tunnel_dead(&state.health).await {
+        return Err("через сервер не идут данные".into());
+    }
+    Ok(())
+}
+
+async fn handle_incident(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if tokio::task::spawn_blocking(crate::netinfo::current)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        let _ = app.emit(EVENT, Event::NoNetwork);
+        return;
+    }
+    let current = state.selected();
+    let from = current
+        .as_ref()
+        .map(|e| display_name(&e.server))
+        .unwrap_or_default();
+    let candidates = alternatives(&state, current.as_ref()).await;
+    for key in candidates {
+        if switch_to(app, &key).await.is_ok() {
+            let to = server_name(&state, &key);
+            let _ = app.emit(EVENT, Event::Switched { from, to });
+            return;
+        }
+    }
+    let _ = app.emit(EVENT, Event::NoAlternative { server: from });
+}
+
+pub fn spawn(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut incidents: VecDeque<Instant> = VecDeque::new();
+        let mut gave_up = false;
+        loop {
+            tokio::time::sleep(INTERVAL).await;
+            let state = app.state::<AppState>();
+            let enabled = state.choice.lock().map(|c| c.auto_switch).unwrap_or(false);
+            let connected = matches!(
+                query_status().await,
+                Ok(Some(ServiceStatus::Connected { .. }))
+            );
+            if !enabled || !connected {
+                gave_up = false;
+                continue;
+            }
+            if !tunnel_dead(&state.health).await {
+                continue;
+            }
+            while incidents
+                .front()
+                .is_some_and(|t| t.elapsed() > INCIDENT_WINDOW)
+            {
+                incidents.pop_front();
+            }
+            if incidents.len() >= MAX_INCIDENTS {
+                if !gave_up {
+                    gave_up = true;
+                    let _ = app.emit(EVENT, Event::GaveUp);
+                }
+                continue;
+            }
+            incidents.push_back(Instant::now());
+            handle_incident(&app).await;
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn checked(verdict: Verdict, ms: u64) -> Outcome {
+        Outcome::Checked {
+            verdict,
+            latency_ms: Some(ms),
+        }
+    }
+
+    fn keys(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("k{i}")).collect()
+    }
+
+    #[test]
+    fn proven_servers_first_then_pinged() {
+        let outcomes: HashMap<String, Outcome> = [
+            ("k0", checked(Verdict::Works, 300)),
+            ("k1", checked(Verdict::DataFrozen, 100)),
+            ("k3", checked(Verdict::Slow, 50)),
+            ("k4", checked(Verdict::Works, 120)),
+        ]
+        .into_iter()
+        .map(|(k, o)| (k.to_owned(), o))
+        .collect();
+        let quick: HashMap<String, QuickResult> = [
+            ("k1", QuickResult::Reachable { latency_ms: 5 }),
+            ("k2", QuickResult::Reachable { latency_ms: 80 }),
+            ("k5", QuickResult::Reachable { latency_ms: 40 }),
+        ]
+        .into_iter()
+        .map(|(k, q)| (k.to_owned(), q))
+        .collect();
+        // Замороженный k1 исключён, хоть и отвечает на пинг.
+        assert_eq!(
+            rank(&outcomes, &quick, &keys(6)),
+            ["k4", "k0", "k3", "k5", "k2"]
+        );
+    }
+
+    #[test]
+    fn without_checks_uses_ping_only() {
+        let quick: HashMap<String, QuickResult> = [
+            ("k0", QuickResult::Unreachable),
+            ("k1", QuickResult::Reachable { latency_ms: 90 }),
+            ("k2", QuickResult::DnsFailed),
+            ("k3", QuickResult::Reachable { latency_ms: 30 }),
+        ]
+        .into_iter()
+        .map(|(k, q)| (k.to_owned(), q))
+        .collect();
+        assert_eq!(rank(&HashMap::new(), &quick, &keys(4)), ["k3", "k1"]);
+        assert!(rank(&HashMap::new(), &HashMap::new(), &keys(4)).is_empty());
+    }
+}

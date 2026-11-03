@@ -13,5 +13,7 @@ export default defineConfig({
   build: {
     target: "es2022",
     sourcemap: false,
+    // Флаги — отдельными файлами: в коде только адреса, картинка грузится, когда видна.
+    assetsInlineLimit: (file) => (file.includes("flag-icons") ? false : undefined),
   },
 });

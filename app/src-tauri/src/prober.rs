@@ -213,8 +213,20 @@ impl Prober for CoreProber {
 
 #[derive(Clone, Serialize)]
 struct ProbeEvent {
-    index: usize,
+    key: String,
     outcome: Outcome,
+}
+
+impl CoreProber {
+    /// Тестовые ядра из каталога программы, рабочие файлы — во временном каталоге.
+    pub(crate) fn new() -> Result<Self, String> {
+        let work = std::env::temp_dir().join("kvt-probe");
+        std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+        Ok(Self {
+            cores: cores_dir()?,
+            work,
+        })
+    }
 }
 
 fn cores_dir() -> Result<PathBuf, String> {
@@ -231,13 +243,14 @@ fn cores_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Полная проверка всех серверов активной подписки. Результаты приходят в
-/// интерфейс событием `probe-result` по мере готовности.
+/// Полная проверка серверов одной подписки (`group`) или всех. Результаты
+/// приходят в интерфейс событием `probe-result` по мере готовности.
 #[tauri::command]
 pub async fn full_check(
+    group: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<Vec<Outcome>, String> {
+) -> Result<(), String> {
     if matches!(
         query_status().await,
         Ok(Some(ServiceStatus::Connected { .. }))
@@ -250,17 +263,8 @@ pub async fn full_check(
         return Err("Проверка уже идёт".into());
     }
     let result = async {
-        let servers = state
-            .servers
-            .lock()
-            .map_err(|_| "внутренняя ошибка состояния")?
-            .clone();
-        let work = std::env::temp_dir().join("kvt-probe");
-        std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-        let prober = Arc::new(CoreProber {
-            cores: cores_dir()?,
-            work,
-        });
+        let (keys, servers) = crate::servers_of(&state, group.as_deref())?;
+        let prober = Arc::new(CoreProber::new()?);
         // Состояние NetGovernor (лимиты и заморозки по SNI) общее для всего приложения.
         let mut governor = std::mem::take(
             &mut *state
@@ -269,6 +273,7 @@ pub async fn full_check(
                 .map_err(|_| "внутренняя ошибка состояния")?,
         );
         let events = app.clone();
+        let event_keys = keys.clone();
         let outcomes = tester::full_check(
             &servers,
             prober,
@@ -278,7 +283,7 @@ pub async fn full_check(
                 let _ = events.emit(
                     RESULT_EVENT,
                     ProbeEvent {
-                        index,
+                        key: event_keys[index].clone(),
                         outcome: outcome.clone(),
                     },
                 );
@@ -289,7 +294,13 @@ pub async fn full_check(
             .governor
             .lock()
             .map_err(|_| "внутренняя ошибка состояния")? = governor;
-        Ok::<_, String>(outcomes)
+        // Результаты нужны и автопереключению: оно выбирает замену среди проверенных.
+        state
+            .outcomes
+            .lock()
+            .map_err(|_| "внутренняя ошибка состояния")?
+            .extend(keys.into_iter().zip(outcomes));
+        Ok::<_, String>(())
     }
     .await;
     state.checking.store(false, Ordering::SeqCst);

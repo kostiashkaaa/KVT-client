@@ -38,7 +38,7 @@ pub enum Outcome {
 }
 
 /// Ключ, по которому ТСПУ считает соединения: видимый SNI, а без TLS — адрес.
-fn sni_key(server: &Server) -> String {
+pub fn sni_key(server: &Server) -> String {
     server
         .visible_sni()
         .unwrap_or(&server.address)

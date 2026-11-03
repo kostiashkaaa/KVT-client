@@ -6,6 +6,8 @@
 
 pub mod compile;
 pub mod core_select;
+pub mod dns;
+pub mod flag;
 pub mod governor;
 pub mod ipc;
 pub mod lists;

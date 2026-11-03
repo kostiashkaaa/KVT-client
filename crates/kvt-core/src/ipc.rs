@@ -4,6 +4,7 @@
 //!
 //! Кадр: 4 байта длины (little-endian) + JSON.
 
+use crate::compile::DnsPlan;
 use crate::core_select::CoreKind;
 use crate::model::Server;
 use crate::routing::RoutingPlan;
@@ -29,6 +30,9 @@ pub struct ConnectPlan {
     pub server: Server,
     pub routing: RoutingPlan,
     pub kill_switch: bool,
+    /// Служба проверяет адреса по каталогу (`DnsPlan::validate`).
+    #[serde(default)]
+    pub dns: DnsPlan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
