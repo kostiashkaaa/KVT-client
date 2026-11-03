@@ -17,6 +17,7 @@ mod subs;
 mod tray;
 mod troubleshoot;
 mod watchdog;
+mod zapret;
 
 use kvt_core::compile::DnsPlan;
 use kvt_core::core_select::{select_core, CoreKind};
@@ -55,6 +56,15 @@ pub(crate) struct AppState {
     health: reqwest::Client,
     /// Сеть, через которую сейчас идёт трафик.
     network: Mutex<Option<netinfo::Network>>,
+    /// Идёт автоподбор стратегии zapret и запрошена ли его отмена.
+    zapret_picking: std::sync::atomic::AtomicBool,
+    zapret_cancel: std::sync::atomic::AtomicBool,
+    /// Последняя проверка zapret (ручная, автоматическая или итог подбора).
+    zapret_last: Mutex<Option<zapret::CheckRecord>>,
+    /// Последний релиз Flowseal и когда его спрашивали.
+    zapret_release: Mutex<Option<(Instant, kvt_core::zapret::Release)>>,
+    /// Будит автопроверку zapret раньше срока (смена сети).
+    zapret_wake: tokio::sync::Notify,
 }
 
 /// Выбор пользователя. Секретов не содержит, поэтому хранится в settings.json
@@ -75,6 +85,7 @@ struct Choice {
     /// Переключаться на другой сервер, если через текущий перестали идти данные.
     auto_switch: bool,
     networks: Vec<netprofile::NetworkProfile>,
+    zapret: zapret::ZapretChoice,
 }
 
 impl Default for Choice {
@@ -88,6 +99,7 @@ impl Default for Choice {
             dns: DnsChoice::default(),
             auto_switch: true,
             networks: Vec::new(),
+            zapret: zapret::ZapretChoice::default(),
         }
     }
 }
@@ -144,6 +156,11 @@ impl Default for AppState {
             dns_report: Mutex::default(),
             health: health::client(),
             network: Mutex::default(),
+            zapret_picking: Default::default(),
+            zapret_cancel: Default::default(),
+            zapret_last: Mutex::default(),
+            zapret_release: Mutex::default(),
+            zapret_wake: tokio::sync::Notify::new(),
         }
     }
 }
@@ -324,8 +341,15 @@ async fn connect_current(state: &AppState) -> Result<ServiceStatus, String> {
         .map_err(|_| "внутренняя ошибка состояния")?
         .clone();
     let mode = choice.mode.unwrap_or_else(|| "vpn".into());
+    let network = zapret::network_key(state);
     if mode == "zapret" {
-        return Err("Режим zapret появится на этапе 4.".into());
+        // Только zapret: сервер не нужен, winws работает на всех интерфейсах.
+        let plan = choice.zapret.plan(network.as_deref());
+        return match service_client::call(Request::StartZapret(Box::new(plan))).await? {
+            Response::Status { status } => Ok(status),
+            Response::Error { message } => Err(message),
+            _ => Err("Неожиданный ответ службы".into()),
+        };
     }
     let server = state.selected().ok_or("Выберите сервер")?.server;
 
@@ -342,6 +366,8 @@ async fn connect_current(state: &AppState) -> Result<ServiceStatus, String> {
         routing,
         kill_switch: choice.kill_switch,
         dns: DnsPlan::from_ids(&choice.dns.local, &choice.dns.remote).map_err(|e| e.to_string())?,
+        // Гибрид: winws рядом с ядром, домены zapret служба берёт из RoutingPlan.
+        zapret: (mode == "hybrid").then(|| choice.zapret.plan(network.as_deref())),
     };
     match service_client::call(Request::Connect(Box::new(plan))).await? {
         Response::Status { status } => Ok(status),
@@ -443,6 +469,7 @@ fn main() {
             tray::create(app.handle())?;
             netprofile::spawn(app.handle().clone());
             watchdog::spawn(app.handle().clone());
+            zapret::spawn_watch(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -463,7 +490,19 @@ fn main() {
             dns_catalog,
             dnscheck::dns_check,
             troubleshoot::troubleshoot,
-            netprofile::current_network
+            netprofile::current_network,
+            zapret::zapret_strategies,
+            zapret::zapret_conflicts,
+            zapret::zapret_stop_conflicts,
+            zapret::zapret_autoselect,
+            zapret::zapret_autoselect_cancel,
+            zapret::zapret_info,
+            zapret::zapret_latest,
+            zapret::zapret_update,
+            zapret::zapret_repair,
+            zapret::zapret_check,
+            zapret::zapret_last,
+            zapret::zapret_diagnose
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

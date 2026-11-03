@@ -8,20 +8,104 @@ use crate::compile::DnsPlan;
 use crate::core_select::CoreKind;
 use crate::model::Server;
 use crate::routing::RoutingPlan;
+use crate::zapret::{GameFilter, Strategy};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
-    Hello { protocol_version: u32 },
+    Hello {
+        protocol_version: u32,
+    },
     Status,
     Connect(Box<ConnectPlan>),
+    /// Только zapret, без VPN.
+    StartZapret(Box<ZapretPlan>),
     Disconnect,
+    /// Стратегии из комплекта zapret, который лежит рядом со службой.
+    ZapretStrategies,
+    /// Другие обходы блокировок, которые мешают zapret KVT.
+    ZapretConflicts,
+    /// Остановить найденные конфликты (только остановить, ничего не удаляя).
+    StopConflicts,
+    /// Версия и исправность комплекта zapret, драйвер WinDivert.
+    ZapretInfo,
+    /// Обновить стратегии и списки из последнего релиза Flowseal.
+    ZapretUpdate,
+    /// Вернуть проверенный комплект, сбросить списки и переустановить драйвер.
+    ZapretRepair,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverState {
+    /// Драйвер ещё не устанавливался (появится при первом запуске winws).
+    Missing,
+    Stopped,
+    Running,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZapretInfo {
+    /// Версия комплекта, который сейчас используется.
+    pub version: String,
+    /// Версия, с которой собран KVT.
+    pub bundled_version: String,
+    /// Комплект обновлён кнопкой «Обновить» (иначе — из поставки KVT).
+    pub updated: bool,
+    /// Комплект цел: файлы на месте, хэши программ сходятся.
+    pub ok: bool,
+    pub problem: Option<String>,
+    pub strategies: usize,
+    /// Стратегии, которые не прошли белый список флагов.
+    pub rejected: Vec<String>,
+    pub driver: DriverState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceReport {
+    pub version: String,
+    /// Что-то поменялось (иначе — уже была последняя версия).
+    pub changed: bool,
+    /// Исполняемые файлы тоже обновились (иначе остались проверенные прежние).
+    pub binaries_updated: bool,
+    /// Шаги, понятные человеку.
+    pub steps: Vec<String>,
+}
+
+/// Запуск zapret. Стратегия — только имя: аргументы служба берёт из своего комплекта.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZapretPlan {
+    pub strategy: String,
+    #[serde(default)]
+    pub game_filter: GameFilter,
+    /// Разрешено включить TCP timestamps, если стратегия их требует (как делает Flowseal).
+    #[serde(default)]
+    pub tcp_timestamps: bool,
+    /// Дополнительные домены для zapret (в гибриде к ним добавляются домены из RoutingPlan).
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// Домены, которые zapret не трогает.
+    #[serde(default)]
+    pub exclude_domains: Vec<String>,
+    /// Обход по IP-списку Flowseal (`ipset-all`), а не только по доменам.
+    #[serde(default)]
+    pub ipset: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Conflict {
+    /// Служба Windows или процесс.
+    pub service: bool,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +117,9 @@ pub struct ConnectPlan {
     /// Служба проверяет адреса по каталогу (`DnsPlan::validate`).
     #[serde(default)]
     pub dns: DnsPlan,
+    /// Гибрид: zapret для доменов слоя Zapret, остальное — через VPN.
+    #[serde(default)]
+    pub zapret: Option<ZapretPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +136,14 @@ pub enum Response {
     Error {
         message: String,
     },
+    Strategies {
+        strategies: Vec<Strategy>,
+    },
+    Conflicts {
+        conflicts: Vec<Conflict>,
+    },
+    ZapretInfo(Box<ZapretInfo>),
+    Maintenance(Box<MaintenanceReport>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,8 +151,16 @@ pub enum Response {
 pub enum ServiceStatus {
     Disconnected,
     Connecting,
-    Connected { core: CoreKind },
-    Failed { reason: String },
+    Connected {
+        core: CoreKind,
+    },
+    /// Работает только zapret (без VPN).
+    Zapret {
+        strategy: String,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Error)]

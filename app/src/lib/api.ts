@@ -97,6 +97,7 @@ export type ServiceStatus =
   | { state: "disconnected" }
   | { state: "connecting" }
   | { state: "connected"; core: "xray" | "sing-box" }
+  | { state: "zapret"; strategy: string }
   | { state: "failed"; reason: string };
 
 export type ListAction = "proxy" | "direct" | "block";
@@ -126,6 +127,7 @@ export interface Choice {
   /** Переключаться на другой сервер, если через текущий перестали идти данные. */
   autoSwitch: boolean;
   networks: NetworkProfile[];
+  zapret: ZapretChoice;
 }
 
 export interface ListInfo {
@@ -483,7 +485,8 @@ export type Fix =
   | { kind: "switch_server"; key: string; name: string }
   | { kind: "refresh_subscription" }
   | { kind: "add_subscription" }
-  | { kind: "open_dns_check" };
+  | { kind: "open_dns_check" }
+  | { kind: "zapret_autoselect" };
 
 export interface DiagnosisStep {
   title: string;
@@ -568,5 +571,337 @@ export type WatchdogEvent =
 export function onWatchdog(handler: (event: WatchdogEvent) => void): () => void {
   if (!inTauri) return () => {};
   const off = listen<WatchdogEvent>("watchdog", (e) => handler(e.payload));
+  return () => void off.then((f) => f());
+}
+
+// ── Этап 4: zapret (Flowseal) ──
+
+export type GameFilter = "off" | "tcp" | "udp" | "all";
+
+export interface ZapretStrategy {
+  /** Имя файла стратегии Flowseal без .bat: «general (ALT4)». */
+  id: string;
+  /** «ALT4», «Основная». */
+  title: string;
+  recommended: boolean;
+  /** Нужны TCP timestamps (fooling=ts). */
+  needsTimestamps: boolean;
+}
+
+export interface ZapretChoice {
+  /** Выбранная вручную стратегия; null — основная. */
+  strategy: string | null;
+  gameFilter: GameFilter;
+  /** Разрешить включать TCP timestamps для стратегий, которым они нужны. */
+  tcpTimestamps: boolean;
+  /** Итог автоподбора для каждой сети. */
+  byNetwork: Record<string, string>;
+  /** Свои домены для zapret и домены, которые он не трогает. */
+  userDomains: string[];
+  excludeDomains: string[];
+  /** Обход по IP-списку Flowseal, а не только по доменам. */
+  ipset: boolean;
+  /** Проверять работу раз в полчаса и после смены сети. */
+  autoCheck: boolean;
+  /** Если стратегия перестала работать — подобрать новую (режим «Zapret»). */
+  autoPick: boolean;
+}
+
+export const defaultZapret = (): ZapretChoice => ({
+  strategy: null,
+  gameFilter: "off",
+  tcpTimestamps: true,
+  byNetwork: {},
+  userDomains: [],
+  excludeDomains: [],
+  ipset: false,
+  autoCheck: true,
+  autoPick: true,
+});
+
+/** Стратегия для сети: подобранная для неё, иначе выбранная, иначе основная. */
+export function strategyFor(z: ZapretChoice, networkKey: string | null): string {
+  return (networkKey ? z.byNetwork[networkKey] : undefined) ?? z.strategy ?? "general";
+}
+
+/** «general (ALT4)» → «ALT4», «general» → «Основная». */
+export function strategyTitle(id: string): string {
+  const m = /^general \((.+)\)$/.exec(id);
+  return m ? m[1]! : id === "general" ? "Основная" : id;
+}
+
+export interface ZapretConflict {
+  /** Служба Windows (иначе процесс). */
+  service: boolean;
+  name: string;
+}
+
+export interface ZapretPick {
+  best: string | null;
+  bestTitle: string | null;
+  score: number;
+  max: number;
+  /** Сколько проверок проходит без zapret. */
+  baseline: number;
+  tested: number;
+  cancelled: boolean;
+  /** Все проверенные стратегии с результатом. */
+  tried: { id: string; title: string; passed: number }[];
+}
+
+export interface ZapretProgress {
+  /** 0 — проверка без zapret, дальше — номер стратегии. */
+  index: number;
+  total: number;
+  title: string;
+  score: number | null;
+  max: number;
+}
+
+const previewStrategies: ZapretStrategy[] = [
+  "general",
+  "general (ALT)",
+  "general (ALT2)",
+  "general (ALT4)",
+  "general (FAKE TLS AUTO)",
+  "general (SIMPLE FAKE)",
+  "general (ALT5)",
+].map((id, i) => ({ id, title: strategyTitle(id), recommended: i !== 6, needsTimestamps: i === 2 }));
+
+export async function zapretStrategies(): Promise<ZapretStrategy[]> {
+  if (!inTauri) return previewStrategies;
+  return invoke<ZapretStrategy[]>("zapret_strategies");
+}
+
+export async function zapretConflicts(): Promise<ZapretConflict[]> {
+  if (!inTauri) return [{ service: true, name: "GoodbyeDPI" }];
+  return invoke<ZapretConflict[]>("zapret_conflicts");
+}
+
+export async function zapretStopConflicts(): Promise<ZapretConflict[]> {
+  if (!inTauri) return [];
+  return invoke<ZapretConflict[]>("zapret_stop_conflicts");
+}
+
+let previewCancel = false;
+
+export async function zapretAutoselect(onProgress: (p: ZapretProgress) => void): Promise<ZapretPick> {
+  if (!inTauri) {
+    previewCancel = false;
+    const total = previewStrategies.length;
+    onProgress({ index: 0, total, title: "Без zapret", score: null, max: 13 });
+    await new Promise((r) => setTimeout(r, 500));
+    onProgress({ index: 0, total, title: "Без zapret", score: 4, max: 13 });
+    const tried: ZapretPick["tried"] = [];
+    for (const [i, s] of previewStrategies.slice(0, 4).entries()) {
+      if (previewCancel) {
+        return { best: null, bestTitle: null, score: 4, max: 13, baseline: 4, tested: i, cancelled: true, tried };
+      }
+      onProgress({ index: i + 1, total, title: s.title, score: null, max: 13 });
+      await new Promise((r) => setTimeout(r, 700));
+      const passed = i === 3 ? 13 : 6 + i;
+      tried.push({ id: s.id, title: s.title, passed });
+      onProgress({ index: i + 1, total, title: s.title, score: passed, max: 13 });
+    }
+    return { best: "general (ALT4)", bestTitle: "ALT4", score: 13, max: 13, baseline: 4, tested: 4, cancelled: false, tried };
+  }
+  const off = await listen<ZapretProgress>("zapret-progress", (e) => onProgress(e.payload));
+  try {
+    return await invoke<ZapretPick>("zapret_autoselect");
+  } finally {
+    off();
+  }
+}
+
+export async function zapretAutoselectCancel(): Promise<void> {
+  if (!inTauri) {
+    previewCancel = true;
+    return;
+  }
+  await invoke("zapret_autoselect_cancel");
+}
+
+export interface ZapretInfo {
+  /** Версия комплекта, который сейчас используется. */
+  version: string;
+  /** Версия, с которой поставляется KVT. */
+  bundledVersion: string;
+  /** Комплект обновлён кнопкой «Обновить». */
+  updated: boolean;
+  /** Файлы целы, хэши программ сходятся. */
+  ok: boolean;
+  problem: string | null;
+  strategies: number;
+  /** Стратегии, не прошедшие белый список флагов. */
+  rejected: string[];
+  driver: "missing" | "stopped" | "running";
+}
+
+export interface FlowsealRelease {
+  version: string;
+  zipUrl: string;
+  sha256: string;
+}
+
+export interface MaintenanceReport {
+  version: string;
+  changed: boolean;
+  binariesUpdated: boolean;
+  steps: string[];
+}
+
+export interface TargetCheck {
+  name: string;
+  /** Задержка по TLS 1.3 и TLS 1.2; null — не открылось. */
+  tls13: number | null;
+  tls12: number | null;
+}
+
+export interface ZapretCheck {
+  targets: TargetCheck[];
+  /** Загрузка больше 32 КБ прошла без обрыва. */
+  download: boolean;
+  passed: number;
+  max: number;
+  latencyMs: number;
+}
+
+export interface CheckRecord {
+  /** Unix-время. */
+  at: number;
+  /** Стратегия во время проверки; null — zapret не работал. */
+  strategy: string | null;
+  check: ZapretCheck;
+}
+
+export type ZapretFix = "repair" | "stop_conflicts" | "autoselect" | "allow_timestamps" | "enable";
+
+export interface ZapretDiagnosis {
+  tone: "ok" | "warning" | "error";
+  title: string;
+  detail: string;
+  steps: DiagnosisStep[];
+  fix: ZapretFix | null;
+  check: ZapretCheck | null;
+}
+
+export type ZapretAutoEvent =
+  | { kind: "picked"; title: string; passed: number; max: number }
+  | { kind: "unhealthy"; passed: number; max: number };
+
+const previewCheck = (passed: number): ZapretCheck => ({
+  targets: [
+    ["Discord", 480, 530],
+    ["Discord: подключение", 570, null],
+    ["Discord: файлы", 470, 520],
+    ["YouTube", 390, 410],
+    ["YouTube: картинки", 320, 370],
+    ["YouTube: видео", 300, 360],
+  ].map(([name, a, b]) => ({ name: name as string, tls13: a as number | null, tls12: b as number | null })),
+  download: true,
+  passed,
+  max: 13,
+  latencyMs: 4700,
+});
+
+export async function zapretInfo(): Promise<ZapretInfo> {
+  if (!inTauri) {
+    return {
+      version: "1.10.4",
+      bundledVersion: "1.10.4",
+      updated: false,
+      ok: true,
+      problem: null,
+      strategies: 22,
+      rejected: [],
+      driver: "stopped",
+    };
+  }
+  return invoke<ZapretInfo>("zapret_info");
+}
+
+export async function zapretLatest(force = false): Promise<FlowsealRelease> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 400));
+    return { version: "1.10.5", zipUrl: "", sha256: "" };
+  }
+  return invoke<FlowsealRelease>("zapret_latest", { force });
+}
+
+export async function zapretUpdate(): Promise<MaintenanceReport> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 1200));
+    return {
+      version: "1.10.5",
+      changed: true,
+      binariesUpdated: true,
+      steps: ["Скачан релиз 1.10.5 (SHA-256 сверен с GitHub)", "Стратегий: 22", "winws и WinDivert — проверенные версии"],
+    };
+  }
+  return invoke<MaintenanceReport>("zapret_update");
+}
+
+export async function zapretRepair(): Promise<MaintenanceReport> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 1200));
+    return {
+      version: "1.10.4",
+      changed: true,
+      binariesUpdated: false,
+      steps: [
+        "Рабочие списки сброшены — создадутся при запуске",
+        "Файлы комплекта целы (Flowseal 1.10.4)",
+        "Драйвер WinDivert удалён — установится заново при запуске",
+      ],
+    };
+  }
+  return invoke<MaintenanceReport>("zapret_repair");
+}
+
+export async function zapretCheck(): Promise<CheckRecord> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 1200));
+    return { at: Math.floor(Date.now() / 1000), strategy: "general (ALT4)", check: previewCheck(12) };
+  }
+  return invoke<CheckRecord>("zapret_check");
+}
+
+export async function zapretLast(): Promise<CheckRecord | null> {
+  if (!inTauri) return null;
+  return invoke<CheckRecord | null>("zapret_last");
+}
+
+export async function zapretDiagnose(): Promise<ZapretDiagnosis> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 1500));
+    return {
+      tone: "error",
+      title: "Стратегия не помогает в этой сети",
+      detail:
+        "С «ALT4» открывается 5 из 13 проверок. Провайдеры блокируют по-разному — подберите стратегию. Если не поможет ни одна, переустановите zapret.",
+      steps: [
+        { title: "Служба KVT", state: "ok", detail: "Работает" },
+        { title: "Файлы zapret", state: "ok", detail: "Flowseal 1.10.4, стратегий: 22" },
+        { title: "Другие обходы", state: "ok", detail: "Не найдены" },
+        { title: "zapret", state: "ok", detail: "Работает, стратегия «ALT4»" },
+        { title: "Мешающая программа", state: "warning", detail: "AdGuard — мешает Discord; добавьте Discord в исключения AdGuard" },
+        { title: "Discord и YouTube", state: "fail", detail: "Открывается 5 из 13 проверок" },
+      ],
+      fix: "autoselect",
+      check: previewCheck(5),
+    };
+  }
+  return invoke<ZapretDiagnosis>("zapret_diagnose");
+}
+
+export function onZapretCheck(handler: (record: CheckRecord) => void): () => void {
+  if (!inTauri) return () => {};
+  const off = listen<CheckRecord>("zapret-check", (e) => handler(e.payload));
+  return () => void off.then((f) => f());
+}
+
+export function onZapretAuto(handler: (event: ZapretAutoEvent) => void): () => void {
+  if (!inTauri) return () => {};
+  const off = listen<ZapretAutoEvent>("zapret-auto", (e) => handler(e.payload));
   return () => void off.then((f) => f());
 }

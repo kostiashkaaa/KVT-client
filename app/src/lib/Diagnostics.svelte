@@ -79,6 +79,8 @@
         return "Добавить подписку";
       case "open_dns_check":
         return "Проверить DNS";
+      case "zapret_autoselect":
+        return "Подобрать стратегию";
     }
   }
 

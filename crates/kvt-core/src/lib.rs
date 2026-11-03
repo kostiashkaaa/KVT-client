@@ -19,6 +19,7 @@ pub mod rulesync;
 pub mod secret;
 pub mod subscription;
 pub mod tester;
+pub mod zapret;
 
 pub use model::Server;
 pub use secret::Secret;

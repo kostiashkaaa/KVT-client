@@ -38,10 +38,15 @@ pub struct Step {
 pub enum Fix {
     Connect,
     Disconnect,
-    SwitchServer { key: String, name: String },
+    SwitchServer {
+        key: String,
+        name: String,
+    },
     RefreshSubscription,
     AddSubscription,
     OpenDnsCheck,
+    /// Подобрать стратегию zapret автоматически.
+    ZapretAutoselect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -180,6 +185,24 @@ pub fn conclude(f: &Facts) -> Diagnosis {
         );
     }
     out.step("Служба KVT", StepState::Ok, "Служба работает");
+
+    if let ServiceStatus::Zapret { strategy } = service {
+        let title = kvt_core::zapret::title(strategy);
+        out.step(
+            "Zapret",
+            StepState::Ok,
+            format!("Работает, стратегия «{title}»"),
+        );
+        return out.finish(
+            Tone::Ok,
+            "Работает zapret",
+            format!(
+                "Обход DPI для YouTube и Discord включён (стратегия «{title}»). Если они всё равно \
+                 не открываются, подберите стратегию автоматически — провайдеры блокируют по-разному."
+            ),
+            Some(Fix::ZapretAutoselect),
+        );
+    }
 
     let Some(sub) = &f.subscription else {
         out.step("Подписка", StepState::Fail, "Подписка не добавлена");
@@ -647,6 +670,18 @@ mod tests {
         let d = conclude(&f);
         assert_eq!(d.title, "Подключение есть, но данные не идут");
         assert!(matches!(d.fix, Some(Fix::SwitchServer { key, .. }) if key == "k3"));
+    }
+
+    #[test]
+    fn zapret_mode_offers_autoselect() {
+        let mut f = base();
+        f.service = Some(ServiceStatus::Zapret {
+            strategy: "general (ALT4)".into(),
+        });
+        let d = conclude(&f);
+        assert_eq!(d.tone, Tone::Ok);
+        assert!(d.detail.contains("ALT4"));
+        assert_eq!(d.fix, Some(Fix::ZapretAutoselect));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 <script lang="ts">
   import Flag from "./Flag.svelte";
-  import type { Mode, ServerSummary, ServiceStatus } from "./api";
+  import { strategyTitle, type Mode, type ServerSummary, type ServiceStatus } from "./api";
 
   let {
     server,
@@ -20,12 +20,22 @@
     onwhy: () => void;
   } = $props();
 
-  const connected = $derived(status?.state === "connected");
+  /** Работает только zapret, без VPN. */
+  const zapretOnly = $derived(status?.state === "zapret" ? status : null);
+  const connected = $derived(status?.state === "connected" || zapretOnly !== null);
   const tone = $derived(
     busy || status?.state === "connecting" ? "pending" : connected ? "on" : status?.state === "failed" ? "error" : "off",
   );
   const title = $derived(
-    tone === "pending" ? "Подключение…" : connected ? "Подключено" : tone === "error" ? "Ошибка" : "Отключено",
+    tone === "pending"
+      ? "Подключение…"
+      : zapretOnly
+        ? "Zapret работает"
+        : connected
+          ? "Подключено"
+          : tone === "error"
+            ? "Ошибка"
+            : "Отключено",
   );
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
@@ -42,7 +52,11 @@
     <div>
       <h2>{title}</h2>
       <p class="muted">
-        {#if server}
+        {#if zapretOnly}
+          Стратегия {strategyTitle(zapretOnly.strategy)} · без VPN
+        {:else if mode === "zapret" && !connected}
+          Обход DPI без VPN — сервер не нужен
+        {:else if server}
           <span class="server"><Flag code={server.flag} />{server.name}</span>{#if coreName}<span class="caption">
               · {coreName}</span
             >{/if}

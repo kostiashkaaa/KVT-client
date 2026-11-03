@@ -24,6 +24,7 @@ mod supervisor;
 mod wfp;
 #[cfg(windows)]
 mod win;
+mod zapret;
 
 #[cfg(windows)]
 mod service {

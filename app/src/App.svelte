@@ -7,6 +7,9 @@
   import Routing from "./lib/Routing.svelte";
   import Subscriptions from "./lib/Subscriptions.svelte";
   import Diagnostics from "./lib/Diagnostics.svelte";
+  import ZapretCard from "./lib/ZapretCard.svelte";
+  import ZapretPage from "./lib/ZapretPage.svelte";
+  import { startAutoselect } from "./lib/zapretStore.svelte";
   import {
     addSubscription,
     connect,
@@ -19,9 +22,12 @@
     onSubscriptionsChanged,
     onChoiceChanged,
     onWatchdog,
+    onZapretAuto,
     refreshSubscription,
     defaultRouting,
     defaultDns,
+    defaultZapret,
+    type ZapretChoice,
     type Choice,
     type DnsChoice,
     type Fix,
@@ -66,6 +72,7 @@
   let dns = $state<DnsChoice>(defaultDns());
   let autoSwitch = $state(true);
   let networks = $state<NetworkProfile[]>([]);
+  let zapret = $state<ZapretChoice>(defaultZapret());
   let restored = $state(false);
 
   const allServers = $derived(groups.flatMap((g) => g.servers));
@@ -80,6 +87,7 @@
     dns = { ...defaultDns(), ...c.dns };
     autoSwitch = c.autoSwitch ?? true;
     networks = c.networks ?? [];
+    zapret = { ...defaultZapret(), ...c.zapret };
   }
 
   /** Rust хранит выбор целиком: отправляем все поля, иначе остальные сбросятся. */
@@ -92,6 +100,7 @@
       dns: $state.snapshot(dns),
       autoSwitch,
       networks: $state.snapshot(networks),
+      zapret: $state.snapshot(zapret),
     };
   }
 
@@ -114,7 +123,8 @@
         if (!snap.choice) return;
         applyChoice(snap.choice);
         // Автопереключение уже подключилось к новому серверу — второй раз не нужно.
-        if (connectedWith) connectedWith = { ...connectedWith, server: snap.choice.server };
+        // Автоподбор zapret сам перезапустил службу с новой стратегией.
+        if (connectedWith) connectedWith = { ...connectedWith, server: snap.choice.server, zapret: zapretKey() };
       });
     }),
   );
@@ -146,6 +156,16 @@
 
   $effect(() => onWatchdog((e) => (notice = watchdogText(e))));
 
+  // Автопроверка zapret: сама подобрала стратегию или просит внимания.
+  $effect(() =>
+    onZapretAuto((e) => {
+      notice =
+        e.kind === "picked"
+          ? `zapret перестал справляться — KVT подобрал стратегию ${e.title} (${e.passed} из ${e.max}).`
+          : `zapret справляется хуже: ${e.passed} из ${e.max} проверок. Откройте вкладку Zapret → «Почему не работает?».`;
+    }),
+  );
+
   // «Почему не работает?» с главной: открыть раздел «Проверка» и сразу запустить.
   let autoDiagnose = $state(false);
   function askWhy() {
@@ -176,6 +196,10 @@
       case "add_subscription":
         page = "home";
         adding = true;
+        break;
+      case "zapret_autoselect":
+        page = "zapret";
+        void startAutoselect();
         break;
       case "open_dns_check":
         break;
@@ -262,13 +286,17 @@
   }
 
   let status = $state<ServiceStatus | null>(null);
-  /** С каким сервером и режимом сейчас подключены. */
-  let connectedWith = $state<{ server: string | null; mode: Mode } | null>(null);
+  /** Работает VPN или только zapret. */
+  const active = $derived(status?.state === "connected" || status?.state === "zapret");
+  /** Настройки zapret, с которыми запущена служба (стратегия, фильтр). */
+  const zapretKey = () => JSON.stringify($state.snapshot(zapret));
+  /** С каким сервером, режимом и настройками zapret сейчас подключены. */
+  let connectedWith = $state<{ server: string | null; mode: Mode; zapret: string } | null>(null);
 
   async function onconnect() {
     busy = true;
     error = null;
-    const target = { server: selected, mode };
+    const target = { server: selected, mode, zapret: zapretKey() };
     try {
       await setChoice(currentChoice());
       status = await connect();
@@ -277,7 +305,7 @@
       status = await serviceStatus().catch(() => null);
     } finally {
       // Даже при ошибке запоминаем попытку: иначе переподключение пошло бы по кругу.
-      connectedWith = status?.state === "connected" ? target : null;
+      connectedWith = status?.state === "connected" || status?.state === "zapret" ? target : null;
       busy = false;
     }
   }
@@ -294,11 +322,13 @@
     }
   }
 
-  // Другой сервер или режим при подключённом VPN — переподключаемся сразу, как в Happ.
+  // Другой сервер, режим или стратегия zapret при подключении — переподключаемся сразу, как в Happ.
   $effect(() => {
-    if (!restored || busy || status?.state !== "connected" || !connectedWith) return;
-    if (selected === connectedWith.server && mode === connectedWith.mode) return;
-    if (selected === null) return;
+    if (!restored || busy || !active || !connectedWith) return;
+    const zapretChanged = mode !== "vpn" && zapretKey() !== connectedWith.zapret;
+    const serverChanged = mode !== "zapret" && selected !== connectedWith.server;
+    if (!serverChanged && !zapretChanged && mode === connectedWith.mode) return;
+    if (selected === null && mode !== "zapret") return;
     void onconnect();
   });
 
@@ -310,9 +340,10 @@
       if (next?.state === "failed" && status?.state === "connected") {
         error = { text: `Соединение прервано: ${next.reason}`, why: true };
       }
-      if (next?.state !== "connected") connectedWith = null;
+      const nextActive = next?.state === "connected" || next?.state === "zapret";
+      if (!nextActive) connectedWith = null;
       // Подключились из трея или профиля сети — считаем, что с текущим выбором.
-      else if (!connectedWith && restored) connectedWith = { server: selected, mode };
+      else if (!connectedWith && restored) connectedWith = { server: selected, mode, zapret: zapretKey() };
       status = next;
     };
     void refreshStatus();
@@ -329,6 +360,10 @@
       <h1>Главная</h1>
 
       <StatusCard {server} bind:mode {busy} {status} {onconnect} {ondisconnect} onwhy={askWhy} />
+
+      {#if mode !== "vpn"}
+        <ZapretCard bind:zapret vpnConnected={status?.state === "connected"} onopen={() => (page = "zapret")} />
+      {/if}
 
       {#if error}
         <div class="banner" role="alert">
@@ -376,6 +411,9 @@
     {:else if page === "routing"}
       <h1>Маршрутизация</h1>
       <Routing bind:routing connected={status?.state === "connected"} />
+    {:else if page === "zapret"}
+      <h1>Zapret</h1>
+      <ZapretPage bind:zapret bind:mode {status} {busy} {onconnect} />
     {:else if page === "diagnostics"}
       <h1>Проверка</h1>
       <Diagnostics

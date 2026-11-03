@@ -92,9 +92,13 @@ pub fn show_main_window(app: &AppHandle) {
 /// Обновляет текст пункта меню и подсказку трея по статусу службы.
 pub async fn refresh(app: &AppHandle) {
     let status = query_status().await.ok().flatten();
-    let connected = matches!(status, Some(ServiceStatus::Connected { .. }));
+    let connected = matches!(
+        status,
+        Some(ServiceStatus::Connected { .. } | ServiceStatus::Zapret { .. })
+    );
     let tooltip = match &status {
         Some(ServiceStatus::Connected { .. }) => "KVT — подключено",
+        Some(ServiceStatus::Zapret { .. }) => "KVT — работает zapret",
         Some(ServiceStatus::Connecting) => "KVT — подключение…",
         Some(ServiceStatus::Failed { .. }) => "KVT — ошибка подключения",
         Some(ServiceStatus::Disconnected) => "KVT — отключено",

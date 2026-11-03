@@ -95,6 +95,11 @@ pub fn pipe_client_image(pipe: &NamedPipeServer) -> io::Result<PathBuf> {
     if unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle() as HANDLE, &mut pid) } == 0 {
         return Err(io::Error::last_os_error());
     }
+    process_image(pid)
+}
+
+/// Полный путь к исполняемому файлу процесса.
+pub fn process_image(pid: u32) -> io::Result<PathBuf> {
     // SAFETY: обычный вызов; результат проверяется и закрывается ниже.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {

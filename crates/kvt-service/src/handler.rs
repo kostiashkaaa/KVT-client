@@ -1,7 +1,7 @@
 //! Обработка команд. Не зависит от транспорта (pipe), поэтому покрыта тестами.
 
 use crate::supervisor::Supervisor;
-use kvt_core::ipc::{ConnectPlan, Request, Response, ServiceStatus, PROTOCOL_VERSION};
+use kvt_core::ipc::{ConnectPlan, Request, Response, ServiceStatus, ZapretPlan, PROTOCOL_VERSION};
 
 pub struct State {
     supervisor: Supervisor,
@@ -48,6 +48,29 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
             status: state.status.clone(),
         },
         Request::Connect(plan) => connect(state, &plan).await,
+        Request::StartZapret(plan) => start_zapret(state, &plan).await,
+        Request::ZapretStrategies => Response::Strategies {
+            strategies: crate::zapret::strategies(state.supervisor.paths()),
+        },
+        Request::ZapretConflicts => Response::Conflicts {
+            conflicts: crate::zapret::conflicts(
+                state.supervisor.paths(),
+                state.supervisor.zapret_pid(),
+            )
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect(),
+        },
+        Request::ZapretInfo => {
+            Response::ZapretInfo(Box::new(crate::zapret::info(state.supervisor.paths())))
+        }
+        Request::ZapretUpdate | Request::ZapretRepair => maintain(state, &request).await,
+        Request::StopConflicts => Response::Conflicts {
+            conflicts: crate::zapret::stop_conflicts(
+                state.supervisor.paths(),
+                state.supervisor.zapret_pid(),
+            ),
+        },
         Request::Disconnect => {
             state.supervisor.stop().await;
             state.status = ServiceStatus::Disconnected;
@@ -68,10 +91,68 @@ async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
             message: e.to_string(),
         };
     }
+    if let Some(message) = plan.zapret.as_ref().and_then(invalid_zapret) {
+        return Response::Error { message };
+    }
     state.status = ServiceStatus::Connecting;
     match state.supervisor.start(plan).await {
         Ok(()) => {
             state.status = ServiceStatus::Connected { core: plan.core };
+            Response::Status {
+                status: state.status.clone(),
+            }
+        }
+        Err(message) => {
+            state.status = ServiceStatus::Failed {
+                reason: message.clone(),
+            };
+            Response::Error { message }
+        }
+    }
+}
+
+/// Проверка до запуска чего-либо: имя стратегии и домены — без путей и спецсимволов.
+fn invalid_zapret(plan: &ZapretPlan) -> Option<String> {
+    if !kvt_core::zapret::valid_id(&plan.strategy) {
+        return Some(format!("неизвестная стратегия «{}»", plan.strategy));
+    }
+    plan.domains
+        .iter()
+        .chain(&plan.exclude_domains)
+        .find(|d| !kvt_core::zapret::valid_domain(d))
+        .map(|d| format!("недопустимый домен «{d}»"))
+}
+
+/// Обновление и переустановка трогают файлы, которыми пользуется winws, поэтому
+/// сначала всё останавливается; переподключает приложение.
+async fn maintain(state: &mut State, request: &Request) -> Response {
+    state.supervisor.stop().await;
+    state.status = ServiceStatus::Disconnected;
+    let paths = state.supervisor.paths().clone();
+    let result = match request {
+        Request::ZapretUpdate => crate::zapret::update(&paths).await,
+        _ => {
+            // Драйвер общий: пока им пользуется чужой winws, его не трогаем.
+            let foreign = crate::zapret::conflicts(&paths, None)
+                .iter()
+                .any(|(c, _)| !c.service);
+            crate::zapret::repair(&paths, !foreign).await
+        }
+    };
+    match result {
+        Ok(report) => Response::Maintenance(Box::new(report)),
+        Err(message) => Response::Error { message },
+    }
+}
+
+async fn start_zapret(state: &mut State, plan: &ZapretPlan) -> Response {
+    if let Some(message) = invalid_zapret(plan) {
+        return Response::Error { message };
+    }
+    state.status = ServiceStatus::Connecting;
+    match state.supervisor.start_zapret(plan).await {
+        Ok(strategy) => {
+            state.status = ServiceStatus::Zapret { strategy };
             Response::Status {
                 status: state.status.clone(),
             }
@@ -98,7 +179,10 @@ mod tests {
         State::new(Supervisor::new(Paths {
             cores: tmp.clone(),
             rules: tmp.clone(),
-            run: tmp,
+            run: tmp.clone(),
+            zapret: tmp.clone(),
+            zapret_lists: tmp.clone(),
+            zapret_update: tmp,
         }))
     }
 
@@ -133,6 +217,7 @@ mod tests {
             routing,
             kill_switch: true,
             dns: Default::default(),
+            zapret: None,
         };
         let mut st = state();
         let Response::Error { message } =
@@ -152,6 +237,38 @@ mod tests {
             panic!("ожидалась ошибка")
         };
         assert!(message.contains("DNS"));
+        assert_eq!(st.status, ServiceStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn zapret_strategy_path_is_rejected() {
+        let mut st = state();
+        for strategy in [r"..\..\evil", "general\"; calc", ""] {
+            let plan = ZapretPlan {
+                strategy: strategy.into(),
+                game_filter: Default::default(),
+                tcp_timestamps: false,
+                domains: vec![],
+                exclude_domains: vec![],
+                ipset: false,
+            };
+            let resp = handle(&mut st, Request::StartZapret(Box::new(plan))).await;
+            assert!(matches!(resp, Response::Error { .. }), "{strategy}");
+        }
+        let plan = ZapretPlan {
+            strategy: "general".into(),
+            game_filter: Default::default(),
+            tcp_timestamps: false,
+            domains: vec!["x.com\n--debug=@C:\\evil".into()],
+            exclude_domains: vec![],
+            ipset: false,
+        };
+        let Response::Error { message } =
+            handle(&mut st, Request::StartZapret(Box::new(plan))).await
+        else {
+            panic!("ожидалась ошибка")
+        };
+        assert!(message.contains("домен"));
         assert_eq!(st.status, ServiceStatus::Disconnected);
     }
 }

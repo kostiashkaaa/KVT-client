@@ -94,7 +94,14 @@ async fn on_join(app: &AppHandle) {
         query_status().await,
         Ok(Some(ServiceStatus::Connected { .. }))
     );
+    // Новая сеть — новая проверка zapret (стратегия могла перестать работать).
+    state.zapret_wake.notify_one();
     let plan = plan(view(&state).profile.as_ref(), connected);
+    let hybrid = state
+        .choice
+        .lock()
+        .ok()
+        .is_some_and(|c| c.mode.as_deref() == Some("hybrid"));
     if let Some(mode) = plan.mode {
         let choice = state.choice.lock().ok().map(|mut c| {
             c.mode = Some(mode);
@@ -105,12 +112,14 @@ async fn on_join(app: &AppHandle) {
             let _ = app.emit(watchdog::CHOICE_EVENT, ());
         }
     }
-    if plan.connect {
+    // В гибриде winws привязан к интерфейсу прежней сети — переподключаемся.
+    let reconnect = connected && hybrid && !plan.disconnect;
+    if plan.connect || reconnect {
         let _ = connect_current(&state).await;
     } else if plan.disconnect {
         let _ = disconnect_service().await;
     }
-    if plan.connect || plan.disconnect {
+    if plan.connect || plan.disconnect || reconnect {
         crate::tray::refresh(app).await;
     }
 }

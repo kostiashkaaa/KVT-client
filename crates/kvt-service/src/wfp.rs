@@ -21,7 +21,9 @@ use std::path::Path;
 use std::ptr::{null, null_mut};
 use windows_sys::core::GUID;
 use windows_sys::Win32::Foundation::HANDLE;
-use windows_sys::Win32::NetworkManagement::IpHelper::ConvertInterfaceAliasToLuid;
+use windows_sys::Win32::NetworkManagement::IpHelper::{
+    ConvertInterfaceAliasToLuid, ConvertInterfaceLuidToIndex, GetBestInterface,
+};
 use windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FwpmEngineClose0, FwpmEngineOpen0, FwpmFilterAdd0, FwpmFreeMemory0, FwpmGetAppIdFromFileName0,
@@ -79,6 +81,25 @@ pub fn interface_luid(alias: &str) -> Option<u64> {
     }
     // SAFETY: функция заполнила union целиком; Value — его 64-битное представление.
     Some(unsafe { luid.Value })
+}
+
+/// Индекс интерфейса по имени (`None` — такого интерфейса нет).
+pub fn interface_index(alias: &str) -> Option<u32> {
+    let luid = NET_LUID_LH {
+        Value: interface_luid(alias)?,
+    };
+    let mut index = 0u32;
+    // SAFETY: luid заполнен, index — валидный указатель.
+    (unsafe { ConvertInterfaceLuidToIndex(&luid, &mut index) } == 0).then_some(index)
+}
+
+/// Интерфейс, через который система отправит пакет к `dest`.
+pub fn best_interface(dest: Ipv4Addr) -> Option<u32> {
+    let mut index = 0u32;
+    // Адрес — в сетевом порядке байт, как его хранит IN_ADDR.
+    let addr = u32::from_ne_bytes(dest.octets());
+    // SAFETY: index — валидный указатель.
+    (unsafe { GetBestInterface(addr, &mut index) } == 0).then_some(index)
 }
 
 /// Идентификатор приложения для условий WFP; память освобождается в Drop.

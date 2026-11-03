@@ -8,7 +8,7 @@ use crate::wfp::{self, KillSwitch};
 use crate::win::Job;
 use kvt_core::compile::{compile, CompileInput, TUN_INTERFACE};
 use kvt_core::core_select::CoreKind;
-use kvt_core::ipc::ConnectPlan;
+use kvt_core::ipc::{ConnectPlan, ZapretPlan};
 use kvt_core::rulesync;
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -33,6 +33,12 @@ pub struct Paths {
     pub rules: PathBuf,
     /// Временные конфиги.
     pub run: PathBuf,
+    /// Комплект zapret Flowseal (bin, lists, strategies) — рядом со службой.
+    pub zapret: PathBuf,
+    /// Рабочие списки winws, включая свои `*-user.txt`.
+    pub zapret_lists: PathBuf,
+    /// Комплект, обновлённый из релиза Flowseal (кнопка «Обновить»).
+    pub zapret_update: PathBuf,
 }
 
 impl Paths {
@@ -45,15 +51,18 @@ impl Paths {
             .join("KVT");
         Ok(Self {
             cores: exe_dir.join("cores"),
+            zapret: exe_dir.join("zapret"),
             rules: data.join("rules"),
             run: data.join("run"),
+            zapret_lists: data.join("zapret"),
+            zapret_update: data.join("zapret-bundle"),
         })
     }
 }
 
 /// Каталог только для SYSTEM (S-1-5-18) и администраторов (S-1-5-32-544).
 /// SID вместо имён — имена групп локализованы («Администраторы»).
-fn secure_dir(dir: &Path) -> Result<(), String> {
+pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("не удалось создать {}: {e}", dir.display()))?;
     let status = std::process::Command::new("icacls")
@@ -90,6 +99,8 @@ pub struct Supervisor {
     /// Живёт отдельно от процесса ядра: если ядро упало, блокировка остаётся
     /// до явного «Отключить».
     kill_switch: Option<KillSwitch>,
+    /// winws: в гибриде рядом с ядром, в режиме zapret — один.
+    zapret: Option<crate::zapret::Winws>,
     log: Log,
 }
 
@@ -99,6 +110,7 @@ impl Supervisor {
             paths,
             running: None,
             kill_switch: None,
+            zapret: None,
             log: Log::default(),
         }
     }
@@ -119,6 +131,10 @@ impl Supervisor {
             None
         };
         let result = self.start_inner(plan).await;
+        if result.is_err() {
+            // Ядро не поднялось — zapret без него в гибриде не нужен.
+            self.zapret = None;
+        }
         if let (Err(e), Some(previous)) = (&result, previous) {
             if self.kill_switch.is_none() {
                 // Защиту включали до переподключения — не снимаем её из-за сбоя.
@@ -160,6 +176,22 @@ impl Supervisor {
                 "Не удалось загрузить список «{}». Проверьте интернет.",
                 missing.local
             ));
+        }
+
+        if let Some(zp) = &plan.zapret {
+            // winws — до ядра, пока трафик ещё идёт через физический интерфейс.
+            let interface = physical_interface().await;
+            self.zapret = Some(
+                crate::zapret::start(
+                    &self.paths,
+                    zp,
+                    &plan.routing.zapret_hostlist(),
+                    std::slice::from_ref(&plan.server.address),
+                    interface,
+                    &self.log,
+                )
+                .await?,
+            );
         }
 
         let rules = self.paths.rules.to_string_lossy().replace('\\', "/");
@@ -237,12 +269,39 @@ impl Supervisor {
         cmd.args(spec.run_args(config))
             .envs(spec.env.clone())
             .current_dir(&self.paths.run);
-        spawn_supervised(cmd, &self.log).await
+        spawn_supervised(cmd, &self.log, "ядро").await
+    }
+
+    /// Только zapret, без VPN: winws на всех интерфейсах.
+    pub async fn start_zapret(&mut self, plan: &ZapretPlan) -> Result<String, String> {
+        self.stop().await;
+        if !crate::win::is_elevated() {
+            return Err(
+                "Служба запущена без прав администратора: zapret не сможет перехватывать пакеты."
+                    .into(),
+            );
+        }
+        let winws =
+            crate::zapret::start(&self.paths, plan, &plan.domains, &[], None, &self.log).await?;
+        let strategy = winws.strategy.clone();
+        self.zapret = Some(winws);
+        Ok(strategy)
+    }
+
+    pub fn paths(&self) -> &Paths {
+        &self.paths
+    }
+
+    pub fn zapret_pid(&self) -> Option<u32> {
+        self.zapret.as_ref().and_then(|z| z.pid())
     }
 
     pub async fn stop(&mut self) {
         if let Some(mut running) = self.running.take() {
             let _ = running.child.kill().await;
+        }
+        if self.zapret.take().is_some() {
+            tracing::info!("zapret остановлен");
         }
         if self.kill_switch.take().is_some() {
             tracing::info!("kill switch выключен");
@@ -253,8 +312,13 @@ impl Supervisor {
         self.kill_switch.is_some()
     }
 
-    /// Если ядро завершилось само — причина (последние строки лога).
+    /// Если ядро или zapret завершились сами — причина (последние строки лога).
     pub fn exited(&mut self) -> Option<String> {
+        if let Some(reason) = self.zapret.as_mut().and_then(crate::zapret::Winws::exited) {
+            self.zapret = None;
+            let last = self.recent_log(1).pop().unwrap_or_default();
+            return Some(format!("{reason}: {last}"));
+        }
         let running = self.running.as_mut()?;
         match running.child.try_wait() {
             Ok(Some(status)) => {
@@ -321,9 +385,27 @@ impl CoreSpec {
     }
 }
 
+/// Физический интерфейс для winws в гибриде. Сразу после остановки прежнего ядра
+/// маршрут ещё может вести в старый TUN — ждём, пока система выберет другой.
+async fn physical_interface() -> Option<u32> {
+    let probe = std::net::Ipv4Addr::new(8, 8, 8, 8);
+    for _ in 0..20 {
+        let tun = wfp::interface_index(TUN_INTERFACE);
+        match wfp::best_interface(probe) {
+            Some(best) if Some(best) != tun => return Some(best),
+            _ => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    None
+}
+
 /// Запускает процесс в Job Object, собирает его вывод в кольцевой лог и
 /// проверяет, что он не упал сразу после старта.
-pub async fn spawn_supervised(mut cmd: Command, log: &Log) -> Result<(Child, Job), String> {
+pub async fn spawn_supervised(
+    mut cmd: Command,
+    log: &Log,
+    what: &str,
+) -> Result<(Child, Job), String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -331,7 +413,7 @@ pub async fn spawn_supervised(mut cmd: Command, log: &Log) -> Result<(Child, Job
         .kill_on_drop(true);
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("не удалось запустить ядро: {e}"))?;
+        .map_err(|e| format!("не удалось запустить {what}: {e}"))?;
     let job = Job::kill_on_close().map_err(|e| format!("job: {e}"))?;
     if let Some(handle) = child.raw_handle() {
         job.assign(handle).map_err(|e| format!("job: {e}"))?;
@@ -355,7 +437,7 @@ pub async fn spawn_supervised(mut cmd: Command, log: &Log) -> Result<(Child, Job
                 .join(" | ")
         });
         return Err(format!(
-            "Ядро завершилось сразу после запуска ({}): {}",
+            "{what} завершился сразу после запуска ({}): {}",
             status.map(|s| s.to_string()).unwrap_or_default(),
             last.unwrap_or_default()
         ));
@@ -438,7 +520,7 @@ mod tests {
         let log = Log::default();
         let mut cmd = Command::new("cmd");
         cmd.args(["/c", "echo bad config & exit 3"]);
-        let Err(err) = spawn_supervised(cmd, &log).await else {
+        let Err(err) = spawn_supervised(cmd, &log, "test").await else {
             panic!("ожидалась ошибка")
         };
         assert!(err.contains("bad config"), "{err}");
@@ -449,7 +531,7 @@ mod tests {
         let log = Log::default();
         let mut cmd = Command::new("cmd");
         cmd.args(["/c", "echo started & ping -n 30 127.0.0.1 >nul"]);
-        let (mut child, _job) = spawn_supervised(cmd, &log).await.unwrap();
+        let (mut child, _job) = spawn_supervised(cmd, &log, "test").await.unwrap();
         assert!(child.try_wait().unwrap().is_none());
         assert!(log.lock().unwrap().iter().any(|l| l.contains("started")));
         child.kill().await.unwrap();
