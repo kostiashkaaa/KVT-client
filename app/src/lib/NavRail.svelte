@@ -18,7 +18,21 @@
 </script>
 
 <nav aria-label="Разделы">
-  <div class="brand">KVT</div>
+  <div class="brand">
+    <!-- Тот же знак, что и app-icon.svg. -->
+    <svg viewBox="0 0 1024 1024" width="28" height="28" role="img" aria-label="KVT">
+      <rect width="1024" height="1024" rx="224" fill="#005fb8" />
+      <path d="M348 276v472" fill="none" stroke="#fff" stroke-width="104" stroke-linecap="round" />
+      <path
+        d="M706 276 472 512l234 236"
+        fill="none"
+        stroke="#60cdff"
+        stroke-width="104"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  </div>
   <ul>
     {#each items as item (item.id)}
       <li>
@@ -53,11 +67,10 @@
     background: var(--sidebar);
   }
 
+  /* Центр знака совпадает с центром иконок разделов. */
   .brand {
-    padding: var(--space-2) var(--space-3) var(--space-4);
-    font: 600 14px/20px var(--font-display);
-    letter-spacing: 0.08em;
-    color: var(--text-2);
+    display: flex;
+    padding: var(--space-1) var(--space-2) var(--space-4);
   }
 
   ul {
@@ -112,7 +125,10 @@
     nav {
       width: 56px;
     }
-    .brand,
+    .brand {
+      justify-content: center;
+      padding-inline: 0;
+    }
     button span {
       display: none;
     }
