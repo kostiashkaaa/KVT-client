@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +39,8 @@ pub enum Request {
     ZapretUpdate,
     /// Вернуть проверенный комплект, сбросить списки и переустановить драйвер.
     ZapretRepair,
+    /// Журнал сетевых запросов службы (`kvt_core::netlog`).
+    NetLog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +146,9 @@ pub enum Response {
     },
     ZapretInfo(Box<ZapretInfo>),
     Maintenance(Box<MaintenanceReport>),
+    NetLog {
+        events: Vec<crate::netlog::Event>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

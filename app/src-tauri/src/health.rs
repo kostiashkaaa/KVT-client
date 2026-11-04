@@ -27,7 +27,30 @@ pub fn client() -> reqwest::Client {
 }
 
 pub async fn check(client: &reqwest::Client) -> Result<Trace, String> {
+    use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
     let start = Instant::now();
+    let result = check_inner(client, start).await;
+    let outcome = if result.is_ok() {
+        Outcome::Ok
+    } else {
+        Outcome::Failed
+    };
+    let mut event = netlog::Event::new(
+        Origin::App,
+        Purpose::Tunnel,
+        &netlog::host_of(HEALTH_URL),
+        Route::Tunnel,
+        outcome,
+    )
+    .ms(start.elapsed());
+    if let Err(e) = &result {
+        event = event.detail(e);
+    }
+    netlog::record(event);
+    result
+}
+
+async fn check_inner(client: &reqwest::Client, start: Instant) -> Result<Trace, String> {
     let response = client.get(HEALTH_URL).send().await.map_err(|e| {
         if e.is_timeout() {
             "нет ответа".into()

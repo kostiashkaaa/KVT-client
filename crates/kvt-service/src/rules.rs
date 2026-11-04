@@ -39,7 +39,7 @@ pub async fn update(
     cores: &[CoreKind],
     force: bool,
 ) -> anyhow::Result<SyncReport> {
-    let http = NetClient::new()?;
+    let http = NetClient::new(kvt_core::netlog::Purpose::Rules)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     Ok(rulesync::sync(&http, dir, &files_for(mode, cores), now, force).await)
 }

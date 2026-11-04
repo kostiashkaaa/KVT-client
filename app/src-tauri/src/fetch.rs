@@ -2,6 +2,7 @@
 //! попадает ни в тексты ошибок, ни в логи.
 
 use kvt_core::governor::{Decision, NetGovernor};
+use kvt_core::netlog::{self, Origin, Purpose, Route};
 use kvt_core::subscription::{parse_headers, SubscriptionMeta, MAX_BODY_BYTES};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -30,6 +31,13 @@ pub fn acquire(governor: &Mutex<NetGovernor>, host: &str) -> Result<(), String> 
         .lock()
         .map_err(|_| "внутренняя ошибка")?
         .try_acquire(host, now);
+    netlog::record_hold(
+        Origin::App,
+        Purpose::Subscription,
+        host,
+        Route::Direct,
+        &decision,
+    );
     match decision {
         Decision::Allowed => Ok(()),
         Decision::RetryAt(at) => Err(format!(
@@ -44,6 +52,29 @@ pub fn acquire(governor: &Mutex<NetGovernor>, host: &str) -> Result<(), String> 
 }
 
 pub async fn fetch(url: &Url) -> Result<Fetched, String> {
+    let start = Instant::now();
+    let result = fetch_inner(url).await;
+    let outcome = if result.is_ok() {
+        netlog::Outcome::Ok
+    } else {
+        netlog::Outcome::Failed
+    };
+    let mut event = netlog::Event::new(
+        Origin::App,
+        Purpose::Subscription,
+        url.host_str().unwrap_or_default(),
+        Route::Direct,
+        outcome,
+    )
+    .ms(start.elapsed());
+    if let Err(e) = &result {
+        event = event.detail(e);
+    }
+    netlog::record(event);
+    result
+}
+
+async fn fetch_inner(url: &Url) -> Result<Fetched, String> {
     let client = reqwest::Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::limited(3))

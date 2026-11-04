@@ -7,6 +7,7 @@
   import Routing from "./lib/Routing.svelte";
   import Subscriptions from "./lib/Subscriptions.svelte";
   import Diagnostics from "./lib/Diagnostics.svelte";
+  import NetJournal from "./lib/NetJournal.svelte";
   import ZapretCard from "./lib/ZapretCard.svelte";
   import ZapretPage from "./lib/ZapretPage.svelte";
   import { startAutoselect } from "./lib/zapretStore.svelte";
@@ -428,7 +429,7 @@
       <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks />
     {:else}
       <h1>Журнал</h1>
-      <p class="muted">Раздел появится на следующих этапах.</p>
+      <NetJournal />
     {/if}
   </main>
 </div>

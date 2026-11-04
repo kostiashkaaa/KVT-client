@@ -8,6 +8,7 @@ mod dnscheck;
 mod dpapi;
 mod fetch;
 mod health;
+mod journal;
 mod netinfo;
 mod netprofile;
 mod prober;
@@ -502,7 +503,9 @@ fn main() {
             zapret::zapret_repair,
             zapret::zapret_check,
             zapret::zapret_last,
-            zapret::zapret_diagnose
+            zapret::zapret_diagnose,
+            journal::net_log,
+            journal::net_log_clear
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

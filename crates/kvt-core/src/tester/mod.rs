@@ -11,6 +11,7 @@ mod emulator;
 
 use crate::governor::{Decision, NetGovernor};
 use crate::model::{Protocol, Server};
+use crate::netlog::{self, Origin, Purpose, Route};
 use crate::probe::{classify, ProbeObservation, Verdict};
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -101,6 +102,16 @@ pub async fn full_check<P: Prober>(
                 }
                 Decision::Frozen { until } => {
                     let retry_after_secs = until.saturating_duration_since(now).as_secs().max(1);
+                    netlog::record(
+                        netlog::Event::new(
+                            Origin::App,
+                            Purpose::ServerCheck,
+                            &sni,
+                            Route::TestCore,
+                            netlog::Outcome::Frozen,
+                        )
+                        .detail(format!("повтор через {retry_after_secs} с")),
+                    );
                     record(&mut outcomes, i, Outcome::Deferred { retry_after_secs });
                 }
             }
@@ -117,6 +128,7 @@ pub async fn full_check<P: Prober>(
             Some(joined) = running.join_next(), if !running.is_empty() => {
                 if let Ok((i, sni, observation)) = joined {
                     let verdict = classify(&observation);
+                    log_probe(&sni, verdict, &observation);
                     if verdict.is_freeze() {
                         governor.report_freeze(&sni, Instant::now().into_std());
                     }
@@ -136,6 +148,27 @@ pub async fn full_check<P: Prober>(
             })
         })
         .collect()
+}
+
+/// Запись полной проверки сервера в журнал запросов.
+pub fn log_probe(sni: &str, verdict: Verdict, observation: &ProbeObservation) {
+    let outcome = if matches!(verdict, Verdict::Works | Verdict::Slow) {
+        netlog::Outcome::Ok
+    } else {
+        netlog::Outcome::Failed
+    };
+    let mut event = netlog::Event::new(
+        Origin::App,
+        Purpose::ServerCheck,
+        sni,
+        Route::TestCore,
+        outcome,
+    )
+    .detail(verdict.message_ru());
+    if let Some(latency) = observation.latency {
+        event = event.ms(latency);
+    }
+    netlog::record(event);
 }
 
 /// Результат быстрой проверки одного сервера.
@@ -178,6 +211,29 @@ pub async fn quick_check(
 
 // TODO(этап 3): резолвить имена серверов через выбранный DoH, а не системный DNS.
 pub async fn tcp_ping(host: &str, port: u16, timeout: Duration) -> QuickResult {
+    let result = tcp_ping_inner(host, port, timeout).await;
+    let target = format!("{host}:{port}");
+    let event = |outcome| {
+        netlog::Event::new(
+            Origin::App,
+            Purpose::ServerPing,
+            &target,
+            Route::Direct,
+            outcome,
+        )
+    };
+    netlog::record(match &result {
+        QuickResult::Reachable { latency_ms } => {
+            event(netlog::Outcome::Ok).ms(Duration::from_millis(*latency_ms))
+        }
+        QuickResult::Unreachable => event(netlog::Outcome::Failed).detail("TCP не открылся"),
+        QuickResult::DnsFailed => event(netlog::Outcome::Failed).detail("адрес не найден"),
+        QuickResult::NotApplicable => return result,
+    });
+    result
+}
+
+async fn tcp_ping_inner(host: &str, port: u16, timeout: Duration) -> QuickResult {
     let addrs = match tokio::time::timeout(timeout, tokio::net::lookup_host((host, port))).await {
         Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
         _ => return QuickResult::DnsFailed,

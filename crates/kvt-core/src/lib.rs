@@ -12,6 +12,7 @@ pub mod governor;
 pub mod ipc;
 pub mod lists;
 pub mod model;
+pub mod netlog;
 pub mod parser;
 pub mod probe;
 pub mod routing;

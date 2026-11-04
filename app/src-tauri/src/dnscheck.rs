@@ -37,7 +37,29 @@ async fn udp(server: Ipv4Addr, name: &str) -> QueryResult {
     udp_to(SocketAddr::from((server, 53)), name).await
 }
 
+/// Запись в журнал запросов: один DNS-запрос к резолверу.
+fn log_query(host: &str, via: &str, result: &QueryResult) {
+    use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
+    let (outcome, ms, detail) = match result {
+        QueryResult::Answer { ms, .. } => (Outcome::Ok, Some(*ms), via.to_owned()),
+        QueryResult::Timeout => (Outcome::Failed, None, format!("{via}: нет ответа")),
+        QueryResult::Failed(e) => (Outcome::Failed, None, format!("{via}: {e}")),
+    };
+    let mut event =
+        netlog::Event::new(Origin::App, Purpose::Dns, host, Route::Direct, outcome).detail(detail);
+    if let Some(ms) = ms {
+        event = event.ms(Duration::from_millis(ms));
+    }
+    netlog::record(event);
+}
+
 async fn udp_to(server: SocketAddr, name: &str) -> QueryResult {
+    let result = udp_query(server, name).await;
+    log_query(&server.to_string(), "UDP", &result);
+    result
+}
+
+async fn udp_query(server: SocketAddr, name: &str) -> QueryResult {
     let id = random_id();
     let Ok(q) = wire::query(id, name, wire::TYPE_A) else {
         return failed("некорректное имя");
@@ -71,6 +93,12 @@ async fn udp_to(server: SocketAddr, name: &str) -> QueryResult {
 }
 
 async fn dot(endpoint: dns::Endpoint, name: &str) -> QueryResult {
+    let result = dot_query(endpoint, name).await;
+    log_query(endpoint.host, "DoT", &result);
+    result
+}
+
+async fn dot_query(endpoint: dns::Endpoint, name: &str) -> QueryResult {
     let id = random_id();
     let Ok(q) = wire::query(id, name, wire::TYPE_A) else {
         return failed("некорректное имя");
@@ -118,6 +146,12 @@ fn doh_client() -> reqwest::Result<reqwest::Client> {
 }
 
 async fn doh(client: &reqwest::Client, endpoint: dns::Endpoint, name: &str) -> QueryResult {
+    let result = doh_query(client, endpoint, name).await;
+    log_query(endpoint.host, "DoH", &result);
+    result
+}
+
+async fn doh_query(client: &reqwest::Client, endpoint: dns::Endpoint, name: &str) -> QueryResult {
     let id = 0; // RFC 8484: в DoH id = 0, ответ привязан к HTTP-запросу.
     let Ok(q) = wire::query(id, name, wire::TYPE_A) else {
         return failed("некорректное имя");

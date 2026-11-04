@@ -71,6 +71,9 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
                 state.supervisor.zapret_pid(),
             ),
         },
+        Request::NetLog => Response::NetLog {
+            events: kvt_core::netlog::snapshot(),
+        },
         Request::Disconnect => {
             state.supervisor.stop().await;
             state.status = ServiceStatus::Disconnected;

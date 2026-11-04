@@ -159,7 +159,7 @@ impl Supervisor {
 
         // Списки: докачиваем недостающие; при сбое сети работаем на прежних версиях.
         let files = rulesync::required_files(&plan.routing, plan.core);
-        let http = NetClient::new().map_err(|e| e.to_string())?;
+        let http = NetClient::new(kvt_core::netlog::Purpose::Rules).map_err(|e| e.to_string())?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())

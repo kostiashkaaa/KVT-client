@@ -438,11 +438,19 @@ async fn probe(state: &AppState, key: &str, server: &kvt_core::Server) -> Option
         .ok()?
         .try_acquire(&sni, Instant::now());
     if decision != kvt_core::governor::Decision::Allowed {
+        kvt_core::netlog::record_hold(
+            kvt_core::netlog::Origin::App,
+            kvt_core::netlog::Purpose::ServerCheck,
+            &sni,
+            kvt_core::netlog::Route::TestCore,
+            &decision,
+        );
         return Some(ProbeFact::Postponed);
     }
     let prober = CoreProber::new().ok()?;
     let observation = prober.probe(server.clone()).await;
     let verdict = classify(&observation);
+    kvt_core::tester::log_probe(&sni, verdict, &observation);
     if verdict.is_freeze() {
         if let Ok(mut g) = state.governor.lock() {
             g.report_freeze(&sni, Instant::now());

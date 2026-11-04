@@ -334,7 +334,7 @@ async fn download_bundle(
     version: &str,
     fallback_bin: &Path,
 ) -> Result<bool, String> {
-    let http = NetClient::new().map_err(|e| e.to_string())?;
+    let http = NetClient::new(kvt_core::netlog::Purpose::Update).map_err(|e| e.to_string())?;
     let bytes = http.get(url, MAX_ARCHIVE).await?;
     if sha256_hex(&bytes) != sha256.to_ascii_lowercase() {
         return Err("архив не совпал с хэшем — загрузка отменена".into());
@@ -364,7 +364,7 @@ async fn download_bundle(
 
 /// «Обновить»: последний релиз Flowseal. Служба перед этим останавливает winws.
 pub async fn update(paths: &Paths) -> Result<MaintenanceReport, String> {
-    let http = NetClient::new().map_err(|e| e.to_string())?;
+    let http = NetClient::new(kvt_core::netlog::Purpose::Update).map_err(|e| e.to_string())?;
     let release = zapret::parse_release(&http.get(zapret::RELEASES_API, 1024 * 1024).await?)?;
     let active = active_bundle(paths);
     let current = read_version(&active);

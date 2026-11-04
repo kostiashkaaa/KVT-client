@@ -192,14 +192,42 @@ pub async fn zapret_latest(force: bool, state: State<'_, AppState>) -> Result<Re
         .user_agent(concat!("KVT/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| e.to_string())?;
-    let body = client
-        .get(kvt_core::zapret::RELEASES_API)
-        .send()
-        .await
-        .map_err(|e| e.without_url().to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.without_url().to_string())?;
+    let start = Instant::now();
+    let body = async {
+        client
+            .get(kvt_core::zapret::RELEASES_API)
+            .send()
+            .await
+            .map_err(|e| e.without_url().to_string())?
+            .bytes()
+            .await
+            .map_err(|e| e.without_url().to_string())
+    }
+    .await;
+    {
+        use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
+        let outcome = if body.is_ok() {
+            Outcome::Ok
+        } else {
+            Outcome::Failed
+        };
+        netlog::record(
+            netlog::Event::new(
+                Origin::App,
+                Purpose::Update,
+                &netlog::host_of(kvt_core::zapret::RELEASES_API),
+                Route::Direct,
+                outcome,
+            )
+            .ms(start.elapsed())
+            .detail(
+                body.as_ref()
+                    .err()
+                    .map_or("версия Flowseal", String::as_str),
+            ),
+        );
+    }
+    let body = body?;
     let release = kvt_core::zapret::parse_release(&body)?;
     if let Ok(mut cache) = state.zapret_release.lock() {
         *cache = Some((Instant::now(), release.clone()));
@@ -256,16 +284,41 @@ fn client(tls12: bool) -> reqwest::Result<reqwest::Client> {
 /// Ответ пришёл (любой код HTTP) — значит, рукопожатие и запрос прошли DPI.
 async fn reachable(client: &reqwest::Client, url: &str) -> Option<u64> {
     let start = Instant::now();
-    client
-        .get(url)
-        .send()
-        .await
-        .ok()
-        .map(|_| start.elapsed().as_millis() as u64)
+    let result = client.get(url).send().await;
+    log_check(url, result.is_ok(), start, "");
+    result.ok().map(|_| start.elapsed().as_millis() as u64)
+}
+
+fn log_check(url: &str, ok: bool, start: Instant, detail: &str) {
+    use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
+    let outcome = if ok { Outcome::Ok } else { Outcome::Failed };
+    netlog::record(
+        netlog::Event::new(
+            Origin::App,
+            Purpose::Zapret,
+            &netlog::host_of(url),
+            Route::Direct,
+            outcome,
+        )
+        .ms(start.elapsed())
+        .detail(detail),
+    );
 }
 
 /// Загрузка проходит дальше окна заморозки (16–20 КБ).
 async fn downloads(client: &reqwest::Client) -> bool {
+    let start = Instant::now();
+    let ok = download_passes(client).await;
+    let detail = if ok {
+        "загрузка прошла"
+    } else {
+        "загрузка оборвалась"
+    };
+    log_check(DOWNLOAD, ok, start, detail);
+    ok
+}
+
+async fn download_passes(client: &reqwest::Client) -> bool {
     let Ok(mut response) = client.get(DOWNLOAD).send().await else {
         return false;
     };
