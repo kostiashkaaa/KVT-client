@@ -71,6 +71,16 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
                 state.supervisor.zapret_pid(),
             ),
         },
+        Request::AuditFix(fix) => {
+            // PowerShell и sc.exe работают секунды — не держим поток обработки.
+            match tokio::task::spawn_blocking(move || crate::audit::fix(&fix)).await {
+                Ok(Ok(())) => Response::Ok,
+                Ok(Err(message)) => Response::Error { message },
+                Err(_) => Response::Error {
+                    message: "исправление прервалось".into(),
+                },
+            }
+        }
         Request::NetLog => Response::NetLog {
             events: kvt_core::netlog::snapshot(),
         },

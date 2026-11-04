@@ -41,6 +41,8 @@ pub enum Request {
     ZapretRepair,
     /// Журнал сетевых запросов службы (`kvt_core::netlog`).
     NetLog,
+    /// Исправление из аудита ПК, которому нужны права администратора.
+    AuditFix(crate::audit::ServiceFix),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+mod audit;
 mod catalog;
 mod diagnostics;
 mod dnscheck;
@@ -505,7 +506,9 @@ fn main() {
             zapret::zapret_last,
             zapret::zapret_diagnose,
             journal::net_log,
-            journal::net_log_clear
+            journal::net_log_clear,
+            audit::pc_audit,
+            audit::pc_audit_fix
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

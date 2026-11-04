@@ -18,6 +18,7 @@
 
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import PcAudit from "./PcAudit.svelte";
   import {
     dnsCatalog,
     dnsCheck,
@@ -330,6 +331,8 @@
     </ul>
   {/if}
 </section>
+
+<PcAudit />
 
 <style>
   .block {

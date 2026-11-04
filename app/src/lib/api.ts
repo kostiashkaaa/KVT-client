@@ -990,3 +990,106 @@ export async function netLog(): Promise<NetJournal> {
 export async function netLogClear(): Promise<void> {
   if (inTauri) await invoke("net_log_clear");
 }
+
+// ── Аудит ПК ──
+
+export type ServiceFix =
+  | { action: "reset_win_http_proxy" }
+  | { action: "disable_teredo" }
+  | { action: "disable_zapret_service"; name: string }
+  | { action: "disable_autostart"; id: string };
+
+export type AuditFix =
+  | { kind: "disable_system_proxy" }
+  | { kind: "close_process"; pid: number; name: string }
+  | { kind: "stop_zapret" }
+  | ({ kind: "service" } & ServiceFix)
+  | { kind: "disable_user_autostart"; id: string };
+
+export interface AuditFinding {
+  group: "leaks" | "conflicts" | "zapret";
+  level: "ok" | "info" | "warning";
+  title: string;
+  detail: string;
+  fix: AuditFix | null;
+}
+
+export interface AuditReport {
+  findings: AuditFinding[];
+  ms: number;
+}
+
+let previewProxyOn = true;
+
+export async function pcAudit(): Promise<AuditReport> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const findings: AuditFinding[] = [
+      previewProxyOn
+        ? {
+            group: "leaks",
+            level: "warning",
+            title: "Включён системный прокси",
+            detail:
+              "Браузеры и другие программы отправляют трафик на 127.0.0.1:10808 — обычно это остаток другого VPN-клиента. Если та программа закрыта, сайты не открываются; если запущена — трафик идёт через неё, а не через KVT.",
+            fix: { kind: "disable_system_proxy" },
+          }
+        : {
+            group: "leaks",
+            level: "ok",
+            title: "Системный прокси",
+            detail: "Не задан: программы выходят в сеть обычным путём, через туннель KVT.",
+            fix: null,
+          },
+      { group: "leaks", level: "ok", title: "Прокси WinHTTP", detail: "Не задан.", fix: null },
+      { group: "leaks", level: "ok", title: "Teredo", detail: "Выключен или не используется.", fix: null },
+      {
+        group: "leaks",
+        level: "info",
+        title: "Браузер использует свой DNS",
+        detail:
+          "Microsoft Edge (chrome.cloudflare-dns.com): защищённый DNS включён в настройках браузера. Запросы зашифрованы, но идут мимо DNS KVT — если сайты из списков маршрутизации открываются не так, выключите «Безопасный DNS» в настройках браузера.",
+        fix: null,
+      },
+      {
+        group: "conflicts",
+        level: "warning",
+        title: "Запущен v2rayN",
+        detail:
+          "Два VPN одновременно спорят за маршруты и DNS: часть трафика уходит не туда, подключение обрывается. Закройте другой клиент, пока работает KVT.",
+        fix: { kind: "close_process", pid: 4242, name: "v2rayN" },
+      },
+      { group: "conflicts", level: "ok", title: "Туннели других VPN", detail: "Активных нет.", fix: null },
+      {
+        group: "conflicts",
+        level: "info",
+        title: "Антивирус проверяет HTTPS",
+        detail:
+          "Kaspersky Plus может перехватывать защищённые соединения. Если подписки не загружаются или проверка серверов ошибается, добавьте папку KVT в исключения или выключите «Проверку защищённых соединений».",
+        fix: null,
+      },
+      {
+        group: "zapret",
+        level: "warning",
+        title: "Служба zapret запускается вместе с Windows",
+        detail:
+          "zapret стартует при каждом включении компьютера и мешает zapret в KVT. Исправление остановит её и переведёт в ручной запуск — ничего не удаляется.",
+        fix: { kind: "service", action: "disable_zapret_service", name: "zapret" },
+      },
+    ];
+    return { findings, ms: 1500 };
+  }
+  return invoke<AuditReport>("pc_audit");
+}
+
+export async function pcAuditFix(fix: AuditFix): Promise<void> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 600));
+    if (fix.kind === "disable_system_proxy") {
+      previewProxyOn = false;
+      return;
+    }
+    throw new Error("Служба KVT не запущена — это исправление выполняет она");
+  }
+  await invoke("pc_audit_fix", { fix });
+}

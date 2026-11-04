@@ -4,6 +4,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod audit;
 pub mod compile;
 pub mod core_select;
 pub mod dns;

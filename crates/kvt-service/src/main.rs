@@ -11,6 +11,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 #[cfg(windows)]
+mod audit;
+#[cfg(windows)]
 mod handler;
 #[cfg(windows)]
 mod net;
