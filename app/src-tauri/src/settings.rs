@@ -144,6 +144,9 @@ fn title(key: &str) -> String {
         "autoSwitch" => "автопереключение",
         "networks" => "профили сетей",
         "zapret" => "настройки zapret",
+        "recent" => "недавние серверы",
+        "notifications" => "уведомления",
+        "connectOnStart" => "подключение при запуске",
         other => other,
     }
     .into()

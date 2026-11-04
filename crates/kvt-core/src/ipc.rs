@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +152,9 @@ pub enum Response {
     },
     Status {
         status: ServiceStatus,
+        /// Текущий сеанс: есть, пока работает VPN или zapret.
+        #[serde(default)]
+        session: Option<Session>,
     },
     Ok,
     Error {
@@ -193,6 +196,19 @@ pub enum ServiceStatus {
     Failed {
         reason: String,
     },
+}
+
+/// Сеанс — от «Подключить» до «Отключить». Замена сервера, переподключение после
+/// сна и смена режима его не прерывают.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
+    /// Секунды с начала сеанса (по монотонным часам службы).
+    pub secs: u64,
+    /// Байты, принятые и отправленные через адаптер KVT. `None` — адаптера нет
+    /// (режим Zapret).
+    pub rx: Option<u64>,
+    pub tx: Option<u64>,
 }
 
 #[derive(Debug, Error)]

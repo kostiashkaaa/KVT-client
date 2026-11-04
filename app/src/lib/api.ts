@@ -128,6 +128,10 @@ export interface Choice {
   autoSwitch: boolean;
   networks: NetworkProfile[];
   zapret: ZapretChoice;
+  /** Уведомления Windows, пока окно закрыто. */
+  notifications: boolean;
+  /** Подключаться к выбранному серверу при запуске KVT. */
+  connectOnStart: boolean;
 }
 
 export interface ListInfo {
@@ -201,6 +205,44 @@ export async function disconnect(): Promise<ServiceStatus> {
 export async function serviceStatus(): Promise<ServiceStatus | null> {
   if (!inTauri) return null;
   return invoke<ServiceStatus | null>("service_status");
+}
+
+/** Сеанс — от «Подключить» до «Отключить»: время и трафик через адаптер KVT. */
+export interface Session {
+  secs: number;
+  /** `null` — адаптера нет (режим Zapret). */
+  rx: number | null;
+  tx: number | null;
+}
+
+const previewStart = Date.now();
+
+/** Последний сеанс, о котором сообщила служба (берётся после `serviceStatus`). */
+export async function serviceSession(): Promise<Session | null> {
+  if (!inTauri) return { secs: 4325 + Math.floor((Date.now() - previewStart) / 1000), rx: 1_331_000_000, tx: 88_200_000 };
+  return invoke<Session | null>("service_session");
+}
+
+/** 0:42, 12:05, 1:12:05 — секунды сеанса для строки на главной. */
+export function formatElapsed(secs: number): string {
+  const s = Math.max(0, Math.floor(secs));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+/** 84 МБ, 1,24 ГБ — с запятой, без лишних знаков. */
+export function formatBytes(bytes: number): string {
+  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits).replace(".", ",")} ${units[unit]}`;
 }
 
 // Предпросмотр интерфейса в обычном браузере (npm run dev) без Rust-части.
@@ -1175,6 +1217,38 @@ export async function migrateImport(locations: string[], servers: boolean): Prom
 export async function takeNotices(): Promise<string[]> {
   if (!inTauri) return [];
   return invoke<string[]>("take_notices");
+}
+
+/** Трей добавил сообщение для окна (ошибка действия, а уведомления выключены). */
+export function onNotices(handler: () => void): () => void {
+  if (!inTauri) return () => {};
+  const off = listen("notices", handler);
+  return () => void off.then((f) => f());
+}
+
+/** Страница, которую открывает трей: вкладка окна, «why» или «add». */
+export type TrayPage = "home" | "zapret" | "journal" | "why" | "add";
+
+/** Страница, которую трей попросил открыть до появления окна. */
+export async function takePage(): Promise<TrayPage | null> {
+  if (!inTauri) return null;
+  return invoke<TrayPage | null>("take_page");
+}
+
+export function onNavigate(handler: (page: TrayPage) => void): () => void {
+  if (!inTauri) return () => {};
+  const off = listen<TrayPage>("navigate", (e) => handler(e.payload));
+  return () => void off.then((f) => f());
+}
+
+/** Автозапуск с Windows свёрнутым в трей (значение в реестре, не в настройках). */
+export async function autostartEnabled(): Promise<boolean> {
+  if (!inTauri) return true;
+  return invoke<boolean>("autostart_enabled");
+}
+
+export async function setAutostart(enabled: boolean): Promise<void> {
+  if (inTauri) await invoke("set_autostart", { enabled });
 }
 
 /** Идут ли данные через туннель: null — не проверяли или VPN выключен. */

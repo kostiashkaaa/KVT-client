@@ -1,11 +1,14 @@
 //! Обработка команд. Не зависит от транспорта (pipe), поэтому покрыта тестами.
 
+use crate::session::Session;
 use crate::supervisor::Supervisor;
 use kvt_core::ipc::{ConnectPlan, Request, Response, ServiceStatus, ZapretPlan, PROTOCOL_VERSION};
 
 pub struct State {
     supervisor: Supervisor,
     status: ServiceStatus,
+    /// Время и трафик с «Подключить»; `None` — ничего не запущено.
+    session: Option<Session>,
 }
 
 impl State {
@@ -13,6 +16,7 @@ impl State {
         Self {
             supervisor,
             status: ServiceStatus::Disconnected,
+            session: None,
         }
     }
 
@@ -28,6 +32,42 @@ impl State {
                 reason.push_str(" Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново.");
             }
             self.status = ServiceStatus::Failed { reason };
+            self.session = None;
+        }
+    }
+
+    /// Работает VPN или zapret (или идёт переподключение) — сеанс продолжается.
+    fn active(&self) -> bool {
+        matches!(
+            self.status,
+            ServiceStatus::Connected { .. }
+                | ServiceStatus::Zapret { .. }
+                | ServiceStatus::Connecting
+        )
+    }
+
+    /// Перед запуском: при работающем сеансе — дочитать счётчики прежнего
+    /// адаптера (сейчас ядро его удалит), иначе начать новый сеанс.
+    fn begin(&mut self) {
+        let active = self.active();
+        match self.session.as_mut() {
+            Some(session) if active => session.sample(),
+            _ => self.session = Some(Session::new()),
+        }
+    }
+
+    fn status_response(&mut self) -> Response {
+        let active = self.active();
+        let session = match self.session.as_mut() {
+            Some(session) if active => {
+                session.sample();
+                Some(session.info())
+            }
+            _ => None,
+        };
+        Response::Status {
+            status: self.status.clone(),
+            session,
         }
     }
 
@@ -49,9 +89,7 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
             message: "Окно KVT и служба разных версий. Переустановите KVT — они обновятся вместе."
                 .into(),
         },
-        Request::Status => Response::Status {
-            status: state.status.clone(),
-        },
+        Request::Status => state.status_response(),
         Request::Connect(plan) => connect(state, &plan).await,
         Request::StartZapret(plan) => start_zapret(state, &plan).await,
         Request::ZapretStrategies => Response::Strategies {
@@ -101,6 +139,7 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
         Request::Disconnect => {
             state.supervisor.stop().await;
             state.status = ServiceStatus::Disconnected;
+            state.session = None;
             Response::Ok
         }
     }
@@ -121,19 +160,19 @@ async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
     if let Some(message) = plan.zapret.as_ref().and_then(invalid_zapret) {
         return Response::Error { message };
     }
+    state.begin();
     state.status = ServiceStatus::Connecting;
     match state.supervisor.start(plan).await {
         Ok(()) => {
             state.status = ServiceStatus::Connected { core: plan.core };
-            Response::Status {
-                status: state.status.clone(),
-            }
+            state.status_response()
         }
         Err(message) => {
             tracing::warn!(%message, "подключение не удалось");
             state.status = ServiceStatus::Failed {
                 reason: message.clone(),
             };
+            state.session = None;
             Response::Error { message }
         }
     }
@@ -178,6 +217,7 @@ async fn maintain(state: &mut State, request: &Request) -> Response {
     };
     state.supervisor.stop().await;
     state.status = ServiceStatus::Disconnected;
+    state.session = None;
     let result = match prepared {
         Some(prepared) => crate::zapret::install_update(&paths, prepared),
         None => {
@@ -198,18 +238,18 @@ async fn start_zapret(state: &mut State, plan: &ZapretPlan) -> Response {
     if let Some(message) = invalid_zapret(plan) {
         return Response::Error { message };
     }
+    state.begin();
     state.status = ServiceStatus::Connecting;
     match state.supervisor.start_zapret(plan).await {
         Ok(strategy) => {
             state.status = ServiceStatus::Zapret { strategy };
-            Response::Status {
-                status: state.status.clone(),
-            }
+            state.status_response()
         }
         Err(message) => {
             state.status = ServiceStatus::Failed {
                 reason: message.clone(),
             };
+            state.session = None;
             Response::Error { message }
         }
     }

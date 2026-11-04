@@ -23,6 +23,8 @@ mod pipe;
 #[cfg(windows)]
 mod rules;
 #[cfg(windows)]
+mod session;
+#[cfg(windows)]
 mod supervisor;
 #[cfg(windows)]
 mod wfp;

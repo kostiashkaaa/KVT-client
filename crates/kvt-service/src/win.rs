@@ -144,6 +144,33 @@ pub fn is_elevated() -> bool {
     ok != 0 && elevation.TokenIsElevated != 0
 }
 
+/// Счётчики адаптера по имени: (принято, отправлено) байт с его создания.
+/// `None` — адаптера нет (ядро не запущено или режим Zapret).
+pub fn adapter_octets(alias: &str) -> Option<(u64, u64)> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        ConvertInterfaceAliasToLuid, GetIfEntry2, MIB_IF_ROW2,
+    };
+    use windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH;
+    let wide: Vec<u16> = std::ffi::OsStr::new(alias)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut luid = NET_LUID_LH { Value: 0 };
+    // SAFETY: строка заканчивается нулём, luid — выходной параметр.
+    if unsafe { ConvertInterfaceAliasToLuid(wide.as_ptr(), &mut luid) } != 0 {
+        return None;
+    }
+    // SAFETY: MIB_IF_ROW2 — простые данные, нули допустимы; GetIfEntry2 читает
+    // InterfaceLuid и заполняет остальное.
+    let mut row: MIB_IF_ROW2 = unsafe { std::mem::zeroed() };
+    row.InterfaceLuid = luid;
+    // SAFETY: row — структура точного типа на стеке.
+    if unsafe { GetIfEntry2(&mut row) } != 0 {
+        return None;
+    }
+    Some((row.InOctets, row.OutOctets))
+}
+
 /// Job Object с флагом «убить все процессы при закрытии». Ядро помещается в него,
 /// поэтому если служба упадёт или будет остановлена, ядро не останется сиротой.
 pub struct Job(HANDLE);
@@ -202,6 +229,12 @@ mod tests {
     #[test]
     fn descriptor_is_valid() {
         assert!(!pipe_descriptor().unwrap().is_null());
+    }
+
+    #[test]
+    fn adapter_counters() {
+        assert!(adapter_octets("Loopback Pseudo-Interface 1").is_some());
+        assert!(adapter_octets("KVT-нет-такого-адаптера").is_none());
     }
 
     #[tokio::test]

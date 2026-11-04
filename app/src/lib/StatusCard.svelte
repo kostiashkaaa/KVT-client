@@ -1,12 +1,21 @@
 <script lang="ts">
   import Flag from "./Flag.svelte";
-  import { strategyTitle, type Mode, type ServerSummary, type ServiceStatus } from "./api";
+  import {
+    formatBytes,
+    formatElapsed,
+    strategyTitle,
+    type Mode,
+    type ServerSummary,
+    type ServiceStatus,
+    type Session,
+  } from "./api";
 
   let {
     server,
     mode = $bindable(),
     busy,
     status,
+    session,
     tunnelOk,
     onconnect,
     ondisconnect,
@@ -16,6 +25,8 @@
     mode: Mode;
     busy: boolean;
     status: ServiceStatus | null;
+    /** Время и трафик с «Подключить» (служба отдаёт раз в несколько секунд). */
+    session: Session | null;
     /** Идут ли данные через туннель (null — ещё не проверяли). */
     tunnelOk: boolean | null;
     onconnect: () => void;
@@ -52,6 +63,34 @@
               ? "Ошибка"
               : "Отключено",
   );
+  // Служба отвечает раз в 3 с, а секунды тикают здесь: от последнего ответа.
+  let received = $state({ secs: 0, at: 0 });
+  let now = $state(performance.now());
+  $effect(() => {
+    if (!session) return;
+    const at = performance.now();
+    const estimate = received.secs + (at - received.at) / 1000;
+    // Служба отдаёт целые секунды: ответ чуть позади своего счёта не должен
+    // откатывать время назад. Сильно меньше — это новый сеанс.
+    if (session.secs > estimate || session.secs < estimate - 3) received = { secs: session.secs, at };
+  });
+  const showSession = $derived(connected && session !== null && !busy);
+  $effect(() => {
+    if (!showSession) return;
+    now = performance.now();
+    const timer = setInterval(() => (now = performance.now()), 1000);
+    return () => clearInterval(timer);
+  });
+  const elapsed = $derived(formatElapsed(received.secs + Math.max(0, now - received.at) / 1000));
+  const traffic = $derived(
+    session?.rx != null && session.tx != null ? { rx: formatBytes(session.rx), tx: formatBytes(session.tx) } : null,
+  );
+  const sessionTitle = $derived(
+    traffic
+      ? `Принято ${traffic.rx}, отправлено ${traffic.tx} с момента подключения — весь трафик через KVT, включая сайты, которые открываются напрямую`
+      : "Время с момента подключения",
+  );
+
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
   const modes: { id: Mode; label: string; hint: string }[] = [
@@ -82,6 +121,16 @@
           Выберите сервер ниже
         {/if}
       </p>
+      {#if showSession}
+        <p class="caption session appear" title={sessionTitle}>
+          <span>{elapsed}</span>
+          {#if traffic}
+            <span class="sep" aria-hidden="true">·</span>
+            <span aria-label="Принято">↓&nbsp;{traffic.rx}</span>
+            <span aria-label="Отправлено">↑&nbsp;{traffic.tx}</span>
+          {/if}
+        </p>
+      {/if}
       {#if noData}
         <p class="caption warn-text appear">
           Сервер принял подключение, но данные через него не идут.
@@ -164,6 +213,19 @@
 
   .server .caption {
     flex: none;
+  }
+
+  /* Цифры одной ширины — строка не дрожит, когда тикают секунды. */
+  .session {
+    display: flex;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .session .sep {
+    color: var(--text-3);
   }
 
   .dot {

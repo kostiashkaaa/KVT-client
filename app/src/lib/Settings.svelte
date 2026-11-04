@@ -1,6 +1,8 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
   import {
+    autostartEnabled,
+    setAutostart,
     currentNetwork,
     dnsCatalog,
     onNetworkChanged,
@@ -17,12 +19,33 @@
     autoSwitch = $bindable(),
     dns = $bindable(),
     networks = $bindable(),
+    notifications = $bindable(),
+    connectOnStart = $bindable(),
   }: {
     killSwitch: boolean;
     autoSwitch: boolean;
     dns: DnsChoice;
     networks: NetworkProfile[];
+    notifications: boolean;
+    connectOnStart: boolean;
   } = $props();
+
+  // Автозапуск хранится в реестре Windows: его можно выключить и в «Диспетчере задач».
+  let autostart = $state(false);
+  let autostartError = $state<string | null>(null);
+  $effect(() => {
+    void autostartEnabled().then((v) => (autostart = v));
+  });
+  async function toggleAutostart(enabled: boolean) {
+    autostartError = null;
+    try {
+      await setAutostart(enabled);
+      autostart = enabled;
+    } catch (e) {
+      autostartError = String(e);
+      autostart = await autostartEnabled();
+    }
+  }
 
   let resolvers = $state<Resolver[]>([]);
   $effect(() => {
@@ -97,6 +120,54 @@
       <input type="checkbox" role="switch" bind:checked={autoSwitch} />
       <span aria-hidden="true"></span>
       <span class="sr">Автопереключение сервера</span>
+    </label>
+  </div>
+</section>
+
+<section class="card block">
+  <h2>Работа в фоне</h2>
+  <div class="row">
+    <div>
+      <h3>Запускать вместе с Windows</h3>
+      <p class="muted">KVT стартует свёрнутым в трей — окно не появляется.</p>
+    </div>
+    <label class="switch">
+      <input
+        type="checkbox"
+        role="switch"
+        checked={autostart}
+        onchange={(e) => void toggleAutostart(e.currentTarget.checked)}
+      />
+      <span aria-hidden="true"></span>
+      <span class="sr">Запускать вместе с Windows</span>
+    </label>
+  </div>
+  {#if autostartError}
+    <p class="caption error-text">{autostartError}</p>
+  {/if}
+  <div class="row">
+    <div>
+      <h3>Подключаться при запуске</h3>
+      <p class="muted">К выбранному серверу, в выбранном режиме — как кнопка «Подключить».</p>
+    </div>
+    <label class="switch">
+      <input type="checkbox" role="switch" bind:checked={connectOnStart} />
+      <span aria-hidden="true"></span>
+      <span class="sr">Подключаться при запуске</span>
+    </label>
+  </div>
+  <div class="row">
+    <div>
+      <h3>Уведомления Windows</h3>
+      <p class="muted">
+        Пока окно закрыто: сервер заменён, соединение прервано, zapret перестал справляться. Без звука. Когда окно
+        открыто, сообщения видны в нём.
+      </p>
+    </div>
+    <label class="switch">
+      <input type="checkbox" role="switch" bind:checked={notifications} />
+      <span aria-hidden="true"></span>
+      <span class="sr">Уведомления Windows</span>
     </label>
   </div>
 </section>
@@ -234,6 +305,15 @@
 
   .here .btn {
     margin-left: auto;
+  }
+
+  h3 {
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .error-text {
+    color: var(--danger);
   }
 
   .profiles {

@@ -350,6 +350,36 @@ pub async fn refresh_subscription(
     result
 }
 
+/// Обновляет все подписки по ссылке (пункт трея). Возвращает, сколько не обновилось.
+pub(crate) async fn refresh_all(app: &AppHandle) -> Result<usize, String> {
+    let state = app.state::<AppState>();
+    let ids: Vec<String> = {
+        let guard = state.store.lock().map_err(lock_err)?;
+        guard
+            .as_ref()
+            .map(|s| {
+                s.subscriptions
+                    .iter()
+                    .filter(|s| s.url.is_some())
+                    .map(|s| s.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let before = state.selected();
+    let mut failed = 0;
+    for id in &ids {
+        if let Err(e) = refresh_one(&state, id).await {
+            tracing::warn!(error = %e, "подписка не обновилась");
+            failed += 1;
+        }
+    }
+    rebuild(&state)?;
+    guard_selected(app, before).await;
+    notify(app);
+    Ok(failed)
+}
+
 /// Фоновое обновление по расписанию провайдера (`profile-update-interval`,
 /// не чаще раза в час, с разбросом). Первая проверка — через минуту после запуска.
 pub fn spawn_updater(app: AppHandle) {

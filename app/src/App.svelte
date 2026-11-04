@@ -20,6 +20,7 @@
     quickCheck,
     fullCheck,
     serviceStatus,
+    serviceSession,
     setChoice,
     snapshot,
     onSubscriptionsChanged,
@@ -28,6 +29,10 @@
     onZapretAuto,
     onTunnelState,
     takeNotices,
+    takePage,
+    onNotices,
+    onNavigate,
+    type TrayPage,
     tunnelState,
     refreshSubscription,
     defaultRouting,
@@ -43,6 +48,7 @@
     type WatchdogEvent,
     type RoutingSettings,
     type ServiceStatus,
+    type Session,
     type Mode,
     type QuickResult,
   } from "./lib/api";
@@ -79,6 +85,8 @@
   let autoSwitch = $state(true);
   let networks = $state<NetworkProfile[]>([]);
   let zapret = $state<ZapretChoice>(defaultZapret());
+  let notifications = $state(true);
+  let connectOnStart = $state(false);
   let restored = $state(false);
 
   const allServers = $derived(groups.flatMap((g) => g.servers));
@@ -94,6 +102,8 @@
     autoSwitch = c.autoSwitch ?? true;
     networks = c.networks ?? [];
     zapret = { ...defaultZapret(), ...c.zapret };
+    notifications = c.notifications ?? true;
+    connectOnStart = c.connectOnStart ?? false;
   }
 
   /** Rust хранит выбор целиком: отправляем все поля, иначе остальные сбросятся. */
@@ -107,6 +117,8 @@
       autoSwitch,
       networks: $state.snapshot(networks),
       zapret: $state.snapshot(zapret),
+      notifications,
+      connectOnStart,
     };
   }
 
@@ -158,7 +170,9 @@
   /** Сообщения, которые появились до открытия окна (например, о повреждённых настройках). */
   let startupNotices = $state<string[]>([]);
   $effect(() => {
-    void takeNotices().then((n) => (startupNotices = [...startupNotices, ...n]));
+    const take = () => void takeNotices().then((n) => (startupNotices = [...startupNotices, ...n]));
+    take();
+    return onNotices(take);
   });
 
   /** Идут ли данные через туннель: null — ещё не проверяли. */
@@ -208,6 +222,23 @@
     autoDiagnose = true;
     page = "diagnostics";
   }
+
+  // Пункты трея «Почему не работает?», «Журнал», «Подобрать заново…» и т. п.
+  function openFromTray(target: TrayPage) {
+    if (target === "why") askWhy();
+    else if (target === "add") {
+      page = "home";
+      adding = true;
+    } else page = target;
+  }
+  $effect(() => {
+    void takePage().then((p) => p && openFromTray(p));
+    return onNavigate((p) => {
+      // Открытое окно получает событие сразу — отложенная страница больше не нужна.
+      void takePage();
+      openFromTray(p);
+    });
+  });
 
   async function onfix(fix: Fix) {
     switch (fix.kind) {
@@ -323,6 +354,8 @@
   }
 
   let status = $state<ServiceStatus | null>(null);
+  /** Время и трафик сеанса — из того же ответа службы, что и статус. */
+  let session = $state<Session | null>(null);
   /** Работает VPN или только zapret. */
   const active = $derived(status?.state === "connected" || status?.state === "zapret");
   /** Настройки zapret, с которыми запущена служба (стратегия, фильтр). */
@@ -337,6 +370,7 @@
     try {
       await setChoice(currentChoice());
       status = await connect();
+      session = await serviceSession().catch(() => null);
     } catch (e) {
       failed(e, true);
       status = await serviceStatus().catch(() => null);
@@ -351,6 +385,7 @@
     busy = true;
     try {
       status = await disconnect();
+      session = null;
       connectedWith = null;
     } catch (e) {
       failed(e, true);
@@ -382,6 +417,7 @@
       // Подключились из трея или профиля сети — считаем, что с текущим выбором.
       else if (!connectedWith && restored) connectedWith = { server: selected, mode, zapret: zapretKey() };
       status = next;
+      session = nextActive ? await serviceSession().catch(() => null) : null;
     };
     void refreshStatus();
     const timer = setInterval(refreshStatus, 3000);
@@ -399,7 +435,7 @@
     {#if page === "home"}
       <h1>Главная</h1>
 
-      <StatusCard {server} bind:mode {busy} {status} {tunnelOk} {onconnect} {ondisconnect} onwhy={askWhy} />
+      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {onconnect} {ondisconnect} onwhy={askWhy} />
 
       {#each startupNotices as text, i (i)}
         <Banner>
@@ -493,7 +529,7 @@
       />
     {:else if page === "settings"}
       <h1>Настройки</h1>
-      <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks />
+      <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks bind:notifications bind:connectOnStart />
     {:else}
       <h1>Журнал</h1>
       <NetJournal />

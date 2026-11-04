@@ -4,6 +4,7 @@
 
 mod applog;
 mod audit;
+mod autostart;
 mod catalog;
 mod diagexport;
 mod diagnostics;
@@ -16,6 +17,7 @@ mod journal;
 mod migrate;
 mod netinfo;
 mod netprofile;
+mod notify;
 mod power;
 mod prober;
 mod service_client;
@@ -26,12 +28,13 @@ mod tray;
 mod troubleshoot;
 mod tunnel;
 mod watchdog;
+mod winreg;
 mod zapret;
 
 use kvt_core::compile::DnsPlan;
 use kvt_core::core_select::{select_core, CoreKind};
 use kvt_core::governor::{NetGovernor, NetPolicy};
-use kvt_core::ipc::{ConnectPlan, Request, Response, ServiceStatus};
+use kvt_core::ipc::{ConnectPlan, Request, Response, ServiceStatus, Session};
 use kvt_core::model::{FingerprintAdvice, Security, Server, Transport};
 use kvt_core::routing::presets::{self, RoutingSettings};
 use kvt_core::subscription::SubscriptionMeta;
@@ -87,6 +90,10 @@ pub(crate) struct AppState {
     last_diagnosis: Mutex<Option<troubleshoot::Diagnosis>>,
     /// Файлы диагностики, которые пользователь видел в предпросмотре.
     diag_files: Mutex<Vec<diagexport::DiagFile>>,
+    /// Последний известный сеанс службы (время и трафик) — для главной и трея.
+    session: Mutex<Option<Session>>,
+    /// Страница, которую трей попросил открыть до появления окна.
+    pending_page: Mutex<Option<String>>,
 }
 
 /// Выбор пользователя. Секретов не содержит, поэтому хранится в settings.json
@@ -108,6 +115,25 @@ struct Choice {
     auto_switch: bool,
     networks: Vec<netprofile::NetworkProfile>,
     zapret: zapret::ZapretChoice,
+    /// Последние выбранные вручную серверы (для трея). Окно это поле не присылает —
+    /// `set_choice` сохраняет прежнее.
+    recent: Vec<String>,
+    /// Уведомления Windows, пока окно закрыто.
+    notifications: bool,
+    /// Подключаться к выбранному серверу при запуске KVT.
+    connect_on_start: bool,
+}
+
+/// Сколько серверов помнит «Недавние» в трее.
+const RECENT: usize = 5;
+
+impl Choice {
+    /// Запоминает ручной выбор сервера для «Недавних».
+    fn remember(&mut self, key: &str) {
+        self.recent.retain(|k| k != key);
+        self.recent.insert(0, key.to_owned());
+        self.recent.truncate(RECENT);
+    }
 }
 
 impl Default for Choice {
@@ -122,6 +148,9 @@ impl Default for Choice {
             auto_switch: true,
             networks: Vec::new(),
             zapret: zapret::ZapretChoice::default(),
+            recent: Vec::new(),
+            notifications: true,
+            connect_on_start: false,
         }
     }
 }
@@ -187,6 +216,8 @@ impl Default for AppState {
             watchdog_wake: tokio::sync::Notify::new(),
             last_diagnosis: Mutex::default(),
             diag_files: Mutex::default(),
+            session: Mutex::default(),
+            pending_page: Mutex::default(),
         }
     }
 }
@@ -305,9 +336,25 @@ fn snapshot(state: State<'_, AppState>) -> Result<Snapshot, String> {
 
 /// Интерфейс сообщает выбор сервера, режима, kill switch и маршрутизации.
 #[tauri::command]
-fn set_choice(choice: Choice, app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+fn set_choice(
+    mut choice: Choice,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let old = state.choice.lock().map_err(crate::errors::state)?;
+        choice.recent = old.recent.clone();
+        if let Some(key) = choice
+            .server
+            .clone()
+            .filter(|k| old.server.as_ref() != Some(k))
+        {
+            choice.remember(&key);
+        }
+    }
     save_choice(&app, &choice)?;
     *state.choice.lock().map_err(crate::errors::state)? = choice;
+    tray::invalidate(&app);
     Ok(())
 }
 
@@ -374,7 +421,12 @@ async fn send_plan(state: &AppState) -> Result<ServiceStatus, String> {
         Plan::Zapret(plan) => Request::StartZapret(Box::new(plan)),
     };
     match service_client::call(request).await? {
-        Response::Status { status } => Ok(status),
+        Response::Status { status, session } => {
+            if let Ok(mut s) = state.session.lock() {
+                *s = session;
+            }
+            Ok(status)
+        }
         Response::Error { message } => Err(message),
         _ => Err(crate::errors::UNEXPECTED.into()),
     }
@@ -469,13 +521,61 @@ async fn service_status() -> Result<Option<ServiceStatus>, String> {
     query_status().await
 }
 
+/// Время и трафик текущего сеанса из последнего ответа службы (без запроса к ней).
+#[tauri::command]
+fn service_session(state: State<'_, AppState>) -> Option<Session> {
+    state.session.lock().ok().and_then(|s| *s)
+}
+
 async fn query_status() -> Result<Option<ServiceStatus>, String> {
-    match service_client::call(Request::Status).await {
-        Ok(Response::Status { status }) => Ok(Some(status)),
-        Ok(Response::Error { message }) => Err(message),
-        Ok(_) => Err(crate::errors::UNEXPECTED.into()),
-        Err(_) => Ok(None),
+    let (result, session) = match service_client::call(Request::Status).await {
+        Ok(Response::Status { status, session }) => (Ok(Some(status)), session),
+        Ok(Response::Error { message }) => (Err(message), None),
+        Ok(_) => (Err(crate::errors::UNEXPECTED.into()), None),
+        Err(_) => (Ok(None), None),
+    };
+    if let Some(app) = APP.get() {
+        if let Ok(mut s) = app.state::<AppState>().session.lock() {
+            *s = session;
+        }
     }
+    result
+}
+
+/// Для мест без `AppHandle` под рукой (статус службы спрашивают отовсюду).
+static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+/// «Подключаться при запуске»: ждёт службу (после загрузки Windows она
+/// стартует не сразу) и подключается, если ничего ещё не работает.
+fn spawn_connect_on_start(app: AppHandle) {
+    let enabled = app
+        .state::<AppState>()
+        .choice
+        .lock()
+        .map(|c| c.connect_on_start)
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..30 {
+            match query_status().await {
+                Ok(Some(ServiceStatus::Disconnected | ServiceStatus::Failed { .. })) => {
+                    if let Err(message) = connect_current(&app, true).await {
+                        notify::error(
+                            &app,
+                            &format!("Не удалось подключиться при запуске: {message}"),
+                        );
+                    }
+                    tray::invalidate(&app);
+                    return;
+                }
+                // Уже подключено (профиль сети) или идёт подключение.
+                Ok(Some(_)) => return,
+                _ => tokio::time::sleep(Duration::from_secs(2)).await,
+            }
+        }
+    });
 }
 
 /// Выбор из версий до единого списка: номер сервера в «основной» подписке → ключ.
@@ -512,6 +612,7 @@ fn main() {
         }))
         .manage(AppState::default())
         .setup(|app| {
+            let _ = APP.set(app.handle().clone());
             if let Ok(dir) = app.path().app_local_data_dir() {
                 applog::init(&dir.join("logs"));
             }
@@ -531,6 +632,12 @@ fn main() {
             migrate_choice(app.handle(), &state);
             subs::spawn_updater(app.handle().clone());
             tray::create(app.handle())?;
+            notify::spawn(app.handle());
+            // Автозапуск (`--tray`) — сразу в трей; обычный запуск открывает окно.
+            if !autostart::started_in_tray() {
+                tray::show_main_window(app.handle());
+            }
+            spawn_connect_on_start(app.handle().clone());
             netprofile::spawn(app.handle().clone());
             watchdog::spawn(app.handle().clone());
             zapret::spawn_watch(app.handle().clone());
@@ -548,6 +655,7 @@ fn main() {
             connect,
             disconnect,
             service_status,
+            service_session,
             leak_test,
             snapshot,
             set_choice,
@@ -576,6 +684,9 @@ fn main() {
             migrate::migrate_pick_folder,
             migrate::migrate_import,
             take_notices,
+            tray::take_page,
+            autostart::autostart_enabled,
+            autostart::set_autostart,
             tunnel::tunnel_state,
             diagexport::diag_preview,
             diagexport::diag_save
