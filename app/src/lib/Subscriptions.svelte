@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Banner from "./Banner.svelte";
   import Icon from "./Icon.svelte";
   import {
     listSubscriptions,
@@ -77,7 +78,12 @@
 </div>
 
 {#if error}
-  <div class="banner" role="alert">{error}</div>
+  <Banner>
+    {error}
+    {#snippet action()}
+      <button class="btn" onclick={() => (error = null)}>Понятно</button>
+    {/snippet}
+  </Banner>
 {/if}
 
 {#if items.length > 0}
@@ -85,9 +91,7 @@
     {#each items as s (s.id)}
       <li class="card">
         <div class="main">
-          <div class="title-row">
-            <h2>{s.title}</h2>
-          </div>
+          <h2 class="title">{s.title}</h2>
           <p class="caption">{details(s)}</p>
           {#if s.usedBytes != null && s.totalBytes}
             <div class="usage">
@@ -101,15 +105,20 @@
 
         <div class="actions">
           {#if confirmRemove === s.id}
-            <span class="caption">Удалить подписку?</span>
+            <span class="caption appear">Удалить подписку?</span>
             <button class="btn danger" onclick={() => act(() => removeSubscription(s.id)).then(() => (confirmRemove = null))}>
               Удалить
             </button>
             <button class="btn" onclick={() => (confirmRemove = null)}>Отмена</button>
           {:else}
             {#if s.byUrl}
-              <button class="btn" disabled={refreshing !== null} onclick={() => refresh(s.id)}>
-                {refreshing === s.id ? "Обновление…" : "Обновить"}
+              <button
+                class="btn"
+                class:busy={refreshing === s.id}
+                disabled={refreshing !== null}
+                onclick={() => refresh(s.id)}
+              >
+                Обновить
               </button>
             {/if}
             <button class="btn subtle" onclick={() => (confirmRemove = s.id)} aria-label={`Удалить ${s.title}`}>
@@ -152,10 +161,10 @@
     min-width: 0;
   }
 
-  .title-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
+  .title {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .top {
@@ -195,6 +204,7 @@
     display: block;
     height: 100%;
     background: var(--accent);
+    transition: width 300ms var(--ease);
   }
 
   .bar.warn span {
@@ -214,21 +224,24 @@
     color: var(--text-2);
   }
 
+  .btn.subtle:hover {
+    background: var(--surface-hover);
+    color: var(--danger);
+  }
+
   .btn.danger {
     border-color: transparent;
     background: var(--danger);
-    color: #fff;
+    color: var(--accent-text);
+  }
+
+  .btn.danger:hover {
+    background: var(--danger);
+    opacity: 0.9;
   }
 
   .note {
-    max-width: 640px;
+    max-width: var(--measure);
   }
 
-  .banner {
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--stroke);
-    border-left: 3px solid var(--warn);
-    border-radius: var(--radius-s);
-    background: var(--warn-subtle);
-  }
 </style>

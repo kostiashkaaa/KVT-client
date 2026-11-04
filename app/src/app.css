@@ -46,6 +46,11 @@
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.06);
   --focus: 0 0 0 2px var(--surface), 0 0 0 4px var(--text);
   --ease: cubic-bezier(0.2, 0, 0, 1);
+  /* Анимации короткие и только на transform/opacity — без перерасчёта раскладки. */
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  /* Ширина строки пояснений: около 65 знаков, чтобы текст не расплывался по карточке. */
+  --measure: 66ch;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -93,6 +98,8 @@ body {
   font: 14px/20px var(--font);
   -webkit-font-smoothing: antialiased;
   user-select: none;
+  /* Тонкая полоса прокрутки в цвет темы вместо системной серой. */
+  scrollbar-color: var(--stroke-strong) transparent;
 }
 
 #app {
@@ -105,6 +112,18 @@ h3 {
   margin: 0;
   font-family: var(--font-display);
   font-weight: 600;
+  text-wrap: balance;
+}
+
+/* Без одиноких слов в последней строке пояснений. Висячие предлоги
+   склеивает с соседним словом typography.ts. */
+p,
+li,
+dd,
+label,
+.caption,
+.muted {
+  text-wrap: pretty;
 }
 
 h1 {
@@ -139,16 +158,27 @@ textarea {
   border: 1px solid var(--stroke);
   border-radius: var(--radius-s);
   background: var(--surface);
+  white-space: nowrap;
   cursor: pointer;
-  transition: background 120ms var(--ease);
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
 }
 
-.btn:hover {
+/* Иконка и спиннер в кнопке не сжимаются и стоят по центру строки. */
+.btn > :is(svg, .spinner) {
+  flex: none;
+}
+
+.btn:hover:not(:disabled) {
   background: var(--surface-hover);
 }
 
-.btn:active {
+.btn:active:not(:disabled) {
   background: var(--surface-pressed);
+  color: var(--text-2);
 }
 
 .btn:disabled {
@@ -162,13 +192,84 @@ textarea {
   color: var(--accent-text);
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
-.btn-primary:active {
+.btn-primary:active:not(:disabled) {
   background: var(--accent);
-  opacity: 0.9;
+  color: var(--accent-text);
+  opacity: 0.85;
+}
+
+/* Кольцо загрузки — вместо иконки в кнопке, пока идёт действие. */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: kvt-spin 700ms linear infinite;
+}
+
+/* Кнопка за работой: подпись и иконка прячутся, но держат ширину, а по центру
+   крутится кольцо. Так кнопки рядом не сдвигаются, пока идёт проверка. */
+.btn.busy {
+  position: relative;
+  color: transparent !important;
+}
+
+.btn.busy:disabled {
+  opacity: 1;
+}
+
+.btn.busy::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 14px;
+  height: 14px;
+  margin: auto;
+  border: 2px solid var(--text-2);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: kvt-spin 700ms linear infinite;
+}
+
+.btn-primary.busy::after {
+  border-color: var(--accent-text);
+  border-right-color: transparent;
+}
+
+/* Появление нового блока: лёгкий подъём и проявление. */
+.appear {
+  animation: kvt-rise var(--dur) var(--ease) backwards;
+}
+
+@keyframes kvt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes kvt-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes kvt-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes kvt-pulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .card {
@@ -204,15 +305,28 @@ select {
   color: var(--text);
   font: inherit;
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
 }
 
-/* Переключатель в стиле Windows 11. */
+select:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Переключатель в стиле Windows 11. Отступ сверху ставит его по центру
+   первой строки заголовка рядом. */
 .switch {
   position: relative;
   flex: none;
   width: 40px;
   height: 20px;
-  margin-top: var(--space-1);
+  margin-top: 1px;
   cursor: pointer;
 }
 
@@ -229,7 +343,9 @@ select {
   inset: 0;
   border: 1px solid var(--text-2);
   border-radius: 10px;
-  transition: background 120ms var(--ease);
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
 }
 
 .switch span[aria-hidden]::after {
@@ -241,7 +357,14 @@ select {
   height: 10px;
   border-radius: 50%;
   background: var(--text-2);
-  transition: transform 120ms var(--ease);
+  transition:
+    transform var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+
+/* Как в Windows 11: под курсором бегунок чуть больше. */
+.switch:hover span[aria-hidden]::after {
+  transform: scale(1.2);
 }
 
 .switch input:checked + span {
@@ -251,6 +374,23 @@ select {
 
 .switch input:checked + span::after {
   background: var(--accent-text);
+  transform: translateX(20px);
+}
+
+.switch:hover input:checked + span::after {
+  transform: translateX(20px) scale(1.2);
+}
+
+.switch input:disabled,
+.switch:has(input:disabled) {
+  cursor: default;
+}
+
+.switch:has(input:disabled) span[aria-hidden]::after {
+  transform: none;
+}
+
+.switch:has(input:disabled) input:checked + span::after {
   transform: translateX(20px);
 }
 
@@ -284,6 +424,7 @@ select {
   border-left: 3px solid var(--stroke-strong);
   border-radius: var(--radius-s);
   background: var(--bg);
+  animation: kvt-rise var(--dur) var(--ease) backwards;
 }
 
 .results li.ok {

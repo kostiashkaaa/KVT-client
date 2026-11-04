@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { fade } from "svelte/transition";
+  import Banner from "./lib/Banner.svelte";
   import NavRail, { type Page } from "./lib/NavRail.svelte";
   import StatusCard from "./lib/StatusCard.svelte";
   import ServerList from "./lib/ServerList.svelte";
@@ -123,9 +125,10 @@
         groups = snap.groups;
         if (!snap.choice) return;
         applyChoice(snap.choice);
-        // Автопереключение уже подключилось к новому серверу — второй раз не нужно.
-        // Автоподбор zapret сам перезапустил службу с новой стратегией.
-        if (connectedWith) connectedWith = { ...connectedWith, server: snap.choice.server, zapret: zapretKey() };
+        // Автопереключение уже подключилось к новому серверу, профиль сети сам
+        // переподключил с новым режимом, автоподбор zapret сам перезапустил службу
+        // с новой стратегией — второй раз из окна не нужно.
+        if (connectedWith) connectedWith = { server: snap.choice.server, mode, zapret: zapretKey() };
       });
     }),
   );
@@ -189,9 +192,10 @@
         await onconnect();
         break;
       case "refresh_subscription": {
-        page = "subscriptions";
+        // На главной видно и вращение «Обновить», и ошибку, если провайдер не ответил.
+        page = "home";
         const group = groups.find((g) => g.servers.some((s) => s.key === selected));
-        if (group?.byUrl) await refreshSubscription(group.id).catch(() => {});
+        if (group?.byUrl) await refresh(group.id);
         break;
       }
       case "add_subscription":
@@ -357,6 +361,9 @@
   <NavRail bind:current={page} />
 
   <main bind:this={mainEl}>
+    <!-- Новая вкладка проявляется с лёгким подъёмом; старая уходит сразу, без задержки. -->
+    {#key page}
+    <div class="page">
     {#if page === "home"}
       <h1>Главная</h1>
 
@@ -367,20 +374,23 @@
       {/if}
 
       {#if error}
-        <div class="banner" role="alert">
-          <span>{error.text}</span>
-          {#if error.why}
-            <button class="btn" onclick={askWhy}>Почему не работает?</button>
-          {:else}
-            <button class="btn" onclick={() => (error = null)}>Понятно</button>
-          {/if}
-        </div>
+        <Banner>
+          {error.text}
+          {#snippet action()}
+            {#if error?.why}
+              <button class="btn" onclick={askWhy}>Почему не работает?</button>
+            {/if}
+            <button class="btn" onclick={() => (error = null)}>{error?.why ? "Скрыть" : "Понятно"}</button>
+          {/snippet}
+        </Banner>
       {/if}
       {#if notice}
-        <div class="banner info" role="status">
-          <span>{notice}</span>
-          <button class="btn" onclick={() => (notice = null)}>Понятно</button>
-        </div>
+        <Banner tone="info">
+          {notice}
+          {#snippet action()}
+            <button class="btn" onclick={() => (notice = null)}>Понятно</button>
+          {/snippet}
+        </Banner>
       {/if}
 
       {#if allServers.length > 0}
@@ -403,7 +413,7 @@
       {:else}
         <AddSubscription onadd={add} {busy} />
         {#if addError && !adding}
-          <div class="banner" role="alert"><span>{addError}</span></div>
+          <Banner>{addError}</Banner>
         {/if}
       {/if}
     {:else if page === "subscriptions"}
@@ -431,6 +441,8 @@
       <h1>Журнал</h1>
       <NetJournal />
     {/if}
+    </div>
+    {/key}
   </main>
 </div>
 
@@ -442,6 +454,7 @@
     aria-modal="true"
     aria-labelledby="add-title"
     tabindex="-1"
+    transition:fade={{ duration: 150 }}
     onclick={(e) => {
       if (e.target === e.currentTarget) closeAdd();
     }}
@@ -451,7 +464,7 @@
   >
     <AddSubscription onadd={add} {busy} oncancel={closeAdd} />
     {#if addError}
-      <div class="banner overlay-error" role="alert"><span>{addError}</span></div>
+      <div class="overlay-error"><Banner>{addError}</Banner></div>
     {/if}
   </div>
 {/if}
@@ -466,38 +479,25 @@
     /* Закреплённые панели (список серверов) прилипают к самому верху окна. */
     --page-pad-top: var(--space-6);
     flex: 1;
+    min-width: 0;
+    padding: var(--page-pad-top) var(--space-8) var(--space-6);
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+
+  .page {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
     max-width: 880px;
-    padding: var(--page-pad-top) var(--space-8) var(--space-6);
-    overflow-y: auto;
+    /* backwards: после анимации на странице не остаётся transform — закреплённая
+       панель списка серверов работает как обычно. */
+    animation: kvt-rise var(--dur) var(--ease) backwards;
   }
 
   /* Карточки не сжимаются под высоту окна — страница прокручивается целиком. */
-  main > :global(*) {
+  .page > :global(*) {
     flex-shrink: 0;
-  }
-
-  .banner {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--stroke);
-    border-left: 3px solid var(--warn);
-    border-radius: var(--radius-s);
-    background: var(--warn-subtle);
-  }
-
-  .banner .btn {
-    flex: none;
-  }
-
-  .banner.info {
-    border-left-color: var(--accent);
-    background: var(--accent-subtle);
   }
 
   .overlay {
@@ -516,7 +516,6 @@
   .overlay-error {
     width: min(560px, calc(100vw - 32px));
   }
-
   @media (max-width: 720px) {
     main {
       --page-pad-top: var(--space-4);

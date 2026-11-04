@@ -44,12 +44,13 @@
     { id: "hybrid", label: "Гибрид", hint: "YouTube и Discord через zapret, остальное через VPN" },
     { id: "zapret", label: "Zapret", hint: "Без VPN: только обход DPI для YouTube и Discord" },
   ];
+  const modeIndex = $derived(Math.max(0, modes.findIndex((m) => m.id === mode)));
 </script>
 
 <section class="card status" aria-live="polite">
   <div class="state">
     <span class="dot {tone}" aria-hidden="true"></span>
-    <div>
+    <div class="text">
       <h2>{title}</h2>
       <p class="muted">
         {#if zapretOnly}
@@ -57,9 +58,11 @@
         {:else if mode === "zapret" && !connected}
           Обход DPI без VPN — сервер не нужен
         {:else if server}
-          <span class="server"><Flag code={server.flag} />{server.name}</span>{#if coreName}<span class="caption">
-              · {coreName}</span
-            >{/if}
+          <!-- Без флага — без пустого места перед названием. -->
+          <span class="server"
+            >{#if server.flag}<Flag code={server.flag} />{/if}<span class="name">{server.name}</span
+            >{#if coreName}<span class="caption">· {coreName}</span>{/if}</span
+          >
         {:else}
           Выберите сервер ниже
         {/if}
@@ -67,15 +70,19 @@
     </div>
   </div>
 
-  {#if connected}
-    <button class="btn connect" disabled={busy} onclick={ondisconnect}>Отключить</button>
-  {:else}
-    <button class="btn btn-primary connect" disabled={(!server && mode !== "zapret") || busy} onclick={onconnect}>
-      {busy ? "Подключение…" : "Подключить"}
-    </button>
-  {/if}
+  <!-- Одна кнопка: при подключении цвет меняется плавно, а не скачком. -->
+  <button
+    class="btn connect"
+    class:btn-primary={!connected}
+    disabled={busy || (!connected && !server && mode !== "zapret")}
+    onclick={connected ? ondisconnect : onconnect}
+  >
+    {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
+    {connected ? "Отключить" : busy ? "Подключение…" : "Подключить"}
+  </button>
 
-  <div class="modes" role="radiogroup" aria-label="Режим работы">
+  <div class="modes" role="radiogroup" aria-label="Режим работы" style:--i={modeIndex}>
+    <span class="thumb" aria-hidden="true"></span>
     {#each modes as m (m.id)}
       <button
         role="radio"
@@ -103,27 +110,51 @@
     padding: var(--space-5);
   }
 
+  /* Точка стоит по центру строки заголовка, а не между двумя строками. */
   .state {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .text {
+    min-width: 0;
   }
 
   .state p {
-    margin: 0;
+    margin: 2px 0 0;
   }
 
   .server {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
+    max-width: 100%;
+    vertical-align: top;
+  }
+
+  .name {
+    overflow: hidden;
+    font-family: var(--font), "Segoe UI Emoji";
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .server .caption {
+    flex: none;
   }
 
   .dot {
+    flex: none;
     width: 10px;
     height: 10px;
+    margin-top: 6px;
     border-radius: 50%;
     background: var(--text-3);
+    transition:
+      background-color var(--dur) var(--ease),
+      box-shadow var(--dur) var(--ease);
   }
 
   .dot.on {
@@ -131,21 +162,28 @@
     box-shadow: 0 0 0 4px var(--ok-subtle);
   }
 
+  /* Подключение — мягкая пульсация вместо статичной точки. */
   .dot.pending {
     background: var(--warn);
+    animation: kvt-pulse 1.2s ease-in-out infinite;
   }
 
   .dot.error {
     background: var(--danger);
+    box-shadow: 0 0 0 4px var(--danger-subtle);
   }
 
   .connect {
-    min-width: 140px;
+    min-width: 148px;
     height: 36px;
   }
 
+  /* Сегменты одной ширины — подсветка выбранного плавно переезжает. */
   .modes {
-    display: inline-flex;
+    --w: 76px;
+    position: relative;
+    display: inline-grid;
+    grid-template-columns: repeat(3, var(--w));
     justify-self: start;
     padding: 2px;
     border: 1px solid var(--stroke);
@@ -153,23 +191,37 @@
     background: var(--bg);
   }
 
+  .thumb {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    width: var(--w);
+    border-radius: 3px;
+    background: var(--accent-subtle);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    transform: translateX(calc(var(--i) * 100%));
+    transition: transform var(--dur) var(--ease);
+  }
+
   .modes button {
-    min-width: 72px;
+    position: relative;
     height: 28px;
     border: 0;
     border-radius: 3px;
     background: transparent;
     cursor: pointer;
+    transition:
+      background-color var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease);
   }
 
-  .modes button:hover {
+  .modes button:hover:not(.selected) {
     background: var(--surface-hover);
   }
 
   /* Выбранный вариант — акцентом: в тёмной теме фон почти не отличается. */
   .modes button.selected {
-    background: var(--accent-subtle);
-    box-shadow: inset 0 0 0 1px var(--accent);
     color: var(--accent);
     font-weight: 600;
   }
@@ -195,5 +247,6 @@
 
   .why:hover {
     text-decoration: underline;
+    text-underline-offset: 2px;
   }
 </style>

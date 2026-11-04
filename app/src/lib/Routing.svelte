@@ -65,7 +65,7 @@
     </label>
   </div>
 
-  <h2>Всё остальное</h2>
+  <h2 class="spaced">Всё остальное</h2>
   <div class="segmented" role="radiogroup" aria-label="Трафик вне списков">
     <button
       role="radio"
@@ -146,6 +146,10 @@
     letter-spacing: 0.04em;
   }
 
+  .spaced {
+    margin-top: var(--space-3);
+  }
+
   .head {
     display: flex;
     align-items: center;
@@ -155,6 +159,7 @@
   .intro,
   .caption {
     margin: 0;
+    max-width: var(--measure);
   }
 
   .options {
@@ -172,6 +177,13 @@
     border: 1px solid var(--stroke);
     border-radius: var(--radius-m);
     cursor: pointer;
+    transition:
+      background-color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
+  }
+
+  .options label:hover:not(.selected) {
+    background: var(--surface-hover);
   }
 
   .options label.selected {
@@ -212,6 +224,14 @@
     border-radius: 3px;
     background: transparent;
     cursor: pointer;
+    transition:
+      background-color var(--dur-fast) var(--ease),
+      box-shadow var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease);
+  }
+
+  .segmented button:hover:not(.selected) {
+    background: var(--surface-hover);
   }
 
   /* Выбранный вариант — акцентом: в тёмной теме фон почти не отличается. */
@@ -233,7 +253,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-4);
-    min-height: 40px;
+    min-height: 44px;
     border-bottom: 1px solid var(--stroke);
   }
 
@@ -242,15 +262,8 @@
   }
 
   select {
+    flex: none;
     min-width: 220px;
-    height: 30px;
-    padding: 0 var(--space-2);
-    border: 1px solid var(--stroke);
-    border-radius: var(--radius-s);
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    cursor: pointer;
   }
 
   select.changed {

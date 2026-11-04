@@ -254,7 +254,7 @@
       </div>
     </div>
     {#if !running}
-      <button class="btn btn-primary" disabled={busy} onclick={enable}>Включить zapret</button>
+      <button class="btn btn-primary" class:busy disabled={busy} onclick={enable}>Включить zapret</button>
     {/if}
   </div>
 
@@ -268,11 +268,11 @@
       {/if}
     </span>
     <div class="actions">
-      <button class="btn" disabled={check.running || pick.running} onclick={runCheck}>
-        <Icon name="pulse" size={16} />{check.running ? "Проверка…" : "Проверить сейчас"}
+      <button class="btn" class:busy={check.running} disabled={check.running || pick.running} onclick={runCheck}>
+        <Icon name="pulse" size={16} />Проверить сейчас
       </button>
-      <button class="btn" disabled={diagnosis.running || pick.running} onclick={runDiagnosis}>
-        <Icon name="help" size={16} />{diagnosis.running ? "Ищу причину…" : "Почему не работает?"}
+      <button class="btn" class:busy={diagnosis.running} disabled={diagnosis.running || pick.running} onclick={runDiagnosis}>
+        <Icon name="help" size={16} />Почему не работает?
       </button>
     </div>
   </div>
@@ -281,7 +281,7 @@
 
   {#if diagnosis.result}
     {@const d = diagnosis.result}
-    <div class="verdict {d.tone}" role="status">
+    <div class="verdict appear {d.tone}" role="status">
       <div>
         <strong>{d.title}</strong>
         {#if d.detail}<p>{d.detail}</p>{/if}
@@ -394,7 +394,7 @@
   {#if pick.error}<p class="note">{pick.error}</p>{/if}
   {#if pick.result && !pick.running}
     {@const r = pick.result}
-    <p class="result" class:good={r.best !== null || r.baseline === r.max}>
+    <p class="result appear" class:good={r.best !== null || r.baseline === r.max}>
       {#if r.cancelled && !r.best}
         Подбор остановлен.
       {:else if r.best}
@@ -580,19 +580,30 @@
   {/if}
 
   <div class="actions">
-    <button class="btn" disabled={checkingLatest || maintaining !== null} onclick={() => checkLatest(true)}>
-      {checkingLatest ? "Проверка…" : "Проверить обновления"}
+    <button
+      class="btn"
+      class:busy={checkingLatest}
+      disabled={checkingLatest || maintaining !== null}
+      onclick={() => checkLatest(true)}
+    >
+      Проверить обновления
     </button>
     <button
       class="btn"
       class:btn-primary={updateAvailable}
+      class:busy={maintaining === "update"}
       disabled={maintaining !== null || pick.running}
       onclick={() => maintain("update")}
     >
-      {maintaining === "update" ? "Обновление…" : "Обновить zapret"}
+      Обновить zapret
     </button>
-    <button class="btn" disabled={maintaining !== null || pick.running} onclick={() => (confirmRepair = true)}>
-      {maintaining === "repair" ? "Переустановка…" : "Переустановить"}
+    <button
+      class="btn"
+      class:busy={maintaining === "repair"}
+      disabled={maintaining !== null || pick.running}
+      onclick={() => (confirmRepair = true)}
+    >
+      Переустановить
     </button>
   </div>
   <p class="caption">
@@ -602,7 +613,7 @@
   </p>
 
   {#if confirmRepair}
-    <div class="confirm" role="alertdialog" aria-label="Переустановить zapret">
+    <div class="confirm appear" role="alertdialog" aria-label="Переустановить zapret">
       <p>
         Переустановка остановит zapret, вернёт проверенный комплект из поставки KVT (обновление удалится), сбросит
         рабочие списки и драйвер WinDivert. Ваши настройки и подобранные стратегии сохранятся. Если zapret работал,
@@ -630,7 +641,7 @@
         <strong>Работает другой обход блокировок</strong>
         <p>{conflicts.map((c) => c.name).join(", ")} — вместе с zapret KVT ничего не откроется. KVT остановит их, ничего не удаляя.</p>
       </div>
-      <button class="btn" disabled={stopping} onclick={stopConflicts}>{stopping ? "Остановка…" : "Остановить"}</button>
+      <button class="btn" class:busy={stopping} disabled={stopping} onclick={stopConflicts}>Остановить</button>
     </div>
   {/if}
 
@@ -658,7 +669,7 @@
 
   .row p {
     margin: var(--space-1) 0 0;
-    max-width: 560px;
+    max-width: var(--measure);
   }
 
   .row > .btn,
@@ -679,9 +690,10 @@
     margin: 0;
   }
 
+  /* Точка — по центру строки заголовка, а не между строками. */
   .state {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--space-3);
   }
 
@@ -693,8 +705,12 @@
     flex: none;
     width: 10px;
     height: 10px;
+    margin-top: 6px;
     border-radius: 50%;
     background: var(--text-3);
+    transition:
+      background-color var(--dur) var(--ease),
+      box-shadow var(--dur) var(--ease);
   }
 
   .dot.on {
@@ -834,6 +850,7 @@
     display: block;
     height: 100%;
     background: var(--accent);
+    transition: width 300ms var(--ease);
   }
 
   .result {
@@ -896,11 +913,13 @@
     font: 12px/18px var(--mono);
     resize: vertical;
     user-select: text;
+    transition: border-color var(--dur-fast) var(--ease);
   }
 
   textarea:focus {
     outline: none;
-    border-bottom: 2px solid var(--accent);
+    border-bottom-color: var(--accent);
+    box-shadow: inset 0 -1px 0 var(--accent);
   }
 
   .bad {

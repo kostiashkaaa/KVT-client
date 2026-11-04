@@ -39,6 +39,7 @@
         <button
           class:active={current === item.id}
           aria-current={current === item.id ? "page" : undefined}
+          title={item.label}
           onclick={() => (current = item.id)}
         >
           <Icon name={item.icon} />
@@ -51,6 +52,7 @@
     class="settings"
     class:active={current === "settings"}
     aria-current={current === "settings" ? "page" : undefined}
+    title="Настройки"
     onclick={() => (current = "settings")}
   >
     <Icon name="sliders" />
@@ -95,18 +97,27 @@
     background: transparent;
     text-align: left;
     cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease);
+  }
+
+  button :global(svg) {
+    flex: none;
   }
 
   button:hover {
     background: var(--surface-hover);
   }
 
+  button:active {
+    background: var(--surface-pressed);
+  }
+
   button.active {
     background: var(--surface);
   }
 
-  /* Индикатор выбранного раздела, как в навигации Windows 11. */
-  button.active::before {
+  /* Индикатор выбранного раздела, как в навигации Windows 11: вытягивается из центра. */
+  button::before {
     content: "";
     position: absolute;
     left: 0;
@@ -115,6 +126,16 @@
     width: 3px;
     border-radius: 2px;
     background: var(--accent);
+    opacity: 0;
+    transform: scaleY(0);
+    transition:
+      transform var(--dur) var(--ease),
+      opacity var(--dur-fast) var(--ease);
+  }
+
+  button.active::before {
+    opacity: 1;
+    transform: scaleY(1);
   }
 
   .settings {
@@ -129,8 +150,13 @@
       justify-content: center;
       padding-inline: 0;
     }
+    /* Подпись скрыта визуально, но остаётся именем кнопки для экранного диктора. */
     button span {
-      display: none;
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
     }
     button {
       justify-content: center;

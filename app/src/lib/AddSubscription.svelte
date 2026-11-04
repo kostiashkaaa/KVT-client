@@ -45,15 +45,22 @@
     use:focus
     onkeydown={(e) => {
       if (e.key === "Escape" && oncancel) oncancel();
+      if (e.key === "Enter" && e.ctrlKey && value.trim() && !busy) onadd(value);
     }}
   ></textarea>
 
   <div class="actions">
     {#if oncancel}
-      <button class="btn" onclick={oncancel}>Отмена</button>
+      <button class="btn" disabled={busy} onclick={oncancel}>Отмена</button>
     {/if}
-    <button class="btn" onclick={paste}><Icon name="paste" size={16} />Вставить из буфера</button>
-    <button class="btn btn-primary" disabled={!value.trim() || busy} onclick={() => onadd(value)}>
+    <button class="btn" disabled={busy} onclick={paste}><Icon name="paste" size={16} />Вставить из буфера</button>
+    <button
+      class="btn btn-primary"
+      class:busy
+      disabled={!value.trim() || busy}
+      title="Ctrl+Enter"
+      onclick={() => onadd(value)}
+    >
       <Icon name="plus" size={16} />Добавить
     </button>
   </div>
@@ -77,10 +84,18 @@
     width: min(560px, calc(100vw - 32px));
     padding: var(--space-6);
     box-shadow: 0 8px 32px rgb(0 0 0 / 0.28);
+    animation: pop var(--dur) var(--ease) backwards;
+  }
+
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.98);
+    }
   }
 
   p {
-    max-width: 420px;
+    max-width: 440px;
     margin: 0;
   }
 
@@ -95,15 +110,20 @@
     font: 12px/18px var(--mono);
     resize: vertical;
     user-select: text;
+    transition: border-color var(--dur-fast) var(--ease);
   }
 
+  /* Как в Windows 11: снизу акцентная линия, высота поля не меняется. */
   textarea:focus {
     outline: none;
-    border-bottom: 2px solid var(--accent);
+    border-bottom-color: var(--accent);
+    box-shadow: inset 0 -1px 0 var(--accent);
   }
 
   .actions {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
     gap: var(--space-2);
   }
 </style>

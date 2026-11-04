@@ -112,7 +112,7 @@
   {/if}
 
   {#if conflicts.length > 0}
-    <div class="conflict" role="alert">
+    <div class="conflict appear" role="alert">
       <Icon name="warning" size={16} />
       <div>
         <strong>Работает другой обход блокировок</strong>
@@ -121,7 +121,7 @@
           открывается. KVT может остановить их; удалять ничего не будет.
         </p>
       </div>
-      <button class="btn" disabled={stopping} onclick={stopConflicts}>{stopping ? "Остановка…" : "Остановить"}</button>
+      <button class="btn" class:busy={stopping} disabled={stopping} onclick={stopConflicts}>Остановить</button>
     </div>
   {/if}
 
@@ -165,7 +165,7 @@
     <p class="note">{pick.error}</p>
   {:else if pick.result && !pick.running}
     {@const r = pick.result}
-    <p class="result" class:good={r.best !== null || r.baseline === r.max}>
+    <p class="result appear" class:good={r.best !== null || r.baseline === r.max}>
       {#if r.cancelled && !r.best}
         Подбор остановлен.
       {:else if r.best}
@@ -303,6 +303,7 @@
 
   .link:hover {
     text-decoration: underline;
+    text-underline-offset: 2px;
   }
 
   .result.good {

@@ -172,6 +172,7 @@ async fn handle_incident(app: &AppHandle) {
         .map(|e| display_name(&e.server))
         .unwrap_or_default();
     let candidates = alternatives(&state, current.as_ref()).await;
+    let tried = !candidates.is_empty();
     for key in candidates {
         if switch_to(app, &key).await.is_ok() {
             let to = server_name(&state, &key);
@@ -179,7 +180,30 @@ async fn handle_incident(app: &AppHandle) {
             return;
         }
     }
+    // Замены не нашлось: возвращаем прежний сервер, иначе в окне остался бы выбран
+    // последний неудачный кандидат, а уведомление говорило бы о другом.
+    if let (true, Some(original)) = (tried, current.as_ref()) {
+        let _ = restore(app, &original.key).await;
+    }
     let _ = app.emit(EVENT, Event::NoAlternative { server: from });
+}
+
+/// Возвращает выбор на сервер `key` и подключается к нему без проверки туннеля.
+async fn restore(app: &AppHandle, key: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let choice = {
+        let mut c = state
+            .choice
+            .lock()
+            .map_err(|_| "внутренняя ошибка состояния")?;
+        c.server = Some(key.to_owned());
+        c.clone()
+    };
+    save_choice(app, &choice)?;
+    let _ = app.emit(CHOICE_EVENT, ());
+    let result = connect_current(&state).await.map(|_| ());
+    crate::tray::refresh(app).await;
+    result
 }
 
 pub fn spawn(app: AppHandle) {

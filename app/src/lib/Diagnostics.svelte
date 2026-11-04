@@ -167,17 +167,17 @@
         не больше одного соединения.
       </p>
     </div>
-    <button class="btn btn-primary" disabled={st.diagnosing} onclick={diagnose}>
-      <Icon name="help" size={16} />{st.diagnosing ? "Проверка…" : "Найти причину"}
+    <button class="btn btn-primary" class:busy={st.diagnosing} disabled={st.diagnosing} onclick={diagnose}>
+      <Icon name="help" size={16} />Найти причину
     </button>
   </div>
 
   {#if st.diagnoseError}
-    <p class="error-text">{st.diagnoseError}</p>
+    <p class="error-text appear">{st.diagnoseError}</p>
   {/if}
 
   {#if st.diagnosis}
-    <div class="verdict {st.diagnosis.tone}" role="status">
+    <div class="verdict appear {st.diagnosis.tone}" role="status">
       <div>
         <strong>{st.diagnosis.title}</strong>
         {#if st.diagnosis.detail}<p>{st.diagnosis.detail}</p>{/if}
@@ -209,22 +209,23 @@
     </div>
     <button
       class="btn"
+      class:busy={st.dnsRunning}
       disabled={st.dnsRunning || connected}
       title={connected ? "Отключите VPN: проверка смотрит на сеть провайдера напрямую" : undefined}
       onclick={runDns}
     >
-      <Icon name="globe" size={16} />{st.dnsRunning ? "Проверка…" : "Проверить DNS"}
+      <Icon name="globe" size={16} />Проверить DNS
     </button>
   </div>
   {#if connected}
     <p class="caption">Проверка DNS работает при отключённом VPN.</p>
   {/if}
   {#if st.dnsError}
-    <p class="error-text">{st.dnsError}</p>
+    <p class="error-text appear">{st.dnsError}</p>
   {/if}
 
   {#if st.dnsReport}
-    <div class="verdict {st.dnsReport.tone}" role="status">
+    <div class="verdict appear {st.dnsReport.tone}" role="status">
       <div>
         <strong>{st.dnsReport.title}</strong>
         <p>{st.dnsReport.detail}</p>
@@ -277,7 +278,7 @@
     </p>
 
     {#if recommended && dns.local !== recommended.id}
-      <div class="suggest">
+      <div class="suggest appear">
         <span>Для сайтов, которые открываются напрямую, лучше подойдёт {recommended.title}.</span>
         <button class="btn" onclick={() => (dns = { ...dns, local: recommended.id })}>Использовать</button>
       </div>
@@ -294,13 +295,13 @@
         проверяется локально — в интернет уходит один DNS-запрос.
       </p>
     </div>
-    <button class="btn" disabled={st.leaking} onclick={runLeaks}>
-      <Icon name="shield" size={16} />{st.leaking ? "Проверка…" : "Проверить"}
+    <button class="btn" class:busy={st.leaking} disabled={st.leaking} onclick={runLeaks}>
+      <Icon name="shield" size={16} />Проверить
     </button>
   </div>
 
   {#if st.leakError}
-    <p class="error-text">{st.leakError}</p>
+    <p class="error-text appear">{st.leakError}</p>
   {/if}
   {#if st.leaks}
     <ul class="results">
@@ -351,7 +352,7 @@
 
   .row p {
     margin: var(--space-1) 0 0;
-    max-width: 560px;
+    max-width: var(--measure);
   }
 
   .row .btn {

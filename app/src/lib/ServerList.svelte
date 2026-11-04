@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { slide } from "svelte/transition";
   import Icon from "./Icon.svelte";
   import Flag from "./Flag.svelte";
   import type { Group, Outcome, QuickResult, ServerSummary, SubscriptionInfo } from "./api";
@@ -208,27 +209,32 @@
               <span class:spin={refreshing === g.id}><Icon name="refresh" size={16} /></span>
             </button>
           {/if}
+          <!-- Подпись не меняется, поверх неё крутится кольцо — кнопки не прыгают. -->
           <button
             class="btn ghost"
+            class:busy={checking === g.id}
             disabled={checking !== null || fullChecking !== null}
             onclick={() => oncheck(g.id)}
             title="Пинг: только TCP-соединение, без TLS — не привлекает внимание DPI"
           >
-            {checking === g.id ? "Пинг…" : "Пинг"}
+            Пинг
           </button>
           <button
             class="btn ghost"
+            class:busy={fullChecking === g.id}
             disabled={checking !== null || fullChecking !== null || fullCheckBlocked !== null}
             onclick={() => onfullcheck(g.id)}
             title={fullCheckBlocked ??
               "Подключается к каждому серверу и скачивает 200 КБ. Серверы с одинаковым SNI проверяются по очереди, чтобы не вызвать заморозку у провайдера"}
           >
-            {fullChecking === g.id ? "Проверка…" : "Проверить"}
+            Проверить
           </button>
         </div>
       </div>
 
       {#if open}
+        <!-- Большие группы раскрываются сразу: анимация высоты длинного списка нагружала бы окно. -->
+        <div class="group-body" transition:slide={{ duration: servers.length > 40 ? 0 : 180 }}>
         {#if g.meta.announce}
           <!-- Текст провайдера выводится только как текст, без разметки. -->
           <p class="announce">{g.meta.announce}</p>
@@ -261,7 +267,10 @@
                   {/if}
                 </span>
                 <span class="tag">{label(s)}</span>
-                <span class="latency {l.tone}" title={l.hint}>{l.text}</span>
+                <!-- Новый итог проверки проявляется, а не подменяет прежний скачком. -->
+                {#key l.text}
+                  <span class="latency {l.tone}" title={l.hint}>{l.text}</span>
+                {/key}
               </button>
             </li>
           {/each}
@@ -269,6 +278,7 @@
         {#if g.errors > 0}
           <p class="caption skipped">Пропущено строк с ошибками: {g.errors}</p>
         {/if}
+        </div>
       {/if}
     </div>
   {/each}
@@ -306,11 +316,14 @@
     border-radius: var(--radius-s);
     background: var(--surface);
     user-select: text;
+    transition: border-color var(--dur-fast) var(--ease);
   }
 
+  /* Акцентная линия снизу без изменения высоты поля. */
   .search:focus {
     outline: none;
-    border-bottom: 2px solid var(--accent);
+    border-bottom-color: var(--accent);
+    box-shadow: inset 0 -1px 0 var(--accent);
   }
 
   .add {
@@ -352,6 +365,10 @@
     background: var(--surface-hover);
   }
 
+  .toggle {
+    transition: background-color var(--dur-fast) var(--ease);
+  }
+
   .toggle:disabled {
     cursor: default;
   }
@@ -359,7 +376,7 @@
   .chevron {
     display: inline-flex;
     color: var(--text-2);
-    transition: transform 120ms var(--ease);
+    transition: transform var(--dur) var(--ease);
   }
 
   .chevron.closed {
@@ -445,21 +462,30 @@
     background: transparent;
     text-align: left;
     cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease);
   }
 
   .row:hover {
     background: var(--surface-hover);
   }
 
+  .row:active {
+    background: var(--surface-pressed);
+  }
+
   .row.selected {
     background: var(--accent-subtle);
   }
 
+  /* Радиокнопка: точка выбора «наливается» плавно. */
   .radio {
     width: 14px;
     height: 14px;
     border: 1px solid var(--stroke-strong);
     border-radius: 50%;
+    transition:
+      border-width var(--dur-fast) var(--ease),
+      border-color var(--dur-fast) var(--ease);
   }
 
   .selected .radio {
@@ -494,6 +520,7 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
     color: var(--text-2);
+    animation: kvt-fade var(--dur) var(--ease) backwards;
   }
 
   .latency.good {

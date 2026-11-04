@@ -200,7 +200,7 @@
   .row p,
   .intro {
     margin: var(--space-1) 0 0;
-    max-width: 560px;
+    max-width: var(--measure);
   }
 
   .caption {

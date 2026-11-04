@@ -90,18 +90,27 @@ pub fn current_network(state: State<'_, AppState>) -> NetworkView {
 
 async fn on_join(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let connected = matches!(
-        query_status().await,
-        Ok(Some(ServiceStatus::Connected { .. }))
+    let status = query_status().await.ok().flatten();
+    // Работает VPN или только zapret — профилю есть что включать и выключать.
+    let active = matches!(
+        status,
+        Some(ServiceStatus::Connected { .. } | ServiceStatus::Zapret { .. })
     );
     // Новая сеть — новая проверка zapret (стратегия могла перестать работать).
     state.zapret_wake.notify_one();
-    let plan = plan(view(&state).profile.as_ref(), connected);
-    let hybrid = state
+    let plan = plan(view(&state).profile.as_ref(), active);
+    let network = crate::zapret::network_key(&state);
+    let (old_mode, strategy) = state
         .choice
         .lock()
-        .ok()
-        .is_some_and(|c| c.mode.as_deref() == Some("hybrid"));
+        .map(|c| {
+            (
+                c.mode.clone().unwrap_or_else(|| "vpn".into()),
+                c.zapret.strategy_for(network.as_deref()),
+            )
+        })
+        .unwrap_or_else(|_| ("vpn".into(), String::new()));
+    let mode_changed = plan.mode.as_ref().is_some_and(|m| *m != old_mode);
     if let Some(mode) = plan.mode {
         let choice = state.choice.lock().ok().map(|mut c| {
             c.mode = Some(mode);
@@ -112,8 +121,11 @@ async fn on_join(app: &AppHandle) {
             let _ = app.emit(watchdog::CHOICE_EVENT, ());
         }
     }
-    // В гибриде winws привязан к интерфейсу прежней сети — переподключаемся.
-    let reconnect = connected && hybrid && !plan.disconnect;
+    // В гибриде winws привязан к интерфейсу прежней сети, в режиме Zapret у новой
+    // сети может быть своя подобранная стратегия, а другой режим требует перезапуска.
+    let other_strategy = matches!(&status, Some(ServiceStatus::Zapret { strategy: running }) if *running != strategy);
+    let reconnect =
+        active && !plan.disconnect && (old_mode == "hybrid" || mode_changed || other_strategy);
     if plan.connect || reconnect {
         let _ = connect_current(&state).await;
     } else if plan.disconnect {
