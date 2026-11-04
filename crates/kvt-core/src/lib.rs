@@ -12,6 +12,7 @@ pub mod flag;
 pub mod governor;
 pub mod ipc;
 pub mod lists;
+pub mod migrate;
 pub mod model;
 pub mod netlog;
 pub mod parser;

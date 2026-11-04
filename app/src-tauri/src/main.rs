@@ -10,6 +10,7 @@ mod dpapi;
 mod fetch;
 mod health;
 mod journal;
+mod migrate;
 mod netinfo;
 mod netprofile;
 mod prober;
@@ -43,6 +44,8 @@ pub(crate) struct AppState {
     /// Серверы всех подписок подряд, с ключами.
     servers: Mutex<Vec<catalog::Entry>>,
     governor: Mutex<NetGovernor>,
+    /// Найденное в других клиентах для переноса (со ссылками — только в Rust).
+    migration: Mutex<Vec<kvt_core::migrate::Collected>>,
     /// Подписки в виде для интерфейса: окно может быть закрыто (WebView
     /// выгружен), а при открытии интерфейс восстанавливается отсюда.
     groups: Mutex<Vec<catalog::Group>>,
@@ -151,6 +154,7 @@ impl Default for AppState {
             store: Mutex::default(),
             servers: Mutex::default(),
             governor: Mutex::new(NetGovernor::new(NetPolicy::default())),
+            migration: Mutex::default(),
             groups: Mutex::default(),
             checking: Default::default(),
             choice: Mutex::default(),
@@ -508,7 +512,10 @@ fn main() {
             journal::net_log,
             journal::net_log_clear,
             audit::pc_audit,
-            audit::pc_audit_fix
+            audit::pc_audit_fix,
+            migrate::migrate_scan,
+            migrate::migrate_pick_folder,
+            migrate::migrate_import
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

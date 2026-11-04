@@ -140,6 +140,94 @@ pub async fn add_subscription_url(
     Ok(result)
 }
 
+/// Как добавилась подписка при переносе из другого клиента.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Imported {
+    /// Загружена, серверы на месте.
+    Loaded,
+    /// Сохранена, но сейчас не загрузилась — обновится позже сама.
+    Pending,
+    /// Такая ссылка в KVT уже есть.
+    Existing,
+}
+
+/// Подписка из другого клиента. Если загрузить её сейчас нельзя (например, сайт
+/// провайдера заблокирован без VPN), ссылка всё равно сохраняется: подписка
+/// появится в списке и обновится при следующей возможности.
+pub(crate) async fn import_url(
+    state: &AppState,
+    raw: &str,
+    name: &str,
+) -> Result<Imported, String> {
+    let url = fetch::validate_url(raw)?;
+    let exists = state
+        .store
+        .lock()
+        .map_err(lock_err)?
+        .as_ref()
+        .is_some_and(|s| {
+            s.subscriptions
+                .iter()
+                .any(|x| x.url.as_ref().map(Secret::expose) == Some(url.as_str()))
+        });
+    if exists {
+        return Ok(Imported::Existing);
+    }
+    let loaded = async {
+        fetch::acquire(&state.governor, url.host_str().unwrap_or_default())?;
+        let fetched = fetch::fetch(&url).await?;
+        ensure_servers(&fetched.body)?;
+        Ok::<_, String>(fetched)
+    }
+    .await;
+    match loaded {
+        Ok(fetched) => {
+            with_store(state, |s| {
+                s.add(
+                    Some(Secret::new(url.as_str())),
+                    fetched.body,
+                    fetched.meta,
+                    now(),
+                )
+            })?;
+            Ok(Imported::Loaded)
+        }
+        Err(_) => {
+            let meta = SubscriptionMeta {
+                title: Some(name.to_owned()).filter(|n| !n.trim().is_empty()),
+                ..SubscriptionMeta::default()
+            };
+            with_store(state, |s| {
+                let id = s.add(Some(Secret::new(url.as_str())), String::new(), meta, now());
+                s.postpone(&id, now());
+            })?;
+            Ok(Imported::Pending)
+        }
+    }
+}
+
+/// Ссылки на серверы из другого клиента — в группу «Добавлено вручную».
+/// Возвращает, сколько серверов стало доступно.
+pub(crate) fn import_links(state: &AppState, links: &[&str]) -> Result<usize, String> {
+    if links.is_empty() {
+        return Ok(0);
+    }
+    let body = links.join("\n");
+    let count = parse_subscription_body(&body).servers.len();
+    if count > 0 {
+        with_store(state, |s| {
+            s.add(None, body, SubscriptionMeta::default(), now())
+        })?;
+    }
+    Ok(count)
+}
+
+pub(crate) fn changed(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    rebuild(state)?;
+    notify(app);
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionItem {

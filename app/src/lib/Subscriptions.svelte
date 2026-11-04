@@ -1,6 +1,7 @@
 <script lang="ts">
   import Banner from "./Banner.svelte";
   import Icon from "./Icon.svelte";
+  import Migration from "./Migration.svelte";
   import {
     listSubscriptions,
     onSubscriptionsChanged,
@@ -56,8 +57,9 @@
 
   function details(s: SubscriptionItem): string {
     return [
-      `${s.servers} серв.`,
-      `обновлена ${ago(s.updatedAt)}`,
+      // Перенесённая подписка, которую ещё не удалось загрузить.
+      s.byUrl && s.servers === 0 ? "ещё не загружена — нажмите «Обновить» после подключения" : `${s.servers} серв.`,
+      s.byUrl && s.servers === 0 ? null : `обновлена ${ago(s.updatedAt)}`,
       s.expire ? until(s.expire) : null,
       s.byUrl ? null : "без ссылки, не обновляется",
     ]
@@ -135,6 +137,7 @@
   </p>
 {/if}
 
+<Migration />
 
 <style>
   .list {
