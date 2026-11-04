@@ -14,9 +14,10 @@ $ProgressPreference = 'SilentlyContinue'
 
 $packages = @(
     @{
-        Name   = 'Xray v26.10.29'
-        Url    = 'https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-windows-64.zip'
-        Sha256 = 'fce33e81cccf50e7aab572b175519a50b5e0f9d2f5c8d1ed73012ea5c9ad4d58'
+        # v26.10.29 отозван авторами: в v26.10.31 по умолчанию выключен MPTCP.
+        Name   = 'Xray v26.10.31'
+        Url    = 'https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-windows-64.zip'
+        Sha256 = '2e04a9995a6f2ad1b28c0bb25c708ecb2695e43a1c9c7889c4b6ac2b48cf7a6a'
         Files  = @{ 'xray.exe' = 'xray.exe' }
     },
     @{
