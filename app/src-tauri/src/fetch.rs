@@ -29,7 +29,7 @@ pub fn acquire(governor: &Mutex<NetGovernor>, host: &str) -> Result<(), String> 
     let now = Instant::now();
     let decision = governor
         .lock()
-        .map_err(|_| "внутренняя ошибка")?
+        .map_err(crate::errors::state)?
         .try_acquire(host, now);
     netlog::record_hold(
         Origin::App,

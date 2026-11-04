@@ -5,8 +5,11 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod audit;
+pub mod captive;
 pub mod compile;
+pub mod core_errors;
 pub mod core_select;
+pub mod diaglog;
 pub mod dns;
 pub mod flag;
 pub mod governor;
@@ -17,6 +20,7 @@ pub mod model;
 pub mod netlog;
 pub mod parser;
 pub mod probe;
+pub mod redact;
 pub mod routing;
 pub mod rulesync;
 pub mod secret;

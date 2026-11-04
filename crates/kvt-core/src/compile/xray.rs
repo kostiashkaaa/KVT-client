@@ -11,17 +11,24 @@ const CORE: CoreKind = CoreKind::Xray;
 const TAG_DNS: &str = "dns-out";
 
 pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
+    let mut dns_servers = vec![
+        json!(format!("https://{}/dns-query", input.dns.remote_doh)),
+        // skipFallback: локальный резолвер никогда не становится запасным для
+        // доменов, которые идут через VPN, — иначе их видел бы провайдер.
+        json!({
+            "address": input.dns.local,
+            "domains": direct_domains(input),
+            "skipFallback": true
+        }),
+    ];
+    // Запасной DoH через туннель: Xray переходит к нему, если основной не ответил.
+    if let Some(reserve) = &input.dns.reserve_doh {
+        dns_servers.push(json!(format!("https://{reserve}/dns-query")));
+    }
     let config = json!({
         "log": { "loglevel": "warning" },
         "dns": {
-            "servers": [
-                format!("https://{}/dns-query", input.dns.remote_doh),
-                {
-                    "address": input.dns.local,
-                    "domains": direct_domains(input),
-                    "skipFallback": true
-                }
-            ],
+            "servers": dns_servers,
             "queryStrategy": "UseIPv4"
         },
         "inbounds": [{
@@ -68,6 +75,7 @@ fn direct_domains(input: &CompileInput<'_>) -> Vec<String> {
         .filter(|r| super::outbound_tag(r.action) == TAG_DIRECT)
         .filter_map(|r| match &r.matcher {
             Matcher::DomainSuffix(d) => Some(format!("domain:{d}")),
+            Matcher::Domain(d) => Some(format!("full:{d}")),
             m => rule_set(m)
                 .filter(|s| !s.is_ip_only())
                 .map(|s| s.xray_expr()),
@@ -88,6 +96,7 @@ fn rules(input: &CompileInput<'_>) -> Vec<Value> {
             Matcher::DomainSuffix(d) => {
                 json!({ "domain": [format!("domain:{d}")], "outboundTag": tag })
             }
+            Matcher::Domain(d) => json!({ "domain": [format!("full:{d}")], "outboundTag": tag }),
             Matcher::DomainKeyword(k) => {
                 json!({ "domain": [format!("keyword:{k}")], "outboundTag": tag })
             }
@@ -335,6 +344,27 @@ mod tests {
         assert_eq!(st["xhttpSettings"]["mode"], "auto");
         assert!(st["xhttpSettings"].get("host").is_none());
         assert_eq!(st["tlsSettings"]["serverName"], "cdn.example.com");
+    }
+
+    #[test]
+    fn reserve_doh_goes_last_and_local_never_falls_back() {
+        let dns = DnsPlan::from_ids("yandex", "cloudflare").unwrap();
+        assert_eq!(dns.reserve_doh.as_deref(), Some("8.8.8.8"));
+        dns.validate().unwrap();
+        let s = server(REALITY);
+        let routing = hybrid_plan(&s);
+        let c = compile(&CompileInput {
+            server: &s,
+            routing: &routing,
+            dns: &dns,
+            rule_set_dir: "rules",
+        })
+        .unwrap();
+        let servers = c.config["dns"]["servers"].as_array().unwrap();
+        assert_eq!(servers.len(), 3);
+        assert_eq!(servers[0], "https://1.1.1.1/dns-query");
+        assert_eq!(servers[1]["skipFallback"], true);
+        assert_eq!(servers[2], "https://8.8.8.8/dns-query");
     }
 
     #[test]

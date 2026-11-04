@@ -2,23 +2,29 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+mod applog;
 mod audit;
 mod catalog;
+mod diagexport;
 mod diagnostics;
 mod dnscheck;
 mod dpapi;
+mod errors;
 mod fetch;
 mod health;
 mod journal;
 mod migrate;
 mod netinfo;
 mod netprofile;
+mod power;
 mod prober;
 mod service_client;
+mod settings;
 mod store;
 mod subs;
 mod tray;
 mod troubleshoot;
+mod tunnel;
 mod watchdog;
 mod zapret;
 
@@ -70,6 +76,17 @@ pub(crate) struct AppState {
     zapret_release: Mutex<Option<(Instant, kvt_core::zapret::Release)>>,
     /// Будит автопроверку zapret раньше срока (смена сети).
     zapret_wake: tokio::sync::Notify,
+    /// Сообщения для окна, которые появились до его открытия (например, о
+    /// повреждённых настройках). Окно забирает их один раз.
+    notices: Mutex<Vec<String>>,
+    /// Идут ли данные через туннель: `None` — не проверяли или VPN выключен.
+    tunnel: Mutex<Option<bool>>,
+    /// Будит автопереключение раньше срока (выход из сна).
+    watchdog_wake: tokio::sync::Notify,
+    /// Последний итог «Почему не работает?» — для экспорта диагностики.
+    last_diagnosis: Mutex<Option<troubleshoot::Diagnosis>>,
+    /// Файлы диагностики, которые пользователь видел в предпросмотре.
+    diag_files: Mutex<Vec<diagexport::DiagFile>>,
 }
 
 /// Выбор пользователя. Секретов не содержит, поэтому хранится в settings.json
@@ -128,24 +145,22 @@ impl Default for DnsChoice {
     }
 }
 
-const SETTINGS_FILE: &str = "settings.json";
-
-fn load_choice(app: &AppHandle) -> Choice {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .and_then(|dir| std::fs::read(dir.join(SETTINGS_FILE)).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+fn load_choice(app: &AppHandle) -> settings::Loaded {
+    match app.path().app_config_dir() {
+        Ok(dir) => settings::load(&dir),
+        Err(_) => settings::Loaded {
+            choice: Choice::default(),
+            notice: None,
+        },
+    }
 }
 
 fn save_choice(app: &AppHandle, choice: &Choice) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let bytes = serde_json::to_vec_pretty(choice).map_err(|e| e.to_string())?;
-    let tmp = dir.join(format!("{SETTINGS_FILE}.tmp"));
-    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
-    std::fs::rename(tmp, dir.join(SETTINGS_FILE)).map_err(|e| e.to_string())
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "Не найдена папка настроек Windows — настройки не сохранились.")?;
+    settings::save(&dir, choice)
 }
 
 impl Default for AppState {
@@ -167,6 +182,11 @@ impl Default for AppState {
             zapret_last: Mutex::default(),
             zapret_release: Mutex::default(),
             zapret_wake: tokio::sync::Notify::new(),
+            notices: Mutex::default(),
+            tunnel: Mutex::default(),
+            watchdog_wake: tokio::sync::Notify::new(),
+            last_diagnosis: Mutex::default(),
+            diag_files: Mutex::default(),
         }
     }
 }
@@ -278,16 +298,8 @@ struct Snapshot {
 #[tauri::command]
 fn snapshot(state: State<'_, AppState>) -> Result<Snapshot, String> {
     Ok(Snapshot {
-        groups: state
-            .groups
-            .lock()
-            .map_err(|_| "внутренняя ошибка состояния")?
-            .clone(),
-        choice: state
-            .choice
-            .lock()
-            .map_err(|_| "внутренняя ошибка состояния")?
-            .clone(),
+        groups: state.groups.lock().map_err(crate::errors::state)?.clone(),
+        choice: state.choice.lock().map_err(crate::errors::state)?.clone(),
     })
 }
 
@@ -295,10 +307,7 @@ fn snapshot(state: State<'_, AppState>) -> Result<Snapshot, String> {
 #[tauri::command]
 fn set_choice(choice: Choice, app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     save_choice(&app, &choice)?;
-    *state
-        .choice
-        .lock()
-        .map_err(|_| "внутренняя ошибка состояния")? = choice;
+    *state.choice.lock().map_err(crate::errors::state)? = choice;
     Ok(())
 }
 
@@ -319,7 +328,7 @@ fn servers_of(state: &AppState, group: Option<&str>) -> Result<(Vec<String>, Vec
     Ok(state
         .servers
         .lock()
-        .map_err(|_| "внутренняя ошибка состояния")?
+        .map_err(crate::errors::state)?
         .iter()
         .filter(|e| group.map_or(true, |g| e.sub == g))
         .map(|e| (e.key.clone(), e.server.clone()))
@@ -339,54 +348,97 @@ async fn quick_check(
 }
 
 /// Строит план подключения по текущему выбору и отправляет его службе.
-/// Конфиг ядра собирает служба.
-async fn connect_current(state: &AppState) -> Result<ServiceStatus, String> {
-    let choice = state
-        .choice
-        .lock()
-        .map_err(|_| "внутренняя ошибка состояния")?
-        .clone();
+/// Конфиг ядра собирает служба. `verify` — после подключения проверить в фоне,
+/// что через туннель идут данные (автопереключение проверяет само).
+async fn connect_current(app: &AppHandle, verify: bool) -> Result<ServiceStatus, String> {
+    let state = app.state::<AppState>();
+    tunnel::set(app, None);
+    let status = send_plan(&state).await?;
+    if verify && matches!(status, ServiceStatus::Connected { .. }) {
+        tunnel::spawn_verify(app.clone());
+    }
+    Ok(status)
+}
+
+/// Что отправить службе для текущего выбора.
+pub(crate) enum Plan {
+    Vpn(Box<ConnectPlan>),
+    /// Только zapret: сервер не нужен, winws работает на всех интерфейсах.
+    Zapret(kvt_core::ipc::ZapretPlan),
+}
+
+/// Подключение к выбранному серверу (или только zapret).
+async fn send_plan(state: &AppState) -> Result<ServiceStatus, String> {
+    let request = match build_plan(state)? {
+        Plan::Vpn(plan) => Request::Connect(plan),
+        Plan::Zapret(plan) => Request::StartZapret(Box::new(plan)),
+    };
+    match service_client::call(request).await? {
+        Response::Status { status } => Ok(status),
+        Response::Error { message } => Err(message),
+        _ => Err(crate::errors::UNEXPECTED.into()),
+    }
+}
+
+/// План по текущему выбору. Конфиг ядра из него собирает служба (а для
+/// экспорта диагностики — приложение тем же компилятором).
+pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
+    let choice = state.choice.lock().map_err(crate::errors::state)?.clone();
     let mode = choice.mode.unwrap_or_else(|| "vpn".into());
     let network = zapret::network_key(state);
     if mode == "zapret" {
-        // Только zapret: сервер не нужен, winws работает на всех интерфейсах.
-        let plan = choice.zapret.plan(network.as_deref());
-        return match service_client::call(Request::StartZapret(Box::new(plan))).await? {
-            Response::Status { status } => Ok(status),
-            Response::Error { message } => Err(message),
-            _ => Err("Неожиданный ответ службы".into()),
-        };
+        return Ok(Plan::Zapret(choice.zapret.plan(network.as_deref())));
     }
-    let server = state.selected().ok_or("Выберите сервер")?.server;
+    let server = state
+        .selected()
+        .ok_or("Выберите сервер в списке на главной.")?
+        .server;
 
     let mut routing = presets::from_settings(&choice.routing)
         .with_servers([server.address.clone()])
-        .with_health_check();
+        .with_health_check()
+        .with_update_hosts();
     if mode == "hybrid" {
         routing.extend(presets::zapret_youtube_discord());
     }
-    routing.validate().map_err(|e| e.to_string())?;
+    routing.validate().map_err(|e| {
+        errors::logged(
+            "Настройки маршрутизации противоречат друг другу — проверьте раздел «Маршрутизация».",
+            e,
+        )
+    })?;
     let plan = ConnectPlan {
         core: select_core(&server).core,
         server,
         routing,
         kill_switch: choice.kill_switch,
-        dns: DnsPlan::from_ids(&choice.dns.local, &choice.dns.remote).map_err(|e| e.to_string())?,
+        dns: DnsPlan::from_ids(&choice.dns.local, &choice.dns.remote).map_err(|e| {
+            errors::logged(
+                "Выбранный DNS-сервер больше не поддерживается — выберите другой в настройках.",
+                e,
+            )
+        })?,
         // Гибрид: winws рядом с ядром, домены zapret служба берёт из RoutingPlan.
         zapret: (mode == "hybrid").then(|| choice.zapret.plan(network.as_deref())),
     };
-    match service_client::call(Request::Connect(Box::new(plan))).await? {
-        Response::Status { status } => Ok(status),
-        Response::Error { message } => Err(message),
-        _ => Err("Неожиданный ответ службы".into()),
-    }
+    Ok(Plan::Vpn(Box::new(plan)))
 }
 
 #[tauri::command]
-async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<ServiceStatus, String> {
-    let result = connect_current(&state).await;
+async fn connect(app: AppHandle) -> Result<ServiceStatus, String> {
+    let result = connect_current(&app, true).await;
     tray::refresh(&app).await;
     result
+}
+
+/// Сообщения, которые появились до открытия окна (окно забирает их один раз).
+#[tauri::command]
+fn take_notices(state: State<'_, AppState>) -> Vec<String> {
+    state
+        .notices
+        .lock()
+        .map(|mut n| std::mem::take(&mut *n))
+        .unwrap_or_default()
 }
 
 /// Проверка утечек: открытые прокси на этом компьютере, маршруты и DNS.
@@ -399,7 +451,7 @@ async fn disconnect_service() -> Result<ServiceStatus, String> {
     match service_client::call(Request::Disconnect).await? {
         Response::Ok => Ok(ServiceStatus::Disconnected),
         Response::Error { message } => Err(message),
-        _ => Err("Неожиданный ответ службы".into()),
+        _ => Err(crate::errors::UNEXPECTED.into()),
     }
 }
 
@@ -421,7 +473,7 @@ async fn query_status() -> Result<Option<ServiceStatus>, String> {
     match service_client::call(Request::Status).await {
         Ok(Response::Status { status }) => Ok(Some(status)),
         Ok(Response::Error { message }) => Err(message),
-        Ok(_) => Err("Неожиданный ответ службы".into()),
+        Ok(_) => Err(crate::errors::UNEXPECTED.into()),
         Err(_) => Ok(None),
     }
 }
@@ -460,10 +512,16 @@ fn main() {
         }))
         .manage(AppState::default())
         .setup(|app| {
-            let choice = load_choice(app.handle());
+            if let Ok(dir) = app.path().app_local_data_dir() {
+                applog::init(&dir.join("logs"));
+            }
+            let loaded = load_choice(app.handle());
             let state = app.state::<AppState>();
             if let Ok(mut c) = state.choice.lock() {
-                *c = choice;
+                *c = loaded.choice;
+            }
+            if let (Some(notice), Ok(mut n)) = (loaded.notice, state.notices.lock()) {
+                n.push(notice);
             }
             let store = subs::load(app.handle())?;
             if let Ok(mut s) = state.store.lock() {
@@ -476,6 +534,7 @@ fn main() {
             netprofile::spawn(app.handle().clone());
             watchdog::spawn(app.handle().clone());
             zapret::spawn_watch(app.handle().clone());
+            power::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -515,10 +574,15 @@ fn main() {
             audit::pc_audit_fix,
             migrate::migrate_scan,
             migrate::migrate_pick_folder,
-            migrate::migrate_import
+            migrate::migrate_import,
+            take_notices,
+            tunnel::tunnel_state,
+            diagexport::diag_preview,
+            diagexport::diag_save
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "KVT не смог запуститься");
             eprintln!("KVT не смог запуститься: {e}");
             std::process::exit(1);
         });

@@ -96,6 +96,8 @@ pub struct Facts {
     pub tunnel: Option<Result<Trace, String>>,
     /// Ключ и название рабочей замены.
     pub alternative: Option<(String, String)>,
+    /// Сеть просит войти (проверяется, только если через туннель данные не идут).
+    pub captive: bool,
 }
 
 struct Out {
@@ -293,6 +295,21 @@ pub fn conclude(f: &Facts) -> Diagnosis {
             format!("«{server}» отвечает, {latency_ms} мс"),
         ),
         Some(QuickResult::NotApplicable) | None => {}
+    }
+
+    if connected && f.captive {
+        out.step(
+            "Сеть",
+            StepState::Fail,
+            "Сеть просит войти: вместо проверочного ответа пришла страница входа",
+        );
+        return out.finish(
+            Tone::Warning,
+            "Сеть просит войти",
+            "Похоже на Wi-Fi гостиницы, кафе или метро: сначала нужно войти на странице сети. \
+             VPN и kill switch не дают её открыть — отключите VPN, войдите и подключитесь снова.",
+            Some(Fix::Disconnect),
+        );
     }
 
     if connected {
@@ -512,6 +529,9 @@ async fn gather(state: &AppState) -> Facts {
     );
     if connected {
         f.tunnel = Some(health::check(&state.health).await);
+        if matches!(f.tunnel, Some(Err(_))) {
+            f.captive = watchdog::captive().await == kvt_core::ipc::Captive::Portal;
+        }
     } else {
         f.internet = Some(internet_direct().await);
         if f.internet == Some(true) && !server_down {
@@ -531,7 +551,12 @@ async fn gather(state: &AppState) -> Facts {
 
 #[tauri::command]
 pub async fn troubleshoot(state: State<'_, AppState>) -> Result<Diagnosis, String> {
-    Ok(conclude(&gather(&state).await))
+    let diagnosis = conclude(&gather(&state).await);
+    tracing::info!(title = %diagnosis.title, "«Почему не работает?»");
+    if let Ok(mut last) = state.last_diagnosis.lock() {
+        *last = Some(diagnosis.clone());
+    }
+    Ok(diagnosis)
 }
 
 #[cfg(test)]
@@ -550,7 +575,22 @@ mod tests {
             probe: Some(ProbeFact::Done(Verdict::Works)),
             tunnel: None,
             alternative: Some(("k3".into(), "DE".into())),
+            captive: false,
         }
+    }
+
+    #[test]
+    fn captive_portal_offers_disconnect_instead_of_another_server() {
+        let mut f = base();
+        f.service = Some(ServiceStatus::Connected {
+            core: CoreKind::Xray,
+        });
+        f.probe = None;
+        f.tunnel = Some(Err("нет ответа".into()));
+        f.captive = true;
+        let d = conclude(&f);
+        assert_eq!(d.title, "Сеть просит войти");
+        assert_eq!(d.fix, Some(Fix::Disconnect));
     }
 
     fn failing_step(d: &Diagnosis) -> Option<&'static str> {

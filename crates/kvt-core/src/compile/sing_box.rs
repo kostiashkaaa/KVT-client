@@ -60,6 +60,7 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
 fn condition(m: &Matcher) -> Value {
     match m {
         Matcher::DomainSuffix(d) => json!({ "domain_suffix": [d] }),
+        Matcher::Domain(d) => json!({ "domain": [d] }),
         Matcher::DomainKeyword(k) => json!({ "domain_keyword": [k] }),
         Matcher::IpCidr(c) => json!({ "ip_cidr": [normalize_cidr(c)] }),
         Matcher::RuleSet(name) => json!({ "rule_set": [name] }),
@@ -98,7 +99,10 @@ fn dns_rules(input: &CompileInput<'_>) -> Vec<Value> {
         .filter(|r| {
             matches!(
                 r.matcher,
-                Matcher::DomainSuffix(_) | Matcher::DomainKeyword(_) | Matcher::RuleSet(_)
+                Matcher::DomainSuffix(_)
+                    | Matcher::Domain(_)
+                    | Matcher::DomainKeyword(_)
+                    | Matcher::RuleSet(_)
             )
         })
         .filter(|r| !rule_set(&r.matcher).is_some_and(|s| s.is_ip_only()))

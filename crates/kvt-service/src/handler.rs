@@ -16,12 +16,16 @@ impl State {
         }
     }
 
-    /// Актуальный статус: если ядро упало само, это видно сразу.
-    fn refresh(&mut self) {
-        if let Some(mut reason) = self.supervisor.exited() {
-            tracing::warn!(%reason, "ядро завершилось");
+    /// Актуальный статус: если ядро упало само или в его журнале сработало
+    /// правило ошибок, это видно сразу.
+    async fn refresh(&mut self) {
+        let reason = match self.supervisor.exited() {
+            Some(reason) => Some(reason),
+            None => self.supervisor.handle_issue().await,
+        };
+        if let Some(mut reason) = reason {
             if self.supervisor.kill_switch_active() {
-                reason.push_str(". Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново");
+                reason.push_str(" Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново.");
             }
             self.status = ServiceStatus::Failed { reason };
         }
@@ -33,7 +37,7 @@ impl State {
 }
 
 pub async fn handle(state: &mut State, request: Request) -> Response {
-    state.refresh();
+    state.refresh().await;
     match request {
         Request::Hello { protocol_version } if protocol_version == PROTOCOL_VERSION => {
             Response::Hello {
@@ -42,7 +46,8 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
             }
         }
         Request::Hello { .. } => Response::Error {
-            message: "версии приложения и службы не совпадают — переустановите KVT".into(),
+            message: "Окно KVT и служба разных версий. Переустановите KVT — они обновятся вместе."
+                .into(),
         },
         Request::Status => Response::Status {
             status: state.status.clone(),
@@ -77,12 +82,21 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
                 Ok(Ok(())) => Response::Ok,
                 Ok(Err(message)) => Response::Error { message },
                 Err(_) => Response::Error {
-                    message: "исправление прервалось".into(),
+                    message:
+                        "Исправление прервалось. Повторите; если не выйдет — сохраните диагностику."
+                            .into(),
                 },
             }
         }
         Request::NetLog => Response::NetLog {
             events: kvt_core::netlog::snapshot(),
+        },
+        Request::ServiceLog => Response::ServiceLog {
+            log: crate::logging::tail(),
+            core: kvt_core::redact::text(&state.supervisor.recent_log(200).join("\n")),
+        },
+        Request::CaptiveCheck => Response::Captive {
+            state: crate::net::captive_check().await,
         },
         Request::Disconnect => {
             state.supervisor.stop().await;
@@ -116,6 +130,7 @@ async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
             }
         }
         Err(message) => {
+            tracing::warn!(%message, "подключение не удалось");
             state.status = ServiceStatus::Failed {
                 reason: message.clone(),
             };
@@ -137,14 +152,35 @@ fn invalid_zapret(plan: &ZapretPlan) -> Option<String> {
 }
 
 /// Обновление и переустановка трогают файлы, которыми пользуется winws, поэтому
-/// сначала всё останавливается; переподключает приложение.
+/// перед установкой всё останавливается; переподключает приложение. Обновление
+/// скачивается заранее, пока VPN работает: GitHub бывает доступен только через туннель.
 async fn maintain(state: &mut State, request: &Request) -> Response {
+    let paths = state.supervisor.paths().clone();
+    let prepared = match request {
+        Request::ZapretUpdate => {
+            let http = match crate::net::NetClient::new(kvt_core::netlog::Purpose::Update) {
+                Ok(h) if state.supervisor.vpn_running() => h.with_tunnel_fallback(),
+                Ok(h) => h,
+                Err(e) => {
+                    return Response::Error {
+                        message: e.to_string(),
+                    }
+                }
+            };
+            match crate::zapret::fetch_update(&paths, &http).await {
+                // Обновлять нечего — подключение не трогаем.
+                Ok(Err(report)) => return Response::Maintenance(Box::new(report)),
+                Ok(Ok(prepared)) => Some(prepared),
+                Err(message) => return Response::Error { message },
+            }
+        }
+        _ => None,
+    };
     state.supervisor.stop().await;
     state.status = ServiceStatus::Disconnected;
-    let paths = state.supervisor.paths().clone();
-    let result = match request {
-        Request::ZapretUpdate => crate::zapret::update(&paths).await,
-        _ => {
+    let result = match prepared {
+        Some(prepared) => crate::zapret::install_update(&paths, prepared),
+        None => {
             // Драйвер общий: пока им пользуется чужой winws, его не трогаем.
             let foreign = crate::zapret::conflicts(&paths, None)
                 .iter()

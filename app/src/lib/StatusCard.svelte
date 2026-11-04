@@ -7,6 +7,7 @@
     mode = $bindable(),
     busy,
     status,
+    tunnelOk,
     onconnect,
     ondisconnect,
     onwhy,
@@ -15,6 +16,8 @@
     mode: Mode;
     busy: boolean;
     status: ServiceStatus | null;
+    /** Идут ли данные через туннель (null — ещё не проверяли). */
+    tunnelOk: boolean | null;
     onconnect: () => void;
     ondisconnect: () => void;
     onwhy: () => void;
@@ -23,19 +26,31 @@
   /** Работает только zapret, без VPN. */
   const zapretOnly = $derived(status?.state === "zapret" ? status : null);
   const connected = $derived(status?.state === "connected" || zapretOnly !== null);
+  /** Сервер принял подключение, но данные через туннель не идут. */
+  const noData = $derived(status?.state === "connected" && tunnelOk === false);
   const tone = $derived(
-    busy || status?.state === "connecting" ? "pending" : connected ? "on" : status?.state === "failed" ? "error" : "off",
+    busy || status?.state === "connecting"
+      ? "pending"
+      : noData
+        ? "warn"
+        : connected
+          ? "on"
+          : status?.state === "failed"
+            ? "error"
+            : "off",
   );
   const title = $derived(
     tone === "pending"
       ? "Подключение…"
       : zapretOnly
         ? "Zapret работает"
-        : connected
-          ? "Подключено"
-          : tone === "error"
-            ? "Ошибка"
-            : "Отключено",
+        : noData
+          ? "Сайты не открываются"
+          : connected
+            ? "Подключено"
+            : tone === "error"
+              ? "Ошибка"
+              : "Отключено",
   );
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
@@ -67,6 +82,12 @@
           Выберите сервер ниже
         {/if}
       </p>
+      {#if noData}
+        <p class="caption warn-text appear">
+          Сервер принял подключение, но данные через него не идут.
+          <button class="why inline" onclick={onwhy}>Почему?</button>
+        </p>
+      {/if}
     </div>
   </div>
 
@@ -166,6 +187,20 @@
   .dot.pending {
     background: var(--warn);
     animation: kvt-pulse 1.2s ease-in-out infinite;
+  }
+
+  .dot.warn {
+    background: var(--warn);
+    box-shadow: 0 0 0 4px var(--warn-subtle);
+  }
+
+  .warn-text {
+    margin-top: var(--space-1);
+    color: var(--warn);
+  }
+
+  .why.inline {
+    margin-left: var(--space-1);
   }
 
   .dot.error {

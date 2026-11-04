@@ -1,0 +1,78 @@
+{
+  "_comment": "Ошибки ядер как данные. match — подстроки в нижнем регистре (достаточно одной). action: log — только записать в журнал; stop — остановить подключение и показать текст; reconnect — один раз переподключиться. count и window (секунды): сколько совпадений за окно нужно, чтобы сработало действие. cores — для каких ядер правило (пусто — для всех). Новый случай — новая запись здесь, без изменения кода.",
+  "rules": [
+    {
+      "code": "auth_rejected",
+      "match": ["authentication failed", "auth failed", "invalid user", "unauthorized"],
+      "text": "Сервер не принял ключ — возможно, подписка закончилась или ключ сменился. Обновите подписку или выберите другой сервер.",
+      "action": "stop",
+      "count": 3,
+      "window": 60
+    },
+    {
+      "code": "reality_mismatch",
+      "cores": ["xray"],
+      "match": ["reality: received real certificate", "reality: failed to verify", "reality: processed invalid connection"],
+      "text": "Сервер ответил не так, как ждёт REALITY: ключ в подписке устарел или соединение подменяют. Обновите подписку или выберите другой сервер.",
+      "action": "stop",
+      "count": 3,
+      "window": 60
+    },
+    {
+      "code": "pin_mismatch",
+      "match": ["pinsha256", "pinned certificate", "pinned sha256", "certificate pin"],
+      "text": "Сертификат сервера не совпал с закреплённым в ключе — соединение могут подменять. Подключение остановлено; выберите другой сервер.",
+      "action": "stop",
+      "count": 1,
+      "window": 60
+    },
+    {
+      "code": "bad_certificate",
+      "match": ["x509:", "certificate signed by unknown authority", "certificate is valid for", "failed to verify certificate", "certificate has expired", "bad certificate"],
+      "text": "Сертификат сервера не прошёл проверку: он просрочен, выдан на другое имя или соединение подменяют. Обновите подписку или выберите другой сервер.",
+      "action": "stop",
+      "count": 3,
+      "window": 60
+    },
+    {
+      "code": "port_busy",
+      "match": ["only one usage of each socket address", "address already in use", "обычно разрешается только одно использование адреса сокета"],
+      "text": "Нужный ядру порт занят другой программой. Закройте другие VPN-клиенты и подключитесь снова.",
+      "action": "stop",
+      "count": 1,
+      "window": 60
+    },
+    {
+      "code": "tun_busy",
+      "match": ["cannot create a file when that file already exists", "failed to create adapter", "configure tun interface"],
+      "text": "Сетевой адаптер KVT не создался с первого раза — KVT переподключился.",
+      "action": "reconnect",
+      "count": 1,
+      "window": 60
+    },
+    {
+      "code": "connection_reset",
+      "match": ["connection reset by peer", "forcibly closed by the remote host", "удаленный хост принудительно разорвал существующее подключение", "wsarecv"],
+      "text": "Соединения с сервером часто обрываются — KVT переподключился.",
+      "action": "reconnect",
+      "count": 20,
+      "window": 60
+    },
+    {
+      "code": "timeout",
+      "match": ["i/o timeout", "context deadline exceeded", "handshake timeout", "operation timed out"],
+      "text": "Сервер отвечает с задержкой или не отвечает.",
+      "action": "log",
+      "count": 1,
+      "window": 60
+    },
+    {
+      "code": "dns_failed",
+      "match": ["lookup ", "no such host", "dns: exchange failed", "failed to resolve"],
+      "text": "Не удалось узнать адрес по DNS.",
+      "action": "log",
+      "count": 1,
+      "window": 60
+    }
+  ]
+}

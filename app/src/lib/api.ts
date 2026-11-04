@@ -566,7 +566,11 @@ export type WatchdogEvent =
   | { kind: "switched"; from: string; to: string }
   | { kind: "no_network" }
   | { kind: "no_alternative"; server: string }
-  | { kind: "gave_up" };
+  | { kind: "gave_up" }
+  /** Сеть просит войти (отель, кафе): другой сервер не поможет. */
+  | { kind: "captive_portal" }
+  /** Сервер, к которому были подключены, исчез из подписок — VPN отключён. */
+  | { kind: "server_removed"; server: string };
 
 export function onWatchdog(handler: (event: WatchdogEvent) => void): () => void {
   if (!inTauri) return () => {};
@@ -916,7 +920,8 @@ export type NetPurpose =
   | "dns"
   | "zapret"
   | "rules"
-  | "update";
+  | "update"
+  | "captive";
 
 export interface NetEvent {
   /** Unix-время в миллисекундах. */
@@ -1162,4 +1167,62 @@ export async function migrateImport(locations: string[], servers: boolean): Prom
     return { loaded: 1, pending: 1, existing: 0, servers: servers ? 2 : 0 };
   }
   return invoke<MigrationReport>("migrate_import", { request: { locations, servers } });
+}
+
+// ── Этап 5.4: надёжность ──
+
+/** Сообщения, появившиеся до открытия окна (например, о повреждённых настройках). */
+export async function takeNotices(): Promise<string[]> {
+  if (!inTauri) return [];
+  return invoke<string[]>("take_notices");
+}
+
+/** Идут ли данные через туннель: null — не проверяли или VPN выключен. */
+export async function tunnelState(): Promise<boolean | null> {
+  if (!inTauri) return null;
+  return invoke<boolean | null>("tunnel_state");
+}
+
+export function onTunnelState(handler: (ok: boolean | null) => void): () => void {
+  if (!inTauri) return () => {};
+  const off = listen<boolean | null>("tunnel-state", (e) => handler(e.payload));
+  return () => void off.then((f) => f());
+}
+
+export interface DiagFile {
+  name: string;
+  text: string;
+}
+
+/** Что войдёт в архив диагностики (уже без ключей, ссылок подписок и адресов серверов). */
+export async function diagPreview(): Promise<DiagFile[]> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 600));
+    return [
+      {
+        name: "README.txt",
+        text: ["Диагностика KVT 0.1.0", "Ключи, пароли, UUID, ссылки подписок и адреса серверов скрыты."].join("\n"),
+      },
+      {
+        name: "status.json",
+        text: JSON.stringify({ service: { state: "connected", core: "xray" }, tunnelOk: true }, null, 2),
+      },
+      {
+        name: "kvt.log",
+        text: [
+          '2026-11-05T10:00:00Z  INFO KVT запущен version="0.1.0"',
+          "2026-11-05T10:00:05Z  WARN подписка не обновилась error=нет ответа",
+        ].join("\n"),
+      },
+      { name: "service.log", text: "2026-11-05T10:00:01Z  INFO подключено core=Xray kill_switch=true" },
+      { name: "core.log", text: "" },
+    ];
+  }
+  return invoke<DiagFile[]>("diag_preview");
+}
+
+/** Сохраняет показанное в предпросмотре. false — пользователь закрыл окно выбора файла. */
+export async function diagSave(): Promise<boolean> {
+  if (!inTauri) throw new Error("Сохранение работает в приложении (npm run tauri dev).");
+  return invoke<boolean>("diag_save");
 }

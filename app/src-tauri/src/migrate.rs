@@ -441,7 +441,7 @@ pub async fn migrate_scan(state: State<'_, AppState>) -> Result<Vec<Preview>, St
     .await
     .map_err(|_| "Поиск прервался")?;
     let previews = found.iter().map(Collected::preview).collect();
-    *state.migration.lock().map_err(|_| "внутренняя ошибка")? = found;
+    *state.migration.lock().map_err(crate::errors::state)? = found;
     Ok(previews)
 }
 
@@ -472,7 +472,7 @@ pub async fn migrate_pick_folder(
     .await
     .map_err(|_| "Чтение папки прервалось")?
     .ok_or("В этой папке нет данных v2rayN, Throne, NekoRay или Hiddify")?;
-    let mut found = state.migration.lock().map_err(|_| "внутренняя ошибка")?;
+    let mut found = state.migration.lock().map_err(crate::errors::state)?;
     found.retain(|c| c.location != collected.location);
     found.push(collected);
     Ok(Some(found.iter().map(Collected::preview).collect()))
@@ -508,7 +508,7 @@ pub async fn migrate_import(
     let chosen: Vec<Collected> = state
         .migration
         .lock()
-        .map_err(|_| "внутренняя ошибка")?
+        .map_err(crate::errors::state)?
         .iter()
         .filter(|c| request.locations.contains(&c.location))
         .cloned()

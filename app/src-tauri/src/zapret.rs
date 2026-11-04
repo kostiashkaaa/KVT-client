@@ -141,7 +141,7 @@ async fn call(request: Request) -> Result<Response, String> {
     }
 }
 
-const UNEXPECTED: &str = "Неожиданный ответ службы";
+const UNEXPECTED: &str = crate::errors::UNEXPECTED;
 
 #[tauri::command]
 pub async fn zapret_strategies() -> Result<Vec<Strategy>, String> {
@@ -250,7 +250,7 @@ async fn maintain(app: &AppHandle, request: Request) -> Result<MaintenanceReport
         before,
         Some(ServiceStatus::Connected { .. } | ServiceStatus::Zapret { .. })
     ) {
-        let _ = connect_current(&state).await;
+        let _ = connect_current(app, true).await;
     }
     crate::tray::refresh(app).await;
     Ok(report)
@@ -553,7 +553,7 @@ async fn pick(
     let choice = state
         .choice
         .lock()
-        .map_err(|_| "внутренняя ошибка состояния")?
+        .map_err(crate::errors::state)?
         .zapret
         .clone();
     let network = network_key(state);
@@ -638,7 +638,7 @@ async fn pick(
         let plan = state
             .choice
             .lock()
-            .map_err(|_| "внутренняя ошибка состояния")?
+            .map_err(crate::errors::state)?
             .zapret
             .plan(network.as_deref());
         let _ = call(Request::StartZapret(Box::new(plan))).await;
@@ -1067,7 +1067,7 @@ pub async fn zapret_diagnose(
         let choice = state
             .choice
             .lock()
-            .map_err(|_| "внутренняя ошибка состояния")?
+            .map_err(crate::errors::state)?
             .zapret
             .clone();
         facts.timestamps_allowed = choice.tcp_timestamps;

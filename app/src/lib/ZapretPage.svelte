@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import DiagExport from "./DiagExport.svelte";
   import {
     currentNetwork,
     onNetworkChanged,
@@ -274,6 +275,7 @@
       <button class="btn" class:busy={diagnosis.running} disabled={diagnosis.running || pick.running} onclick={runDiagnosis}>
         <Icon name="help" size={16} />Почему не работает?
       </button>
+      {#if diagnosis.result}<DiagExport />{/if}
     </div>
   </div>
   {#if check.error}<p class="note">{check.error}</p>{/if}

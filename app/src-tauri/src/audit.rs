@@ -86,12 +86,12 @@ pub async fn pc_audit_fix(fix: Fix) -> Result<(), String> {
                 Err("Не всё удалось остановить — проверьте ещё раз через несколько секунд".into())
             }
             Response::Error { message } => Err(message),
-            _ => Err("Неожиданный ответ службы".into()),
+            _ => Err(crate::errors::UNEXPECTED.into()),
         },
         Fix::Service(request) => match service_client::call(Request::AuditFix(request)).await? {
             Response::Ok => Ok(()),
             Response::Error { message } => Err(message),
-            _ => Err("Неожиданный ответ службы".into()),
+            _ => Err(crate::errors::UNEXPECTED.into()),
         },
         other => tokio::task::spawn_blocking(move || fix_here(&other))
             .await

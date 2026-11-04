@@ -51,17 +51,15 @@ pub async fn check(client: &reqwest::Client) -> Result<Trace, String> {
 }
 
 async fn check_inner(client: &reqwest::Client, start: Instant) -> Result<Trace, String> {
-    let response = client.get(HEALTH_URL).send().await.map_err(|e| {
-        if e.is_timeout() {
-            "нет ответа".into()
-        } else {
-            e.to_string()
-        }
-    })?;
+    let response = client
+        .get(HEALTH_URL)
+        .send()
+        .await
+        .map_err(|e| crate::errors::net(&e))?;
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status().as_u16()));
     }
-    let body = response.text().await.map_err(|e| e.to_string())?;
+    let body = response.text().await.map_err(|e| crate::errors::net(&e))?;
     Ok(Trace {
         country: country(&body),
         ms: start.elapsed().as_millis() as u64,

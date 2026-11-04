@@ -266,12 +266,8 @@ pub async fn full_check(
         let (keys, servers) = crate::servers_of(&state, group.as_deref())?;
         let prober = Arc::new(CoreProber::new()?);
         // Состояние NetGovernor (лимиты и заморозки по SNI) общее для всего приложения.
-        let mut governor = std::mem::take(
-            &mut *state
-                .governor
-                .lock()
-                .map_err(|_| "внутренняя ошибка состояния")?,
-        );
+        let mut governor =
+            std::mem::take(&mut *state.governor.lock().map_err(crate::errors::state)?);
         let events = app.clone();
         let event_keys = keys.clone();
         let outcomes = tester::full_check(
@@ -290,15 +286,12 @@ pub async fn full_check(
             },
         )
         .await;
-        *state
-            .governor
-            .lock()
-            .map_err(|_| "внутренняя ошибка состояния")? = governor;
+        *state.governor.lock().map_err(crate::errors::state)? = governor;
         // Результаты нужны и автопереключению: оно выбирает замену среди проверенных.
         state
             .outcomes
             .lock()
-            .map_err(|_| "внутренняя ошибка состояния")?
+            .map_err(crate::errors::state)?
             .extend(keys.into_iter().zip(outcomes));
         Ok::<_, String>(())
     }

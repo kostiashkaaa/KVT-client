@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +43,23 @@ pub enum Request {
     NetLog,
     /// Исправление из аудита ПК, которому нужны права администратора.
     AuditFix(crate::audit::ServiceFix),
+    /// Журнал службы для экспорта диагностики (уже без секретов и адресов серверов).
+    ServiceLog,
+    /// Просит ли сеть войти (отель, кафе): проверка напрямую через физический
+    /// адаптер, мимо туннеля и kill switch.
+    CaptiveCheck,
+}
+
+/// Итог проверки сети на страницу входа.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Captive {
+    /// Интернет напрямую есть.
+    Online,
+    /// Вместо ответа — перенаправление или чужая страница: сеть просит войти.
+    Portal,
+    /// Ответа нет (сети нет или проверка заблокирована).
+    Offline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +167,14 @@ pub enum Response {
     Maintenance(Box<MaintenanceReport>),
     NetLog {
         events: Vec<crate::netlog::Event>,
+    },
+    ServiceLog {
+        /// Журнал службы на диске и последние строки ядра.
+        log: String,
+        core: String,
+    },
+    Captive {
+        state: Captive,
     },
 }
 

@@ -326,6 +326,18 @@ fn data_dir(paths: &Paths) -> PathBuf {
         .map_or_else(|| paths.zapret_update.clone(), Path::to_path_buf)
 }
 
+/// Скачивает архив и сверяет SHA-256.
+async fn fetch_archive(http: &NetClient, url: &str, sha256: &str) -> Result<Vec<u8>, String> {
+    let bytes = http
+        .get(url, MAX_ARCHIVE)
+        .await
+        .map_err(|e| format!("не удалось скачать Flowseal с GitHub: {e}"))?;
+    if sha256_hex(&bytes) != sha256.to_ascii_lowercase() {
+        return Err("архив не совпал с хэшем — загрузка отменена".into());
+    }
+    Ok(bytes)
+}
+
 /// Скачивает архив, сверяет SHA-256 и собирает из него комплект в `zapret-bundle`.
 async fn download_bundle(
     paths: &Paths,
@@ -335,16 +347,23 @@ async fn download_bundle(
     fallback_bin: &Path,
 ) -> Result<bool, String> {
     let http = NetClient::new(kvt_core::netlog::Purpose::Update).map_err(|e| e.to_string())?;
-    let bytes = http.get(url, MAX_ARCHIVE).await?;
-    if sha256_hex(&bytes) != sha256.to_ascii_lowercase() {
-        return Err("архив не совпал с хэшем — загрузка отменена".into());
-    }
+    let bytes = fetch_archive(&http, url, sha256).await?;
+    install_bundle(paths, &bytes, version, fallback_bin)
+}
+
+/// Собирает комплект из проверенного архива в `zapret-bundle`.
+fn install_bundle(
+    paths: &Paths,
+    bytes: &[u8],
+    version: &str,
+    fallback_bin: &Path,
+) -> Result<bool, String> {
     let work = data_dir(paths).join("zapret-work");
     let _ = std::fs::remove_dir_all(&work);
     secure_dir(&work)?;
     let result = (|| {
         let archive = work.join("release.zip");
-        std::fs::write(&archive, &bytes).map_err(|e| e.to_string())?;
+        std::fs::write(&archive, bytes).map_err(|e| e.to_string())?;
         let root = extract(&archive, &work.join("x"))?;
         let staging = data_dir(paths).join("zapret-bundle.new");
         let _ = std::fs::remove_dir_all(&staging);
@@ -362,28 +381,52 @@ async fn download_bundle(
     result
 }
 
-/// «Обновить»: последний релиз Flowseal. Служба перед этим останавливает winws.
-pub async fn update(paths: &Paths) -> Result<MaintenanceReport, String> {
-    let http = NetClient::new(kvt_core::netlog::Purpose::Update).map_err(|e| e.to_string())?;
-    let release = zapret::parse_release(&http.get(zapret::RELEASES_API, 1024 * 1024).await?)?;
+/// Скачанное обновление Flowseal, которое ещё не установлено.
+pub struct Prepared {
+    release: zapret::Release,
+    archive: Vec<u8>,
+    fallback_bin: PathBuf,
+}
+
+/// «Обновить», шаг 1 — пока VPN и winws ещё работают: узнать последний релиз и
+/// скачать архив (при подключённом VPN — напрямую, при неудаче через туннель).
+/// `Err(отчёт)` — обновлять нечего.
+pub async fn fetch_update(
+    paths: &Paths,
+    http: &NetClient,
+) -> Result<Result<Prepared, MaintenanceReport>, String> {
+    let release = zapret::parse_release(
+        &http
+            .get(zapret::RELEASES_API, 1024 * 1024)
+            .await
+            .map_err(|e| format!("не удалось узнать последнюю версию Flowseal на GitHub: {e}"))?,
+    )?;
     let active = active_bundle(paths);
     let current = read_version(&active);
     if !zapret::newer(&release.version, &current) {
-        return Ok(MaintenanceReport {
+        return Ok(Err(MaintenanceReport {
             version: current.clone(),
             changed: false,
             binaries_updated: false,
             steps: vec![format!("Установлена последняя версия Flowseal — {current}")],
-        });
+        }));
     }
-    let binaries = download_bundle(
-        paths,
-        &release.zip_url,
-        &release.sha256,
-        &release.version,
-        &active.join("bin"),
-    )
-    .await?;
+    let archive = fetch_archive(http, &release.zip_url, &release.sha256).await?;
+    Ok(Ok(Prepared {
+        release,
+        archive,
+        fallback_bin: active.join("bin"),
+    }))
+}
+
+/// «Обновить», шаг 2 — winws уже остановлен: собрать комплект из скачанного архива.
+pub fn install_update(paths: &Paths, prepared: Prepared) -> Result<MaintenanceReport, String> {
+    let Prepared {
+        release,
+        archive,
+        fallback_bin,
+    } = prepared;
+    let binaries = install_bundle(paths, &archive, &release.version, &fallback_bin)?;
     let (strategies, rejected) = scan_strategies(&paths.zapret_update);
     let mut steps = vec![
         format!("Скачан релиз {} (SHA-256 сверен с GitHub)", release.version),
@@ -580,7 +623,7 @@ pub async fn start(
     );
     let mut cmd = Command::new(bin.join("winws.exe"));
     cmd.args(&args).current_dir(&bin);
-    let (child, job) = spawn_supervised(cmd, log, "zapret").await?;
+    let (child, job) = spawn_supervised(cmd, log, "zapret", None).await?;
     tracing::info!(strategy = %strategy.id, ?interface, "zapret запущен");
     Ok(Winws {
         child,

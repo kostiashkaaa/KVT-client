@@ -15,6 +15,8 @@ mod audit;
 #[cfg(windows)]
 mod handler;
 #[cfg(windows)]
+mod logging;
+#[cfg(windows)]
 mod net;
 #[cfg(windows)]
 mod pipe;
@@ -49,6 +51,8 @@ mod service {
     }
 
     fn service_main(_args: Vec<OsString>) {
+        crate::logging::init_service(false);
+        tracing::info!(version = env!("CARGO_PKG_VERSION"), "служба запускается");
         if let Err(e) = run() {
             tracing::error!(error = %e, "служба завершилась с ошибкой");
         }
@@ -149,19 +153,22 @@ async fn serve(shutdown: tokio::sync::watch::Receiver<bool>) -> anyhow::Result<(
 
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("update-rules") => return update_rules_cli(&args[1..]),
-        Some("install") => return service::install(),
-        Some("uninstall") => return service::uninstall(),
+        Some("update-rules") => {
+            logging::init_console();
+            return update_rules_cli(&args[1..]);
+        }
+        Some("install") => {
+            logging::init_console();
+            return service::install();
+        }
+        Some("uninstall") => {
+            logging::init_console();
+            return service::uninstall();
+        }
         Some("--console") => {
+            logging::init_service(true);
             let (tx, rx) = tokio::sync::watch::channel(false);
             return tokio::runtime::Runtime::new()?.block_on(async move {
                 tokio::spawn(async move {

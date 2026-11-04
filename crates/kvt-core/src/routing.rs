@@ -34,6 +34,8 @@ pub enum Layer {
 pub enum Matcher {
     /// Домен и все его поддомены.
     DomainSuffix(String),
+    /// Ровно этот домен, без поддоменов.
+    Domain(String),
     DomainKeyword(String),
     IpCidr(String),
     /// Набор правил из каталога `lists`: `itdog:<id>` или `rf:<имя>`.
@@ -60,6 +62,15 @@ pub struct RoutingPlan {
 /// Обычный HTTP — запрос идёт внутри туннеля, снаружи виден только VPN.
 pub const HEALTH_URL: &str = "http://www.cloudflare.com/cdn-cgi/trace";
 pub const HEALTH_HOST: &str = "www.cloudflare.com";
+
+/// Откуда KVT и служба скачивают списки и комплект zapret.
+pub const UPDATE_HOSTS: &[&str] = &[
+    "api.github.com",
+    "github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+];
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RoutingError {
@@ -112,6 +123,21 @@ impl RoutingPlan {
         self
     }
 
+    /// Загрузки KVT с GitHub (списки маршрутизации, комплект Flowseal) при
+    /// подключённом VPN идут через туннель, если напрямую не вышло: у части
+    /// провайдеров эти адреса тормозят. Только точные имена — остальной GitHub
+    /// маршрутизируется как обычно.
+    pub fn with_update_hosts(mut self) -> Self {
+        for host in UPDATE_HOSTS {
+            self.rules.push(Rule {
+                layer: Layer::System,
+                matcher: Matcher::Domain((*host).into()),
+                action: Action::Proxy,
+            });
+        }
+        self
+    }
+
     pub fn push(&mut self, rule: Rule) {
         self.rules.push(rule);
     }
@@ -135,6 +161,7 @@ impl RoutingPlan {
             .into_iter()
             .find(|r| match &r.matcher {
                 Matcher::DomainSuffix(s) => domain == *s || domain.ends_with(&format!(".{s}")),
+                Matcher::Domain(d) => domain == *d,
                 Matcher::DomainKeyword(k) => domain.contains(k.as_str()),
                 _ => false,
             })
@@ -355,6 +382,18 @@ mod tests {
 
     fn russia_smart(final_action: Action) -> RoutingPlan {
         super::presets::russia_smart(final_action, ListMode::Compact)
+    }
+
+    #[test]
+    fn update_hosts_go_through_vpn_but_not_the_rest_of_github() {
+        let plan = russia_smart(Action::Direct).with_update_hosts();
+        assert_eq!(plan.resolve_domain("github.com"), Action::Proxy);
+        assert_eq!(
+            plan.resolve_domain("raw.githubusercontent.com"),
+            Action::Proxy
+        );
+        assert_eq!(plan.resolve_domain("gist.github.com"), Action::Direct);
+        assert!(plan.validate().is_ok());
     }
 
     #[test]

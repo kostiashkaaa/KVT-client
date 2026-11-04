@@ -1,7 +1,8 @@
 //! Подписки: добавление, удаление, ручное и фоновое обновление.
 
 use crate::store::Store;
-use crate::{catalog, fetch, AppState};
+use crate::{catalog, disconnect_service, display_name, fetch, query_status, watchdog, AppState};
+use kvt_core::ipc::ServiceStatus;
 use kvt_core::parser::parse_subscription_body;
 use kvt_core::subscription::{SubscriptionMeta, MAX_BODY_BYTES};
 use kvt_core::Secret;
@@ -20,8 +21,8 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-fn lock_err<T>(_: T) -> String {
-    "внутренняя ошибка состояния".into()
+fn lock_err<T>(e: T) -> String {
+    crate::errors::state(e)
 }
 
 pub fn load(app: &AppHandle) -> Result<Store, String> {
@@ -41,9 +42,37 @@ pub fn rebuild(state: &AppState) -> Result<(), String> {
         .lock()
         .map_err(lock_err)?
         .retain(|key, _| entries.iter().any(|e| &e.key == key));
+    // Адреса серверов не должны попасть в журналы и экспорт диагностики.
+    kvt_core::redact::set_servers(entries.iter().map(|e| e.server.address.as_str()));
     *state.servers.lock().map_err(lock_err)? = entries;
     *state.groups.lock().map_err(lock_err)? = groups;
     Ok(())
+}
+
+/// Сервер, к которому подключены, пропал из подписок (подписку удалили или
+/// провайдер убрал сервер). KVT отключается и говорит об этом, а не
+/// переподключается молча к первому серверу другой подписки.
+async fn guard_selected(app: &AppHandle, before: Option<catalog::Entry>) {
+    let Some(entry) = before else { return };
+    let state = app.state::<AppState>();
+    if state.entry(&entry.key).is_some() {
+        return;
+    }
+    if !matches!(
+        query_status().await,
+        Ok(Some(ServiceStatus::Connected { .. }))
+    ) {
+        return;
+    }
+    tracing::info!("выбранный сервер исчез из подписок — VPN отключён");
+    let _ = disconnect_service().await;
+    crate::tray::refresh(app).await;
+    let _ = app.emit(
+        watchdog::EVENT,
+        watchdog::Event::ServerRemoved {
+            server: display_name(&entry.server),
+        },
+    );
 }
 
 /// Что добавилось: интерфейс сразу выбирает первый сервер новой подписки.
@@ -82,7 +111,7 @@ fn with_store<R>(state: &AppState, f: impl FnOnce(&mut Store) -> R) -> Result<R,
     let result = f(store);
     store
         .save()
-        .map_err(|e| format!("не удалось сохранить подписки: {e}"))?;
+        .map_err(|e| crate::errors::io("Не удалось сохранить подписки", &e))?;
     Ok(result)
 }
 
@@ -264,13 +293,15 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
 }
 
 #[tauri::command]
-pub fn remove_subscription(
+pub async fn remove_subscription(
     id: String,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let before = state.selected();
     with_store(&state, |s| s.remove(&id))?;
     rebuild(&state)?;
+    guard_selected(&app, before).await;
     notify(&app);
     Ok(())
 }
@@ -311,8 +342,10 @@ pub async fn refresh_subscription(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let before = state.selected();
     let result = refresh_one(&state, &id).await;
     rebuild(&state)?;
+    guard_selected(&app, before).await;
     notify(&app);
     result
 }
@@ -332,12 +365,14 @@ pub fn spawn_updater(app: AppHandle) {
                 .unwrap_or_default();
             if !due.is_empty() {
                 let state = app.state::<AppState>();
+                let before = state.selected();
                 for (id, _) in &due {
                     if let Err(e) = refresh_one(&state, id).await {
-                        eprintln!("подписка не обновилась: {e}");
+                        tracing::warn!(error = %e, "подписка не обновилась");
                     }
                 }
                 let _ = rebuild(&state);
+                guard_selected(&app, before).await;
                 notify(&app);
             }
             tokio::time::sleep(Duration::from_secs(10 * 60)).await;

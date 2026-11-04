@@ -1,6 +1,10 @@
 //! Автопереключение: если через туннель перестали идти данные, KVT подключается к
 //! следующему рабочему серверу подписки.
 //!
+//! Та же проверка обновляет честный статус (`tunnel`) — даже если автопереключение
+//! выключено. Если данные не идут, а сеть просит войти (отель, кафе), сервер не
+//! меняется: окно предлагает отключить VPN на время входа.
+//!
 //! Чтобы не создавать лишнего трафика, проверка — один маленький запрос раз в
 //! минуту по уже открытому соединению. Сбой подтверждается ещё двумя попытками,
 //! и только потом сервер считается нерабочим. Переключений не больше трёх за
@@ -8,7 +12,7 @@
 
 use crate::catalog::Entry;
 use crate::{connect_current, display_name, health, query_status, save_choice, AppState};
-use kvt_core::ipc::ServiceStatus;
+use kvt_core::ipc::{Captive, Request, Response, ServiceStatus};
 use kvt_core::probe::Verdict;
 use kvt_core::tester::{self, Outcome, QuickResult};
 use kvt_core::Server;
@@ -31,10 +35,29 @@ pub const CHOICE_EVENT: &str = "choice-changed";
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
-    Switched { from: String, to: String },
+    Switched {
+        from: String,
+        to: String,
+    },
     NoNetwork,
-    NoAlternative { server: String },
+    NoAlternative {
+        server: String,
+    },
     GaveUp,
+    /// Сеть просит войти (страница входа), а kill switch или туннель не дают её открыть.
+    CaptivePortal,
+    /// Сервер, к которому были подключены, исчез из подписок — VPN отключён.
+    ServerRemoved {
+        server: String,
+    },
+}
+
+/// Просит ли сеть войти. Проверяет служба: ей kill switch не мешает.
+pub(crate) async fn captive() -> Captive {
+    match crate::service_client::call(Request::CaptiveCheck).await {
+        Ok(Response::Captive { state }) => state,
+        _ => Captive::Offline,
+    }
 }
 
 /// Порядок замены среди `keys` (уже в порядке предпочтения подписок): сначала
@@ -136,22 +159,21 @@ async fn tunnel_dead(client: &reqwest::Client) -> bool {
 pub(crate) async fn switch_to(app: &AppHandle, key: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
     let choice = {
-        let mut c = state
-            .choice
-            .lock()
-            .map_err(|_| "внутренняя ошибка состояния")?;
+        let mut c = state.choice.lock().map_err(crate::errors::state)?;
         c.server = Some(key.to_owned());
         c.clone()
     };
     save_choice(app, &choice)?;
     let _ = app.emit(CHOICE_EVENT, ());
-    connect_current(&state).await?;
+    connect_current(app, false).await?;
     crate::tray::refresh(app).await;
     // Ядру нужно несколько секунд, чтобы поднять TUN и маршруты.
     tokio::time::sleep(Duration::from_secs(3)).await;
     if tunnel_dead(&state.health).await {
+        crate::tunnel::set(app, Some(false));
         return Err("через сервер не идут данные".into());
     }
+    crate::tunnel::set(app, Some(true));
     Ok(())
 }
 
@@ -192,16 +214,13 @@ async fn handle_incident(app: &AppHandle) {
 async fn restore(app: &AppHandle, key: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
     let choice = {
-        let mut c = state
-            .choice
-            .lock()
-            .map_err(|_| "внутренняя ошибка состояния")?;
+        let mut c = state.choice.lock().map_err(crate::errors::state)?;
         c.server = Some(key.to_owned());
         c.clone()
     };
     save_choice(app, &choice)?;
     let _ = app.emit(CHOICE_EVENT, ());
-    let result = connect_current(&state).await.map(|_| ());
+    let result = connect_current(app, true).await.map(|_| ());
     crate::tray::refresh(app).await;
     result
 }
@@ -210,19 +229,40 @@ pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut incidents: VecDeque<Instant> = VecDeque::new();
         let mut gave_up = false;
+        let mut portal_reported = false;
         loop {
-            tokio::time::sleep(INTERVAL).await;
             let state = app.state::<AppState>();
+            // Выход из сна будит проверку раньше срока.
+            tokio::select! {
+                () = tokio::time::sleep(INTERVAL) => {}
+                () = state.watchdog_wake.notified() => {}
+            }
             let enabled = state.choice.lock().map(|c| c.auto_switch).unwrap_or(false);
             let connected = matches!(
                 query_status().await,
                 Ok(Some(ServiceStatus::Connected { .. }))
             );
-            if !enabled || !connected {
+            if !connected {
                 gave_up = false;
+                portal_reported = false;
                 continue;
             }
             if !tunnel_dead(&state.health).await {
+                crate::tunnel::set(&app, Some(true));
+                portal_reported = false;
+                continue;
+            }
+            crate::tunnel::set(&app, Some(false));
+            // Сеть просит войти: другой сервер не поможет.
+            if captive().await == Captive::Portal {
+                if !portal_reported {
+                    portal_reported = true;
+                    tracing::info!("сеть просит войти — сервер не меняем");
+                    let _ = app.emit(EVENT, Event::CaptivePortal);
+                }
+                continue;
+            }
+            if !enabled {
                 continue;
             }
             while incidents

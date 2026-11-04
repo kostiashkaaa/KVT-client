@@ -2,7 +2,7 @@
 //! «Подключить/Отключить» и «Выход». Закрытое окно уничтожается вместе с
 //! WebView, поэтому в фоне KVT почти не занимает память.
 
-use crate::{connect_current, disconnect_service, query_status, AppState};
+use crate::{connect_current, disconnect_service, query_status};
 use kvt_core::ipc::ServiceStatus;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -84,7 +84,7 @@ pub fn show_main_window(app: &AppHandle) {
     }
     if let Some(config) = app.config().app.windows.first() {
         if let Err(e) = WebviewWindowBuilder::from_config(app, config).and_then(|b| b.build()) {
-            eprintln!("не удалось открыть окно KVT: {e}");
+            tracing::error!(error = %e, "не удалось открыть окно KVT");
         }
     }
 }
@@ -127,8 +127,7 @@ async fn toggle_connection(app: &AppHandle) {
     let result = if connected {
         disconnect_service().await.map(|_| ())
     } else {
-        let state = app.state::<AppState>();
-        connect_current(&state).await.map(|_| ())
+        connect_current(app, true).await.map(|_| ())
     };
     refresh(app).await;
     // Ошибку (не выбран сервер, служба не запущена) видно только в окне.

@@ -271,7 +271,7 @@ pub async fn dns_check(state: State<'_, AppState>) -> Result<dns::DnsReport, Str
     if let Some((at, report)) = state
         .dns_report
         .lock()
-        .map_err(|_| "внутренняя ошибка состояния")?
+        .map_err(crate::errors::state)?
         .clone()
     {
         if at.elapsed() < REUSE_FOR {
@@ -284,10 +284,8 @@ pub async fn dns_check(state: State<'_, AppState>) -> Result<dns::DnsReport, Str
         .flatten()
         .and_then(|n| n.dns.first().copied());
     let report = dns::analyze(&collect(system_server).await);
-    *state
-        .dns_report
-        .lock()
-        .map_err(|_| "внутренняя ошибка состояния")? = Some((Instant::now(), report.clone()));
+    *state.dns_report.lock().map_err(crate::errors::state)? =
+        Some((Instant::now(), report.clone()));
     Ok(report)
 }
 

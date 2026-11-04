@@ -127,7 +127,7 @@ async fn on_join(app: &AppHandle) {
     let reconnect =
         active && !plan.disconnect && (old_mode == "hybrid" || mode_changed || other_strategy);
     if plan.connect || reconnect {
-        let _ = connect_current(&state).await;
+        let _ = connect_current(app, true).await;
     } else if plan.disconnect {
         let _ = disconnect_service().await;
     }

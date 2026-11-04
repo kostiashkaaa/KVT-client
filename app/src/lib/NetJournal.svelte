@@ -32,6 +32,7 @@
     zapret: "Zapret",
     rules: "Списки",
     update: "Обновление",
+    captive: "Страница входа",
   };
 
   const routeTitle: Record<NetEvent["route"], string> = {

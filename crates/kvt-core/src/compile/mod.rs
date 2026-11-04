@@ -28,6 +28,11 @@ pub struct DnsPlan {
     pub remote_doh: String,
     /// Резолвер для прямых доменов: российские CDN отдают ближайшие узлы.
     pub local: String,
+    /// Запасной DoH через туннель (другой провайдер), если основной не отвечает.
+    /// Только у Xray: у sing-box нет перехода на запасной DNS-сервер. Системный
+    /// DNS запасным не бывает — его запросы видел бы провайдер интернета.
+    #[serde(default)]
+    pub reserve_doh: Option<String>,
 }
 
 impl Default for DnsPlan {
@@ -35,6 +40,7 @@ impl Default for DnsPlan {
         Self {
             remote_doh: "1.1.1.1".into(),
             local: "77.88.8.8".into(),
+            reserve_doh: Some("8.8.8.8".into()),
         }
     }
 }
@@ -47,9 +53,17 @@ impl DnsPlan {
             .filter(|r| r.tunnel)
             .and_then(|r| r.doh)
             .ok_or(CompileError::Dns(remote.to_owned()))?;
+        // Запасной — первый другой резолвер из каталога, который работает через туннель.
+        let reserve = crate::dns::RESOLVERS
+            .iter()
+            .filter(|r| r.tunnel)
+            .filter_map(|r| r.doh)
+            .find(|d| d.ip != remote.ip)
+            .map(|d| d.ip.to_string());
         Ok(Self {
             remote_doh: remote.ip.to_string(),
             local: local.udp.to_string(),
+            reserve_doh: reserve,
         })
     }
 
@@ -59,11 +73,16 @@ impl DnsPlan {
         if !catalog.iter().any(|r| r.udp.to_string() == self.local) {
             return Err(CompileError::Dns(self.local.clone()));
         }
-        if !catalog
-            .iter()
-            .any(|r| r.tunnel && r.doh.is_some_and(|d| d.ip.to_string() == self.remote_doh))
-        {
+        let tunnel_doh = |ip: &str| {
+            catalog
+                .iter()
+                .any(|r| r.tunnel && r.doh.is_some_and(|d| d.ip.to_string() == ip))
+        };
+        if !tunnel_doh(&self.remote_doh) {
             return Err(CompileError::Dns(self.remote_doh.clone()));
+        }
+        if let Some(reserve) = self.reserve_doh.as_deref().filter(|r| !tunnel_doh(r)) {
+            return Err(CompileError::Dns(reserve.to_owned()));
         }
         Ok(())
     }
@@ -252,6 +271,12 @@ mod tests {
         let injected = DnsPlan {
             remote_doh: "1.1.1.1/dns-query?x=".into(),
             local: "77.88.8.8".into(),
+            reserve_doh: None,
+        };
+        assert!(injected.validate().is_err());
+        let injected = DnsPlan {
+            reserve_doh: Some("6.6.6.6".into()),
+            ..DnsPlan::default()
         };
         assert!(injected.validate().is_err());
 

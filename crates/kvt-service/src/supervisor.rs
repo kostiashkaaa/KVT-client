@@ -7,6 +7,7 @@ use crate::net::NetClient;
 use crate::wfp::{self, KillSwitch};
 use crate::win::Job;
 use kvt_core::compile::{compile, CompileInput, TUN_INTERFACE};
+use kvt_core::core_errors::{self, Triggered};
 use kvt_core::core_select::CoreKind;
 use kvt_core::ipc::{ConnectPlan, ZapretPlan};
 use kvt_core::rulesync;
@@ -41,14 +42,19 @@ pub struct Paths {
     pub zapret_update: PathBuf,
 }
 
+/// `C:\ProgramData\KVT`: списки, обновления zapret, журналы.
+pub fn data_dir() -> PathBuf {
+    std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join("KVT")
+}
+
 impl Paths {
     pub fn standard() -> std::io::Result<Self> {
         let exe = std::env::current_exe()?;
         let exe_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-        let data = std::env::var_os("ProgramData")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-            .join("KVT");
+        let data = data_dir();
         Ok(Self {
             cores: exe_dir.join("cores"),
             zapret: exe_dir.join("zapret"),
@@ -87,6 +93,8 @@ pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
 }
 
 pub type Log = Arc<Mutex<VecDeque<String>>>;
+/// Сработавшее правило ошибок ядра, которое ещё не обработано.
+pub type Issues = Arc<Mutex<Option<Triggered>>>;
 
 struct Running {
     child: Child,
@@ -102,6 +110,11 @@ pub struct Supervisor {
     /// winws: в гибриде рядом с ядром, в режиме zapret — один.
     zapret: Option<crate::zapret::Winws>,
     log: Log,
+    issues: Issues,
+    /// Последний план подключения — для переподключения по ошибке ядра.
+    last_plan: Option<ConnectPlan>,
+    /// По ошибке ядра уже переподключались (делается один раз на подключение).
+    reconnected: bool,
 }
 
 impl Supervisor {
@@ -112,6 +125,9 @@ impl Supervisor {
             kill_switch: None,
             zapret: None,
             log: Log::default(),
+            issues: Issues::default(),
+            last_plan: None,
+            reconnected: false,
         }
     }
 
@@ -125,6 +141,12 @@ impl Supervisor {
     /// туннеля не уходит ни одного пакета. Подуровни WFP у сессий разные, поэтому
     /// два набора фильтров не конфликтуют.
     pub async fn start(&mut self, plan: &ConnectPlan) -> Result<(), String> {
+        self.reconnected = false;
+        self.connect(plan).await
+    }
+
+    async fn connect(&mut self, plan: &ConnectPlan) -> Result<(), String> {
+        self.last_plan = Some(plan.clone());
         let previous = if plan.kill_switch {
             self.kill_switch.take()
         } else {
@@ -151,9 +173,11 @@ impl Supervisor {
         self.stop().await;
         plan.routing.validate().map_err(|e| e.to_string())?;
         if !crate::win::is_elevated() {
-            return Err("Служба запущена без прав администратора: без них нельзя создать TUN.                         Запустите `kvt-service --console` из терминала администратора."
+            tracing::error!("служба без прав администратора — TUN не создать");
+            return Err("Службе KVT не хватает прав, чтобы создать сетевой адаптер. Переустановите KVT — служба должна работать от имени системы."
                 .into());
         }
+        hide_server_addresses(&plan.server);
         secure_dir(&self.paths.rules)?;
         secure_dir(&self.paths.run)?;
 
@@ -173,10 +197,17 @@ impl Supervisor {
             .find(|f| !self.paths.rules.join(&f.local).exists())
         {
             return Err(format!(
-                "Не удалось загрузить список «{}». Проверьте интернет.",
+                "Не удалось загрузить список «{}» с GitHub. Проверьте интернет и подключитесь снова.",
                 missing.local
             ));
         }
+        // Прежние версии на месте, но обновить не вышло: повторим через туннель,
+        // когда он поднимется.
+        let retry: Vec<rulesync::RuleFile> = files
+            .iter()
+            .filter(|f| report.failed.iter().any(|(n, _)| *n == f.local))
+            .cloned()
+            .collect();
 
         if let Some(zp) = &plan.zapret {
             // winws — до ядра, пока трафик ещё идёт через физический интерфейс.
@@ -211,6 +242,9 @@ impl Supervisor {
         let config_path = self.paths.run.join(spec.config_name);
         std::fs::write(&config_path, config)
             .map_err(|e| format!("не удалось записать конфиг: {e}"))?;
+        if let Ok(mut issues) = self.issues.lock() {
+            *issues = None;
+        }
         let result = self.check_and_spawn(&spec, &config_path).await;
         // Секреты на диске не задерживаются: ядро уже прочитало конфиг (или не запустилось).
         let _ = std::fs::remove_file(&config_path);
@@ -221,10 +255,55 @@ impl Supervisor {
             if let Err(e) = self.enable_kill_switch(&spec).await {
                 // Защиту обещали, но включить не смогли — не оставляем «полузащищённое» соединение.
                 self.stop().await;
-                return Err(format!("Не удалось включить kill switch: {e}"));
+                tracing::error!(error = %e, "kill switch не включился");
+                return Err(format!(
+                    "Не удалось включить kill switch, поэтому подключение остановлено. Подключитесь снова; если повторится — выключите kill switch в настройках и сохраните диагностику. ({e})"
+                ));
             }
         }
+        tracing::info!(core = ?plan.core, kill_switch = plan.kill_switch, "подключено");
+        if !retry.is_empty() {
+            spawn_rules_retry(self.paths.rules.clone(), retry);
+        }
         Ok(())
+    }
+
+    /// Обрабатывает сработавшее правило ошибок ядра. `Some(текст)` — подключение
+    /// остановлено, текст — причина для пользователя.
+    pub async fn handle_issue(&mut self) -> Option<String> {
+        let issue = self.issues.lock().ok()?.take()?;
+        self.running.as_ref()?;
+        match issue.action {
+            core_errors::Action::Log => None,
+            core_errors::Action::Reconnect if !self.reconnected => {
+                self.reconnected = true;
+                let plan = self.last_plan.clone()?;
+                tracing::warn!(code = %issue.code, "переподключение по ошибке ядра");
+                match self.connect(&plan).await {
+                    Ok(()) => None,
+                    Err(e) => Some(format!("{} {e}", issue.text)),
+                }
+            }
+            core_errors::Action::Reconnect | core_errors::Action::Stop => {
+                tracing::warn!(code = %issue.code, "подключение остановлено по ошибке ядра");
+                self.halt_core().await;
+                Some(format!("{} Подключение остановлено.", issue.text))
+            }
+        }
+    }
+
+    /// Останавливает ядро и zapret, но не kill switch: как при падении ядра,
+    /// интернет мимо туннеля не открывается до явного «Отключить».
+    async fn halt_core(&mut self) {
+        if let Some(mut running) = self.running.take() {
+            let _ = running.child.kill().await;
+        }
+        self.zapret = None;
+    }
+
+    /// VPN-ядро сейчас работает.
+    pub fn vpn_running(&self) -> bool {
+        self.running.is_some()
     }
 
     async fn enable_kill_switch(&mut self, spec: &CoreSpec) -> Result<(), String> {
@@ -260,16 +339,23 @@ impl Supervisor {
             .map_err(|e| format!("не удалось запустить {}: {e}", spec.exe.display()))?;
         if !check.status.success() {
             let text = String::from_utf8_lossy(&[check.stdout, check.stderr].concat()).into_owned();
+            let detail = tail(&kvt_core::redact::text(&text), 3);
+            tracing::error!(%detail, "ядро отвергло конфигурацию");
             return Err(format!(
-                "Ядро отвергло конфигурацию: {}",
-                tail(&mask_secrets(&text), 3)
+                "VPN-ядро не приняло настройки этого сервера — возможно, в ключе неподдерживаемые параметры. Выберите другой сервер или сохраните диагностику. ({detail})"
             ));
         }
         let mut cmd = Command::new(&spec.exe);
         cmd.args(spec.run_args(config))
             .envs(spec.env.clone())
             .current_dir(&self.paths.run);
-        spawn_supervised(cmd, &self.log, "ядро").await
+        spawn_supervised(
+            cmd,
+            &self.log,
+            "ядро",
+            Some((spec.core, Arc::clone(&self.issues))),
+        )
+        .await
     }
 
     /// Только zapret, без VPN: winws на всех интерфейсах.
@@ -277,7 +363,7 @@ impl Supervisor {
         self.stop().await;
         if !crate::win::is_elevated() {
             return Err(
-                "Служба запущена без прав администратора: zapret не сможет перехватывать пакеты."
+                "Службе KVT не хватает прав, чтобы запустить zapret. Переустановите KVT — служба должна работать от имени системы."
                     .into(),
             );
         }
@@ -299,6 +385,7 @@ impl Supervisor {
     pub async fn stop(&mut self) {
         if let Some(mut running) = self.running.take() {
             let _ = running.child.kill().await;
+            tracing::info!("ядро остановлено");
         }
         if self.zapret.take().is_some() {
             tracing::info!("zapret остановлен");
@@ -317,6 +404,7 @@ impl Supervisor {
         if let Some(reason) = self.zapret.as_mut().and_then(crate::zapret::Winws::exited) {
             self.zapret = None;
             let last = self.recent_log(1).pop().unwrap_or_default();
+            tracing::error!(%reason, %last, "zapret завершился");
             return Some(format!("{reason}: {last}"));
         }
         let running = self.running.as_mut()?;
@@ -324,7 +412,15 @@ impl Supervisor {
             Ok(Some(status)) => {
                 self.running = None;
                 let last = self.recent_log(1).pop().unwrap_or_default();
-                Some(format!("ядро остановилось ({status}): {last}"))
+                tracing::error!(%status, %last, "ядро завершилось само");
+                // Понятный текст, если последняя строка подходит под правило.
+                let known = self
+                    .last_plan
+                    .as_ref()
+                    .and_then(|p| core_errors::classify(p.core, &last))
+                    .filter(|r| r.action != core_errors::Action::Log)
+                    .map(|r| r.text.clone());
+                Some(known.unwrap_or_else(|| format!("VPN-ядро неожиданно остановилось: {last}")))
             }
             _ => None,
         }
@@ -405,6 +501,7 @@ pub async fn spawn_supervised(
     mut cmd: Command,
     log: &Log,
     what: &str,
+    watch: Option<(CoreKind, Issues)>,
 ) -> Result<(Child, Job), String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -419,10 +516,10 @@ pub async fn spawn_supervised(
         job.assign(handle).map_err(|e| format!("job: {e}"))?;
     }
     if let Some(out) = child.stdout.take() {
-        tokio::spawn(collect(out, Arc::clone(log)));
+        tokio::spawn(collect(out, Arc::clone(log), watch.clone()));
     }
     if let Some(err) = child.stderr.take() {
-        tokio::spawn(collect(err, Arc::clone(log)));
+        tokio::spawn(collect(err, Arc::clone(log), watch));
     }
     if let Ok(status) = tokio::time::timeout(STARTUP_GRACE, child.wait()).await {
         // Даём читателям лога дочитать последние строки.
@@ -445,10 +542,38 @@ pub async fn spawn_supervised(
     Ok((child, job))
 }
 
-async fn collect<R: AsyncRead + Unpin>(reader: R, log: Log) {
+async fn collect<R: AsyncRead + Unpin>(reader: R, log: Log, watch: Option<(CoreKind, Issues)>) {
+    let mut watcher = core_errors::Watcher::default();
+    let mut logged: std::collections::HashMap<&'static str, std::time::Instant> =
+        std::collections::HashMap::new();
     let mut lines = BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        let line = mask_secrets(&line);
+        let line = kvt_core::redact::text(&line);
+        if let Some((core, issues)) = &watch {
+            // На диск попадают только строки, которые узнало правило. У правил «только
+            // записать» (таймауты, DNS) в строке бывают адреса сайтов, которые открывал
+            // пользователь, поэтому от них пишется лишь код — не чаще раза в минуту.
+            if let Some(rule) = core_errors::classify(*core, &line) {
+                let due = logged
+                    .get(rule.code.as_str())
+                    .map_or(true, |t| t.elapsed() >= Duration::from_secs(60));
+                if rule.action != core_errors::Action::Log {
+                    tracing::warn!(code = %rule.code, "ядро: {line}");
+                } else if due {
+                    tracing::info!(code = %rule.code, "ядро: {}", rule.text);
+                }
+                if due {
+                    logged.insert(rule.code.as_str(), std::time::Instant::now());
+                }
+            }
+            if let Some(hit) = watcher.observe(*core, &line, std::time::Instant::now()) {
+                if hit.action != core_errors::Action::Log {
+                    if let Ok(mut slot) = issues.lock() {
+                        slot.get_or_insert(hit);
+                    }
+                }
+            }
+        }
         tracing::debug!(target: "core", "{line}");
         if let Ok(mut l) = log.lock() {
             if l.len() >= LOG_LINES {
@@ -464,63 +589,57 @@ fn tail(text: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join(" | ")
 }
 
-/// Маскирует UUID (идентификаторы пользователей VLESS) в строках лога.
-pub fn mask_secrets(line: &str) -> String {
-    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
-    let bytes = line.as_bytes();
-    let mut out = String::with_capacity(line.len());
-    let mut i = 0;
-    'outer: while i < bytes.len() {
-        if i + 36 <= bytes.len() {
-            let mut pos = i;
-            let mut ok = true;
-            for (g, len) in GROUPS.iter().enumerate() {
-                if !bytes[pos..pos + len].iter().all(u8::is_ascii_hexdigit) {
-                    ok = false;
-                    break;
-                }
-                pos += len;
-                if g < 4 {
-                    if bytes[pos] != b'-' {
-                        ok = false;
-                        break;
-                    }
-                    pos += 1;
-                }
-            }
-            if ok {
-                out.push_str("********-****-****-****-************");
-                i += 36;
-                continue 'outer;
-            }
-        }
-        let ch = line[i..].chars().next().unwrap_or('?');
-        out.push(ch);
-        i += ch.len_utf8();
+/// Адрес сервера — маскировщику журналов до запуска ядра: в строках ядра его не
+/// придётся угадывать. IP, в которые разрешается имя, добавляются в фоне: при
+/// переподключении с kill switch системный DNS может не отвечать, и ждать его нельзя.
+fn hide_server_addresses(server: &kvt_core::Server) {
+    kvt_core::redact::set_servers([server.address.as_str()]);
+    if server.address.parse::<std::net::IpAddr>().is_ok() {
+        return;
     }
-    out
+    let host = (server.address.clone(), server.port);
+    tokio::spawn(async move {
+        let lookup = tokio::net::lookup_host(host);
+        if let Ok(Ok(addrs)) = tokio::time::timeout(Duration::from_secs(5), lookup).await {
+            kvt_core::redact::add_servers(addrs.map(|a| a.ip().to_string()));
+        }
+    });
+}
+
+/// Повтор загрузки списков через туннель после подключения. Ядро уже работает на
+/// прежних версиях; новые применятся при следующем подключении.
+fn spawn_rules_retry(dir: PathBuf, files: Vec<rulesync::RuleFile>) {
+    tokio::spawn(async move {
+        // Даём TUN и маршрутам подняться.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let Ok(http) = NetClient::new(kvt_core::netlog::Purpose::Rules) else {
+            return;
+        };
+        let http = http.with_tunnel_fallback();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let report = rulesync::sync(&http, &dir, &files, now, true).await;
+        for (file, err) in &report.failed {
+            tracing::warn!(file, err, "список не обновился и через туннель");
+        }
+        for file in &report.updated {
+            tracing::info!(file, "список обновлён через туннель");
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn uuids_are_masked() {
-        let s = "failed for user b831381d-6324-4d53-ad4f-8cda48b30811 на сервере";
-        assert_eq!(
-            mask_secrets(s),
-            "failed for user ********-****-****-****-************ на сервере"
-        );
-        assert_eq!(mask_secrets("обычная строка"), "обычная строка");
-    }
-
     #[tokio::test]
     async fn instant_exit_is_reported() {
         let log = Log::default();
         let mut cmd = Command::new("cmd");
         cmd.args(["/c", "echo bad config & exit 3"]);
-        let Err(err) = spawn_supervised(cmd, &log, "test").await else {
+        let Err(err) = spawn_supervised(cmd, &log, "test", None).await else {
             panic!("ожидалась ошибка")
         };
         assert!(err.contains("bad config"), "{err}");
@@ -531,7 +650,7 @@ mod tests {
         let log = Log::default();
         let mut cmd = Command::new("cmd");
         cmd.args(["/c", "echo started & ping -n 30 127.0.0.1 >nul"]);
-        let (mut child, _job) = spawn_supervised(cmd, &log, "test").await.unwrap();
+        let (mut child, _job) = spawn_supervised(cmd, &log, "test", None).await.unwrap();
         assert!(child.try_wait().unwrap().is_none());
         assert!(log.lock().unwrap().iter().any(|l| l.contains("started")));
         child.kill().await.unwrap();

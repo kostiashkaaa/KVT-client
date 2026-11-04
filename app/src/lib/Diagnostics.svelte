@@ -18,6 +18,7 @@
 
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import DiagExport from "./DiagExport.svelte";
   import PcAudit from "./PcAudit.svelte";
   import {
     dnsCatalog,
@@ -196,6 +197,14 @@
       {/each}
     </ol>
   {/if}
+
+  <div class="row export">
+    <p class="caption">
+      Не помогло? Сохраните диагностику — журналы и итоги проверок без ключей и адресов серверов — и приложите её к
+      сообщению об ошибке.
+    </p>
+    <DiagExport />
+  </div>
 </section>
 
 <section class="card block" id="dns-check">
@@ -357,6 +366,16 @@
 
   .row .btn {
     flex: none;
+  }
+
+  .row.export :global(.btn) {
+    flex: none;
+  }
+
+  .row.export {
+    align-items: center;
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--stroke);
   }
 
   .caption {

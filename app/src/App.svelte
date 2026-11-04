@@ -26,6 +26,9 @@
     onChoiceChanged,
     onWatchdog,
     onZapretAuto,
+    onTunnelState,
+    takeNotices,
+    tunnelState,
     refreshSubscription,
     defaultRouting,
     defaultDns,
@@ -136,17 +139,41 @@
   async function reloadGroups() {
     const snap = await snapshot();
     groups = snap.groups;
-    // Выбранный сервер исчез (подписку удалили или провайдер убрал сервер).
-    if (!groups.some((g) => g.servers.some((s) => s.key === selected))) selected = firstKey();
+    // Выбранный сервер исчез (подписку удалили или провайдер убрал сервер). Если были
+    // подключены к нему, Rust уже отключил VPN и сообщил об этом, — к первому
+    // серверу другой подписки не переподключаемся.
+    if (!groups.some((g) => g.servers.some((s) => s.key === selected))) {
+      connectedWith = null;
+      status = await serviceStatus().catch(() => null);
+      selected = firstKey();
+    }
   }
 
   // Подписка добавлена, обновилась в фоне или удалена.
   $effect(() => onSubscriptionsChanged(() => void reloadGroups()));
 
   let notice = $state<string | null>(null);
+  /** Сеть просит войти: вместо «Понятно» — кнопка отключить VPN. */
+  let captive = $state(false);
+  /** Сообщения, которые появились до открытия окна (например, о повреждённых настройках). */
+  let startupNotices = $state<string[]>([]);
+  $effect(() => {
+    void takeNotices().then((n) => (startupNotices = [...startupNotices, ...n]));
+  });
+
+  /** Идут ли данные через туннель: null — ещё не проверяли. */
+  let tunnelOk = $state<boolean | null>(null);
+  $effect(() => {
+    void tunnelState().then((t) => (tunnelOk = t));
+    return onTunnelState((t) => (tunnelOk = t));
+  });
 
   function watchdogText(e: WatchdogEvent): string {
     switch (e.kind) {
+      case "captive_portal":
+        return "Сеть просит войти (как Wi-Fi в гостинице или кафе), а VPN не даёт открыть страницу входа. Отключите VPN, войдите в сеть и подключитесь снова.";
+      case "server_removed":
+        return `Сервер «${e.server}» больше не в подписках — VPN отключён. Выберите другой сервер и подключитесь.`;
       case "switched":
         return `Через «${e.from}» перестали идти данные — KVT переключился на «${e.to}».`;
       case "no_network":
@@ -158,7 +185,12 @@
     }
   }
 
-  $effect(() => onWatchdog((e) => (notice = watchdogText(e))));
+  $effect(() =>
+    onWatchdog((e) => {
+      notice = watchdogText(e);
+      captive = e.kind === "captive_portal";
+    }),
+  );
 
   // Автопроверка zapret: сама подобрала стратегию или просит внимания.
   $effect(() =>
@@ -367,7 +399,16 @@
     {#if page === "home"}
       <h1>Главная</h1>
 
-      <StatusCard {server} bind:mode {busy} {status} {onconnect} {ondisconnect} onwhy={askWhy} />
+      <StatusCard {server} bind:mode {busy} {status} {tunnelOk} {onconnect} {ondisconnect} onwhy={askWhy} />
+
+      {#each startupNotices as text, i (i)}
+        <Banner>
+          {text}
+          {#snippet action()}
+            <button class="btn" onclick={() => (startupNotices = startupNotices.filter((_, j) => j !== i))}>Понятно</button>
+          {/snippet}
+        </Banner>
+      {/each}
 
       {#if mode !== "vpn"}
         <ZapretCard bind:zapret vpnConnected={status?.state === "connected"} onopen={() => (page = "zapret")} />
@@ -385,10 +426,26 @@
         </Banner>
       {/if}
       {#if notice}
-        <Banner tone="info">
+        <Banner tone={captive ? "warn" : "info"}>
           {notice}
           {#snippet action()}
-            <button class="btn" onclick={() => (notice = null)}>Понятно</button>
+            {#if captive && active}
+              <button
+                class="btn btn-primary"
+                onclick={async () => {
+                  notice = null;
+                  captive = false;
+                  await ondisconnect();
+                }}>Отключить VPN</button
+              >
+            {/if}
+            <button
+              class="btn"
+              onclick={() => {
+                notice = null;
+                captive = false;
+              }}>Понятно</button
+            >
           {/snippet}
         </Banner>
       {/if}
