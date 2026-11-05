@@ -3,6 +3,7 @@
   import Banner from "./lib/Banner.svelte";
   import NoticeStack from "./lib/NoticeStack.svelte";
   import { push as pushNotice, dismissKey } from "./lib/notices.svelte";
+  import { update, skipUpdate, watchUpdates } from "./lib/update.svelte";
   import NavRail, { type Page } from "./lib/NavRail.svelte";
   import StatusCard from "./lib/StatusCard.svelte";
   import Onboarding from "./lib/Onboarding.svelte";
@@ -27,9 +28,6 @@
     startService,
     serviceMismatch,
     openLink,
-    updateStatus,
-    onUpdateAvailable,
-    type UpdateStatus,
     inApp,
     setChoice,
     snapshot,
@@ -196,40 +194,8 @@
     return onNotices(take);
   });
 
-  // Новая версия KVT: сообщение с кнопкой «Скачать». «Позже» — больше не напоминать
-  // об этой версии (до следующей).
-  const SKIPPED_UPDATE = "kvt.update.skipped";
-  function skippedUpdate(): string | null {
-    try {
-      return localStorage.getItem(SKIPPED_UPDATE);
-    } catch {
-      return null;
-    }
-  }
-  function announceUpdate(u: UpdateStatus) {
-    if (!u.available || !u.latest || u.latest === skippedUpdate()) return;
-    const version = u.latest;
-    pushNotice({
-      key: "update",
-      tone: "info",
-      sticky: true,
-      text: `Вышла KVT ${version}. Скачайте её на странице загрузки — настройки и подписки сохранятся.`,
-      actions: [{ label: "Скачать", primary: true, run: () => openLink("latest") }],
-      closeLabel: "Позже",
-      onclose: () => {
-        try {
-          localStorage.setItem(SKIPPED_UPDATE, version);
-        } catch {
-          // Без хранилища напомним при следующем запуске — не страшно.
-        }
-      },
-    });
-  }
-  $effect(() => {
-    const read = () => void updateStatus().then(announceUpdate);
-    read();
-    return onUpdateAvailable(read);
-  });
+  // Новая версия KVT: плашка на главной и точка у «Настроек» (update.svelte.ts).
+  $effect(() => watchUpdates());
 
   /** Идут ли данные через туннель: null — ещё не проверяли. */
   let tunnelOk = $state<boolean | null>(null);
@@ -553,6 +519,18 @@
           {onconnect}
           ondone={() => (onboarded = true)}
         />
+      {/if}
+
+      {#if update.banner}
+        <div transition:fade={{ duration: 150 }}>
+          <Banner tone="info">
+            Вышла KVT {update.version}. Скачайте её на странице загрузки — настройки и подписки сохранятся.
+            {#snippet action()}
+              <button class="btn btn-primary" onclick={() => void openLink("latest")}>Скачать</button>
+              <button class="btn" onclick={skipUpdate}>Позже</button>
+            {/snippet}
+          </Banner>
+        </div>
       {/if}
 
       <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {mismatch} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} onwhy={askWhy} />

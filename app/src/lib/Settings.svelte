@@ -1,12 +1,10 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
   import Banner from "./Banner.svelte";
+  import { update as newVersion, checkUpdateNow } from "./update.svelte";
   import {
     aboutInfo,
     openLink,
-    updateStatus,
-    updateCheck,
-    type UpdateStatus,
     zapretInfo,
     type About,
     autostartEnabled,
@@ -54,15 +52,12 @@
   });
   const coreTitles: Record<string, string> = { xray: "Xray", "sing-box": "sing-box", wintun: "Wintun" };
   // Новая версия: что известно из фоновой проверки, и кнопка «Проверить сейчас».
-  let release = $state<UpdateStatus | null>(null);
+  const release = $derived(newVersion.status);
   let checking = $state(false);
-  $effect(() => {
-    void updateStatus().then((u) => (release = u));
-  });
   async function checkNow() {
     checking = true;
     try {
-      release = await updateCheck();
+      await checkUpdateNow();
     } finally {
       checking = false;
     }

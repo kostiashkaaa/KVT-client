@@ -1306,7 +1306,8 @@ export interface UpdateStatus {
 
 /** Что известно о новой версии — без запроса в сеть. */
 export async function updateStatus(): Promise<UpdateStatus> {
-  if (!inTauri) return { current: "0.9.1", latest: null, available: false, checkedAt: null, error: null };
+  // В предпросмотре — как будто вышла новая версия: видно плашку и точку у «Настроек».
+  if (!inTauri) return { current: "0.9.1", latest: "0.9.2", available: true, checkedAt: Date.now(), error: null };
   return invoke<UpdateStatus>("update_status");
 }
 

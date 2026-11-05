@@ -4,6 +4,7 @@
 
 <script lang="ts">
   import Icon, { type IconName } from "./Icon.svelte";
+  import { update } from "./update.svelte";
 
   let { current = $bindable() }: { current: Page } = $props();
 
@@ -52,11 +53,14 @@
     class="settings"
     class:active={current === "settings"}
     aria-current={current === "settings" ? "page" : undefined}
-    title="Настройки"
+    title={update.version ? `Настройки · вышла KVT ${update.version}` : "Настройки"}
     onclick={() => (current = "settings")}
   >
-    <Icon name="sliders" />
-    <span>Настройки</span>
+    <span class="icon">
+      <Icon name="sliders" />
+      {#if update.version}<i class="badge" aria-hidden="true"></i>{/if}
+    </span>
+    <span>Настройки{#if update.version}<b class="sr"> — вышла новая версия</b>{/if}</span>
   </button>
 </nav>
 
@@ -142,6 +146,38 @@
     margin-top: auto;
   }
 
+  /* Новая версия: красная точка на иконке «Настроек», видна и в узкой панели. */
+  .icon {
+    position: relative;
+    display: flex;
+  }
+
+  .badge {
+    position: absolute;
+    top: -3px;
+    right: -4px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #e5484d;
+    box-shadow: 0 0 0 2px var(--sidebar);
+    animation: pop var(--dur) var(--ease);
+  }
+
+  @keyframes pop {
+    from {
+      transform: scale(0);
+    }
+  }
+
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
   @media (max-width: 720px) {
     nav {
       width: 56px;
@@ -151,7 +187,7 @@
       padding-inline: 0;
     }
     /* Подпись скрыта визуально, но остаётся именем кнопки для экранного диктора. */
-    button span {
+    button span:not(.icon) {
       position: absolute;
       width: 1px;
       height: 1px;
