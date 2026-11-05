@@ -27,6 +27,9 @@
     startService,
     serviceMismatch,
     openLink,
+    updateStatus,
+    onUpdateAvailable,
+    type UpdateStatus,
     inApp,
     setChoice,
     snapshot,
@@ -93,6 +96,7 @@
   let zapret = $state<ZapretChoice>(defaultZapret());
   let notifications = $state(true);
   let connectOnStart = $state(false);
+  let checkUpdates = $state(true);
   /** До восстановления выбора считаем пройденным — подсказки не мелькают. */
   let onboarded = $state(true);
   let restored = $state(false);
@@ -112,6 +116,7 @@
     zapret = { ...defaultZapret(), ...c.zapret };
     notifications = c.notifications ?? true;
     connectOnStart = c.connectOnStart ?? false;
+    checkUpdates = c.checkUpdates ?? true;
     onboarded = c.onboarded ?? false;
   }
 
@@ -128,6 +133,7 @@
       zapret: $state.snapshot(zapret),
       notifications,
       connectOnStart,
+      checkUpdates,
       onboarded,
     };
   }
@@ -188,6 +194,41 @@
       });
     take();
     return onNotices(take);
+  });
+
+  // Новая версия KVT: сообщение с кнопкой «Скачать». «Позже» — больше не напоминать
+  // об этой версии (до следующей).
+  const SKIPPED_UPDATE = "kvt.update.skipped";
+  function skippedUpdate(): string | null {
+    try {
+      return localStorage.getItem(SKIPPED_UPDATE);
+    } catch {
+      return null;
+    }
+  }
+  function announceUpdate(u: UpdateStatus) {
+    if (!u.available || !u.latest || u.latest === skippedUpdate()) return;
+    const version = u.latest;
+    pushNotice({
+      key: "update",
+      tone: "info",
+      sticky: true,
+      text: `Вышла KVT ${version}. Скачайте её на странице загрузки — настройки и подписки сохранятся.`,
+      actions: [{ label: "Скачать", primary: true, run: () => openLink("latest") }],
+      closeLabel: "Позже",
+      onclose: () => {
+        try {
+          localStorage.setItem(SKIPPED_UPDATE, version);
+        } catch {
+          // Без хранилища напомним при следующем запуске — не страшно.
+        }
+      },
+    });
+  }
+  $effect(() => {
+    const read = () => void updateStatus().then(announceUpdate);
+    read();
+    return onUpdateAvailable(read);
   });
 
   /** Идут ли данные через туннель: null — ещё не проверяли. */
@@ -565,6 +606,7 @@
     {:else if page === "settings"}
       <h1>Настройки</h1>
       <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks bind:notifications bind:connectOnStart
+        bind:checkUpdates
         onrestartonboarding={() => {
           onboarded = false;
           page = "home";

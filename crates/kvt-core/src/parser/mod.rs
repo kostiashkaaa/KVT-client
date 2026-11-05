@@ -6,12 +6,13 @@ mod shadowsocks;
 mod stream;
 mod trojan;
 mod vless;
+mod xray_json;
 
 use crate::model::Server;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use percent_encoding::percent_decode_str;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use url::Url;
 
@@ -102,33 +103,50 @@ pub fn parse_subscription_body(body: &str) -> SubscriptionContent {
         trimmed
     };
 
-    if text.starts_with('{') || text.starts_with('[') || text.contains("\nproxies:") {
+    let mut seen = HashSet::new();
+    let is_json = text.starts_with('{') || text.starts_with('[');
+    // Конфиги Xray: номер «строки» в ошибках — номер конфига в массиве.
+    if let Some(entries) = is_json.then(|| xray_json::parse(text)).flatten() {
+        for (idx, entry) in entries.into_iter().enumerate() {
+            add_entry(&mut out, &mut seen, idx + 1, entry);
+        }
+        return out;
+    }
+    if is_json || text.contains("\nproxies:") {
         out.errors.push((
             0,
-            ParseError::Unsupported("JSON/Clash-подписки появятся в следующей версии"),
+            ParseError::Unsupported("подписки sing-box и Clash пока не поддерживаются"),
         ));
         return out;
     }
 
-    let mut seen = std::collections::HashSet::new();
     for (idx, line) in text.lines().enumerate().take(MAX_SUBSCRIPTION_LINES) {
         let line = line.trim();
         if line.is_empty() || line.starts_with("//") || !line.contains("://") {
             continue;
         }
-        match parse_uri(line) {
-            Ok(Entry::Server(server)) => {
-                if seen.insert(dedup_key(&server)) {
-                    out.servers.push(*server);
-                } else {
-                    out.duplicates += 1;
-                }
-            }
-            Ok(Entry::Info(text)) => out.info.push(text),
-            Err(e) => out.errors.push((idx + 1, e)),
-        }
+        add_entry(&mut out, &mut seen, idx + 1, parse_uri(line));
     }
     out
+}
+
+fn add_entry(
+    out: &mut SubscriptionContent,
+    seen: &mut HashSet<String>,
+    line: usize,
+    entry: Result<Entry, ParseError>,
+) {
+    match entry {
+        Ok(Entry::Server(server)) => {
+            if seen.insert(dedup_key(&server)) {
+                out.servers.push(*server);
+            } else {
+                out.duplicates += 1;
+            }
+        }
+        Ok(Entry::Info(text)) => out.info.push(text),
+        Err(e) => out.errors.push((line, e)),
+    }
 }
 
 fn dedup_key(s: &Server) -> String {
@@ -250,7 +268,7 @@ mod tests {
 
     #[test]
     fn json_subscription_is_reported_unsupported() {
-        let c = parse_subscription_body("{\"outbounds\": []}");
+        let c = parse_subscription_body("{\"proxies\": []}");
         assert!(matches!(
             c.errors.as_slice(),
             [(0, ParseError::Unsupported(_))]

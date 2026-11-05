@@ -1,8 +1,12 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import Banner from "./Banner.svelte";
   import {
     aboutInfo,
     openLink,
+    updateStatus,
+    updateCheck,
+    type UpdateStatus,
     zapretInfo,
     type About,
     autostartEnabled,
@@ -25,6 +29,7 @@
     networks = $bindable(),
     notifications = $bindable(),
     connectOnStart = $bindable(),
+    checkUpdates = $bindable(),
     onrestartonboarding,
   }: {
     killSwitch: boolean;
@@ -33,6 +38,7 @@
     networks: NetworkProfile[];
     notifications: boolean;
     connectOnStart: boolean;
+    checkUpdates: boolean;
     /** Показать подсказки первого запуска снова. */
     onrestartonboarding: () => void;
   } = $props();
@@ -47,7 +53,22 @@
       .catch(() => (flowseal = null));
   });
   const coreTitles: Record<string, string> = { xray: "Xray", "sing-box": "sing-box", wintun: "Wintun" };
-  async function open(target: "source" | "releases" | "licenses") {
+  // Новая версия: что известно из фоновой проверки, и кнопка «Проверить сейчас».
+  let release = $state<UpdateStatus | null>(null);
+  let checking = $state(false);
+  $effect(() => {
+    void updateStatus().then((u) => (release = u));
+  });
+  async function checkNow() {
+    checking = true;
+    try {
+      release = await updateCheck();
+    } finally {
+      checking = false;
+    }
+  }
+
+  async function open(target: "source" | "releases" | "latest" | "licenses") {
     linkError = null;
     try {
       await openLink(target);
@@ -295,10 +316,41 @@
       {/if}
     </dl>
   {/if}
+  {#if release?.available}
+    <Banner tone="info">
+      Вышла KVT {release.latest}. Скачайте её на странице загрузки — настройки и подписки сохранятся.
+      {#snippet action()}
+        <button class="btn btn-primary" onclick={() => void open("latest")}>Скачать</button>
+      {/snippet}
+    </Banner>
+  {/if}
+  <div class="row">
+    <div>
+      <h3>Сообщать о новой версии</h3>
+      <p class="muted">
+        Раз в 12 часов KVT спрашивает у GitHub номер последней версии. Скачиваете и устанавливаете её вы сами: KVT
+        ничего не загружает.
+      </p>
+      <p class="caption">
+        {#if checking}
+          Проверяем…
+        {:else if release?.error}
+          Не удалось проверить: {release.error}
+        {:else if release?.latest && !release.available}
+          Установлена последняя версия
+        {/if}
+        <button class="btn ghost" onclick={() => void checkNow()} disabled={checking}>Проверить сейчас</button>
+      </p>
+    </div>
+    <label class="switch">
+      <input type="checkbox" role="switch" bind:checked={checkUpdates} />
+      <span aria-hidden="true"></span>
+      <span class="sr">Сообщать о новой версии</span>
+    </label>
+  </div>
   <p class="muted">
     KVT — свободная программа под лицензией GPL-3.0. В составе: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert
-    (LGPL-3.0), zapret и Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0). Новые версии — на странице
-    загрузки: KVT сам ничего не скачивает.
+    (LGPL-3.0), zapret и Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0).
   </p>
   <div class="links">
     <button class="btn" onclick={onrestartonboarding}>Подсказки первого запуска</button>

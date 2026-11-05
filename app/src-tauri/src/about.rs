@@ -56,6 +56,7 @@ pub fn open_link(target: String) -> Result<(), String> {
     let what = match target.as_str() {
         "source" => SOURCE_URL.to_owned(),
         "releases" => format!("{SOURCE_URL}/releases"),
+        "latest" => format!("{SOURCE_URL}/releases/latest"),
         "licenses" => exe_dir()
             .map(|d| d.join("licenses"))
             .filter(|d| d.is_dir())

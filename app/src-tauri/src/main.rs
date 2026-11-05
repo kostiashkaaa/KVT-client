@@ -28,6 +28,7 @@ mod subs;
 mod tray;
 mod troubleshoot;
 mod tunnel;
+mod updates;
 mod watchdog;
 mod winreg;
 mod zapret;
@@ -123,6 +124,8 @@ struct Choice {
     notifications: bool,
     /// Подключаться к выбранному серверу при запуске KVT.
     connect_on_start: bool,
+    /// Узнавать у GitHub, не вышла ли новая версия KVT (`updates`).
+    check_updates: bool,
     /// Подсказки первого запуска пройдены или пропущены.
     onboarded: bool,
     /// Автозапуск уже включался при первом запуске установленного KVT: если
@@ -157,6 +160,7 @@ impl Default for Choice {
             recent: Vec::new(),
             notifications: true,
             connect_on_start: false,
+            check_updates: true,
             onboarded: false,
             autostart_offered: false,
         }
@@ -247,9 +251,21 @@ impl AppState {
     }
 }
 
-/// Название сервера без флага-эмодзи (флаг интерфейс рисует картинкой).
+/// Название сервера для трея и уведомлений, где флаг картинкой не нарисовать:
+/// без флагов-эмодзи (Windows показывает их буквами). У цепочки страны остаются
+/// кодами — «EE для wifi · через RU», иначе одинаковые названия не различить.
 pub(crate) fn display_name(s: &Server) -> String {
-    kvt_core::flag::split_flag(&s.name).1
+    let f = kvt_core::flag::split_flags(&s.name);
+    match (f.flag, f.via) {
+        (Some(exit), Some(via)) => format!(
+            "{} {} · через {}",
+            exit.to_uppercase(),
+            f.name,
+            via.to_uppercase()
+        ),
+        (None, Some(via)) => format!("{} · через {}", f.name, via.to_uppercase()),
+        _ => f.name,
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -257,8 +273,10 @@ pub(crate) fn display_name(s: &Server) -> String {
 pub(crate) struct ServerSummary {
     key: String,
     name: String,
-    /// Код страны из флага в названии (`nl`).
+    /// Страна выхода: код из флага в названии (`nl`).
     flag: Option<String>,
+    /// Страна входа у цепочки серверов (`ru`).
+    via: Option<String>,
     address: String,
     port: u16,
     protocol: &'static str,
@@ -283,11 +301,12 @@ impl ServerSummary {
             Security::Tls(_) => "tls",
             Security::Reality(_) => "reality",
         };
-        let (flag, name) = kvt_core::flag::split_flag(&s.name);
+        let f = kvt_core::flag::split_flags(&s.name);
         Self {
             key: key.to_owned(),
-            name,
-            flag,
+            name: f.name,
+            flag: f.flag,
+            via: f.via,
             address: s.address.clone(),
             port: s.port,
             protocol: s.protocol.kind(),
@@ -687,6 +706,7 @@ fn main() {
             subs::spawn_updater(app.handle().clone());
             tray::create(app.handle())?;
             notify::spawn(app.handle());
+            updates::spawn(app.handle().clone());
             // Автозапуск (`--tray`) — сразу в трей; обычный запуск открывает окно.
             if !autostart::started_in_tray() {
                 tray::show_main_window(app.handle());
@@ -744,6 +764,8 @@ fn main() {
             autostart::set_autostart,
             about::about_info,
             about::open_link,
+            updates::update_status,
+            updates::update_check,
             about::start_service,
             service_client::service_mismatch,
             tunnel::tunnel_state,

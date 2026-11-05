@@ -19,7 +19,8 @@
     }
   })();
 
-  function country(code: string): string {
+  /** Название страны по-русски («Эстония»); если Windows его не знает — код. */
+  export function country(code: string): string {
     try {
       return names?.of(code.toUpperCase()) ?? code.toUpperCase();
     } catch {

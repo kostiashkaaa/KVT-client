@@ -27,6 +27,8 @@ export interface Notice {
   actions: NoticeAction[];
   /** Подпись кнопки закрытия. */
   closeLabel: string;
+  /** Вызывается, когда сообщение закрыли этой кнопкой. */
+  onclose?: () => void;
   /** Сколько раз пришло это же сообщение. */
   count: number;
 }
@@ -39,6 +41,7 @@ export interface NoticeInput {
   sticky?: boolean;
   actions?: NoticeAction[];
   closeLabel?: string;
+  onclose?: () => void;
 }
 
 export const MAX_NOTICES = 4;
@@ -97,6 +100,7 @@ export function push(input: NoticeInput): number {
     existing.sticky = sticky;
     existing.actions = input.actions ?? [];
     existing.closeLabel = input.closeLabel ?? "Понятно";
+    existing.onclose = input.onclose;
     arm(existing);
     return existing.id;
   }
@@ -108,6 +112,7 @@ export function push(input: NoticeInput): number {
     sticky,
     actions: input.actions ?? [],
     closeLabel: input.closeLabel ?? "Понятно",
+    onclose: input.onclose,
     count: 1,
   };
   list.push(notice);

@@ -10,8 +10,10 @@ export interface ServerSummary {
   key: string;
   /** Название без флага-эмодзи. */
   name: string;
-  /** Код страны из флага в названии (`nl`). */
+  /** Страна выхода: код из флага в названии (`nl`). */
   flag: string | null;
+  /** Страна входа у цепочки серверов (`ru`): «🇷🇺→🇪🇪» — вход в России, выход в Эстонии. */
+  via: string | null;
   address: string;
   port: number;
   protocol: string;
@@ -132,6 +134,8 @@ export interface Choice {
   notifications: boolean;
   /** Подключаться к выбранному серверу при запуске KVT. */
   connectOnStart: boolean;
+  /** Узнавать у GitHub, не вышла ли новая версия KVT. */
+  checkUpdates: boolean;
   /** Подсказки первого запуска пройдены или пропущены. */
   onboarded: boolean;
 }
@@ -255,6 +259,7 @@ function previewServer(name: string, i: number, group: string): ServerSummary {
     key: `${group}-${i}`,
     name: flag ? name.slice(flag.length).trim() : name,
     flag: flag ? flags[flag]! : null,
+    via: i % 7 === 3 ? "ru" : null,
     address: "preview.example",
     port: 443,
     protocol: "vless",
@@ -1274,7 +1279,7 @@ export interface About {
 export async function aboutInfo(): Promise<About> {
   if (!inTauri) {
     return {
-      version: "0.9.0",
+      version: "0.9.1",
       cores: { xray: "26.10.31", "sing-box": "1.14.4", wintun: "0.14.1" },
       sourceUrl: "https://github.com/kostiashkaaa/KVT-client",
       licenses: true,
@@ -1284,8 +1289,38 @@ export async function aboutInfo(): Promise<About> {
 }
 
 /** Открывает исходники, страницу загрузки или папку лицензий — только их. */
-export async function openLink(target: "source" | "releases" | "licenses"): Promise<void> {
+export async function openLink(target: "source" | "releases" | "latest" | "licenses"): Promise<void> {
   if (inTauri) await invoke("open_link", { target });
+}
+
+export interface UpdateStatus {
+  current: string;
+  /** Последняя версия на GitHub; null — ещё не проверяли или не удалось. */
+  latest: string | null;
+  /** Она новее установленной. */
+  available: boolean;
+  /** Когда проверяли (Unix-время, мс). */
+  checkedAt: number | null;
+  error: string | null;
+}
+
+/** Что известно о новой версии — без запроса в сеть. */
+export async function updateStatus(): Promise<UpdateStatus> {
+  if (!inTauri) return { current: "0.9.1", latest: null, available: false, checkedAt: null, error: null };
+  return invoke<UpdateStatus>("update_status");
+}
+
+/** Спросить у GitHub сейчас (не чаще раза в минуту). */
+export async function updateCheck(): Promise<UpdateStatus> {
+  if (!inTauri) return { current: "0.9.1", latest: "0.9.2", available: true, checkedAt: Date.now(), error: null };
+  return invoke<UpdateStatus>("update_check");
+}
+
+/** Фоновая проверка нашла новую версию. */
+export function onUpdateAvailable(handler: () => void): () => void {
+  if (!inTauri) return () => {};
+  const off = listen("update-available", handler);
+  return () => void off.then((f) => f());
 }
 
 /** Автозапуск с Windows свёрнутым в трей (значение в реестре, не в настройках). */

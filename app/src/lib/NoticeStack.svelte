@@ -26,7 +26,13 @@
                 }}>{a.label}</button
               >
             {/each}
-            <button class="btn" onclick={() => dismiss(n.id)}>{n.closeLabel}</button>
+            <button
+              class="btn"
+              onclick={() => {
+                n.onclose?.();
+                dismiss(n.id);
+              }}>{n.closeLabel}</button
+            >
           {/snippet}
         </Banner>
       </div>

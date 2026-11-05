@@ -81,6 +81,19 @@ To make sure the file wasn't tampered with:
 </details>
 
 <details>
+<summary><b>The installer won't start: "Smart App Control blocked…"</b></summary>
+
+Smart App Control is a Windows 11 feature. Unlike SmartScreen, it has no "Run anyway"
+button: while it's on, unsigned programs don't start at all, and KVT isn't signed yet.
+
+To turn Smart App Control off, go to Windows Security → App & browser control → Smart App
+Control settings → Off. SmartScreen and your antivirus keep working. Note that on many
+Windows 11 builds the only way to turn Smart App Control back on is to reinstall
+Windows.
+
+</details>
+
+<details>
 <summary><b>My antivirus flags WinDivert or winws</b></summary>
 
 Those are zapret components. The WinDivert driver intercepts packets to get around
@@ -95,9 +108,10 @@ exclusions. In VPN mode zapret doesn't run.
 
 ## Updating and uninstalling
 
-KVT never downloads or installs anything by itself. Get new versions from
-[Releases](https://github.com/kostiashkaaa/KVT-client/releases); there's a link in
-Settings → About.
+When a new version comes out, KVT tells you and links to
+[Releases](https://github.com/kostiashkaaa/KVT-client/releases). You download and
+install it yourself: KVT never downloads or runs anything on its own. You can turn these
+messages off in Settings → About.
 
 - **`KVT-x.y.z-update.exe`** updates an installed KVT and weighs a few megabytes. The
   VPN disconnects for a few seconds; settings and subscriptions stay.
@@ -134,8 +148,8 @@ client". For Happ, copy the subscription URL by hand: Happ stores it encrypted.
 completely, choose Exit in the tray menu.
 
 **What does KVT send over the network?** Only what it needs: subscriptions, server
-checks and routing lists. Every request shows up in the Log section. There's no
-telemetry.
+checks, routing lists, and every 12 hours a question to GitHub about the latest KVT
+version. Every request shows up in the Log section. There's no telemetry.
 
 **Found a bug?** Open an [issue](https://github.com/kostiashkaaa/KVT-client/issues) and
 attach a diagnostics archive from Diagnostics → "Save diagnostics". Keys and server

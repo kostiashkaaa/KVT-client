@@ -135,6 +135,11 @@ pub enum Fingerprint {
     Safari,
     Ios,
     Android,
+    /// Браузеры QQ и 360 — китайские сборки Chromium; их отпечатки есть и в Xray, и в
+    /// sing-box, провайдеры иногда выбирают их нарочно.
+    Qq,
+    #[serde(rename = "360")]
+    Browser360,
     Random,
     Randomized,
 }
@@ -148,6 +153,8 @@ impl Fingerprint {
             "safari" => Self::Safari,
             "ios" => Self::Ios,
             "android" => Self::Android,
+            "qq" => Self::Qq,
+            "360" => Self::Browser360,
             "random" => Self::Random,
             "randomized" => Self::Randomized,
             _ => return None,
@@ -160,7 +167,12 @@ impl Fingerprint {
         match self {
             Self::Firefox | Self::Edge | Self::Android => FingerprintAdvice::Ok,
             Self::Randomized => FingerprintAdvice::Avoid,
-            Self::Chrome | Self::Safari | Self::Ios | Self::Random => FingerprintAdvice::Suspicious,
+            Self::Chrome
+            | Self::Safari
+            | Self::Ios
+            | Self::Qq
+            | Self::Browser360
+            | Self::Random => FingerprintAdvice::Suspicious,
         }
     }
 }

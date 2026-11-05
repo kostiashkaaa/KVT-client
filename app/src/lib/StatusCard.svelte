@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Flag from "./Flag.svelte";
+  import Flag, { country } from "./Flag.svelte";
   import {
     formatBytes,
     formatElapsed,
@@ -133,7 +133,8 @@
           <!-- Без флага — без пустого места перед названием. -->
           <span class="server"
             >{#if server.flag}<Flag code={server.flag} />{/if}<span class="name">{server.name}</span
-            >{#if coreName}<span class="caption">· {coreName}</span>{/if}</span
+            >{#if server.via}<span class="caption" title="Вход через {country(server.via)}">через {server.via.toUpperCase()}</span
+            >{/if}{#if coreName}<span class="caption">· {coreName}</span>{/if}</span
           >
         {:else}
           Выберите сервер ниже

@@ -3,6 +3,7 @@
 
 use kvt_core::governor::{Decision, NetGovernor};
 use kvt_core::netlog::{self, Origin, Purpose, Route};
+use kvt_core::parser::parse_subscription_body;
 use kvt_core::subscription::{parse_headers, SubscriptionMeta, MAX_BODY_BYTES};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -74,13 +75,50 @@ pub async fn fetch(url: &Url) -> Result<Fetched, String> {
     result
 }
 
+/// Как KVT представляется серверу подписки. Панели провайдеров (Remnawave,
+/// Marzban и др.) выбирают формат по User-Agent: незнакомому клиенту отвечают 404.
+/// v2rayNG и Happ получают конфиги Xray в JSON — в них бывают серверы, которых нет в
+/// списке ссылок (у провайдера из беты — все серверы Hysteria2); v2rayN 6 и Hiddify —
+/// обычный список ссылок. Своё имя в строке остаётся — провайдер видит, кто пришёл.
+/// Пробуем по очереди, пока в ответе не найдутся серверы.
+fn user_agents() -> [String; 4] {
+    let kvt = concat!("KVT/", env!("CARGO_PKG_VERSION"));
+    [
+        format!("v2rayNG/1.10.5 {kvt}"),
+        format!("v2rayN/6.60 {kvt}"),
+        format!("Hiddify/2.5.7 {kvt}"),
+        kvt.to_owned(),
+    ]
+}
+
 async fn fetch_inner(url: &Url) -> Result<Fetched, String> {
+    let mut first_error = None;
+    for agent in user_agents() {
+        match fetch_as(url, &agent).await {
+            Ok(fetched) if !parse_subscription_body(&fetched.body).servers.is_empty() => {
+                return Ok(fetched)
+            }
+            // Ответ есть, но не в понятном KVT формате — пробуем следующего клиента.
+            Ok(fetched) => {
+                first_error.get_or_insert(Ok(fetched));
+            }
+            Err(e) => {
+                first_error.get_or_insert(Err(e));
+            }
+        }
+    }
+    // Ни один вариант не дал серверов: вернуть первое, что было (ошибку или ответ —
+    // тогда «не нашлось серверов» скажет проверка подписки).
+    first_error.unwrap_or_else(|| Err("Не удалось загрузить подписку".into()))
+}
+
+async fn fetch_as(url: &Url, agent: &str) -> Result<Fetched, String> {
     let client = reqwest::Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::limited(3))
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
-        .user_agent(concat!("KVT/", env!("CARGO_PKG_VERSION")))
+        .user_agent(agent)
         .build()
         .map_err(describe)?;
 
@@ -140,6 +178,24 @@ fn describe(e: reqwest::Error) -> String {
 mod tests {
     use super::*;
     use kvt_core::governor::NetPolicy;
+
+    #[test]
+    fn known_clients_first_own_name_kept() {
+        let agents = user_agents();
+        assert!(agents[0].starts_with("v2rayNG/"));
+        assert!(agents.iter().all(|a| a.contains("KVT/")));
+    }
+
+    /// Настоящая подписка: `KVT_SUB_URL=https://… cargo test -p kvt-app real_subscription -- --ignored`.
+    #[tokio::test]
+    #[ignore = "ходит в сеть по ссылке из KVT_SUB_URL"]
+    async fn real_subscription() {
+        let url = validate_url(&std::env::var("KVT_SUB_URL").unwrap()).unwrap();
+        let fetched = fetch_inner(&url).await.unwrap();
+        let n = parse_subscription_body(&fetched.body).servers.len();
+        println!("серверов: {n}");
+        assert!(n > 0);
+    }
 
     #[test]
     fn only_https_is_accepted() {

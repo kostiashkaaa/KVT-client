@@ -147,6 +147,7 @@ fn title(key: &str) -> String {
         "recent" => "недавние серверы",
         "notifications" => "уведомления",
         "connectOnStart" => "подключение при запуске",
+        "checkUpdates" => "проверка новой версии",
         "autostartOffered" => "автозапуск",
         "onboarded" => "подсказки первого запуска",
         other => other,

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { slide } from "svelte/transition";
   import Icon from "./Icon.svelte";
-  import Flag from "./Flag.svelte";
+  import Flag, { country } from "./Flag.svelte";
   import type { Group, Outcome, QuickResult, ServerSummary, SubscriptionInfo } from "./api";
 
   let {
@@ -152,9 +152,14 @@
   const visible = $derived.by(() => {
     const q = query.trim().toLowerCase();
     return groups
-      .map((g) => ({ g, servers: q ? g.servers.filter((s) => s.name.toLowerCase().includes(q)) : g.servers }))
+      .map((g) => ({ g, servers: q ? g.servers.filter((s) => matches(s, q)) : g.servers }))
       .filter(({ servers }) => !q || servers.length > 0);
   });
+  /** Поиск по названию, а ещё по стране выхода и входа — коду («ee») или названию («эстония»). */
+  function matches(s: ServerSummary, q: string): boolean {
+    if (s.name.toLowerCase().includes(q)) return true;
+    return [s.flag, s.via].some((c) => c !== null && (c === q || country(c).toLowerCase().startsWith(q)));
+  }
   const found = $derived(visible.reduce((n, v) => n + v.servers.length, 0));
 
   // Длинные подписки (тысячи серверов) рисуются порциями: сначала PAGE строк,
@@ -283,7 +288,11 @@
               >
                 <span class="radio" aria-hidden="true"></span>
                 <Flag code={s.flag} />
-                <span class="name">{s.name}</span>
+                <span class="name"
+                  >{s.name}{#if s.via}<span class="via" title="Вход через {country(s.via)}"
+                      >· через {s.via.toUpperCase()}</span
+                    >{/if}</span
+                >
                 <span class="tag">{label(s)}</span>
                 <!-- Новый итог проверки проявляется, а не подменяет прежний скачком. -->
                 {#key l.text}
@@ -542,6 +551,12 @@
     font-family: var(--font), "Segoe UI Emoji";
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  .via {
+    margin-left: 6px;
+    font-size: 12px;
+    color: var(--text-2);
   }
 
   .tag {
