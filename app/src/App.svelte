@@ -1,8 +1,11 @@
 <script lang="ts">
   import { fade } from "svelte/transition";
   import Banner from "./lib/Banner.svelte";
+  import NoticeStack from "./lib/NoticeStack.svelte";
+  import { push as pushNotice, dismissKey } from "./lib/notices.svelte";
   import NavRail, { type Page } from "./lib/NavRail.svelte";
   import StatusCard from "./lib/StatusCard.svelte";
+  import Onboarding from "./lib/Onboarding.svelte";
   import ServerList from "./lib/ServerList.svelte";
   import AddSubscription from "./lib/AddSubscription.svelte";
   import Settings from "./lib/Settings.svelte";
@@ -65,7 +68,6 @@
   let selected = $state<string | null>(null);
   let busy = $state(false);
   /** Ошибка на главной; `why` — ошибка подключения, к ней уместно «Почему не работает?». */
-  let error = $state<{ text: string; why: boolean } | null>(null);
   /** Ошибка добавления подписки — показывается рядом с формой, а не на главной. */
   let addError = $state<string | null>(null);
   let mainEl = $state<HTMLElement | null>(null);
@@ -91,6 +93,8 @@
   let zapret = $state<ZapretChoice>(defaultZapret());
   let notifications = $state(true);
   let connectOnStart = $state(false);
+  /** До восстановления выбора считаем пройденным — подсказки не мелькают. */
+  let onboarded = $state(true);
   let restored = $state(false);
 
   const allServers = $derived(groups.flatMap((g) => g.servers));
@@ -108,6 +112,7 @@
     zapret = { ...defaultZapret(), ...c.zapret };
     notifications = c.notifications ?? true;
     connectOnStart = c.connectOnStart ?? false;
+    onboarded = c.onboarded ?? false;
   }
 
   /** Rust хранит выбор целиком: отправляем все поля, иначе остальные сбросятся. */
@@ -123,6 +128,7 @@
       zapret: $state.snapshot(zapret),
       notifications,
       connectOnStart,
+      onboarded,
     };
   }
 
@@ -132,7 +138,12 @@
       .then((snap) => {
         groups = snap.groups;
         if (snap.choice) applyChoice(snap.choice);
-        else selected = firstKey();
+        else {
+          selected = firstKey();
+          onboarded = false;
+        }
+        // Подписки уже есть (KVT пользовались до подсказок) — первый запуск позади.
+        if (groups.some((g) => g.servers.length > 0)) onboarded = true;
       })
       .finally(() => (restored = true));
   });
@@ -168,13 +179,13 @@
   // Подписка добавлена, обновилась в фоне или удалена.
   $effect(() => onSubscriptionsChanged(() => void reloadGroups()));
 
-  let notice = $state<string | null>(null);
-  /** Сеть просит войти: вместо «Понятно» — кнопка отключить VPN. */
-  let captive = $state(false);
-  /** Сообщения, которые появились до открытия окна (например, о повреждённых настройках). */
-  let startupNotices = $state<string[]>([]);
+  // Сообщения, которые появились до открытия окна (например, о повреждённых
+  // настройках) или пришли из трея, когда уведомления Windows выключены.
   $effect(() => {
-    const take = () => void takeNotices().then((n) => (startupNotices = [...startupNotices, ...n]));
+    const take = () =>
+      void takeNotices().then((list) => {
+        for (const text of list) pushNotice({ text, key: `startup:${text}` });
+      });
     take();
     return onNotices(take);
   });
@@ -205,18 +216,37 @@
 
   $effect(() =>
     onWatchdog((e) => {
-      notice = watchdogText(e);
-      captive = e.kind === "captive_portal";
+      const text = watchdogText(e);
+      // Замена сервера и пропавшая сеть — сведения, исчезают сами; остальное ждёт «Понятно».
+      const info = e.kind === "switched" || e.kind === "no_network";
+      pushNotice({
+        key: "watchdog",
+        text,
+        tone: info ? "info" : "warn",
+        actions:
+          e.kind === "captive_portal" && active
+            ? [{ label: "Отключить VPN", primary: true, run: () => ondisconnect() }]
+            : [],
+      });
     }),
   );
 
   // Автопроверка zapret: сама подобрала стратегию или просит внимания.
   $effect(() =>
     onZapretAuto((e) => {
-      notice =
-        e.kind === "picked"
-          ? `zapret перестал справляться — KVT подобрал стратегию ${e.title} (${e.passed} из ${e.max}).`
-          : `zapret справляется хуже: ${e.passed} из ${e.max} проверок. Откройте вкладку Zapret → «Почему не работает?».`;
+      if (e.kind === "picked") {
+        pushNotice({
+          key: "zapret-auto",
+          tone: "info",
+          text: `zapret перестал справляться — KVT подобрал стратегию ${e.title} (${e.passed} из ${e.max}).`,
+        });
+      } else {
+        pushNotice({
+          key: "zapret-auto",
+          text: `zapret справляется хуже: ${e.passed} из ${e.max} проверок.`,
+          actions: [{ label: "Открыть Zapret", run: () => void (page = "zapret") }],
+        });
+      }
     }),
   );
 
@@ -286,8 +316,18 @@
 
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+  /** Ошибка действия: одна на окно (новая заменяет прежнюю), висит до «Понятно». */
   function failed(e: unknown, why = false) {
-    error = { text: message(e), why };
+    showError(message(e), why);
+  }
+
+  function showError(text: string, why: boolean) {
+    pushNotice({
+      key: "error",
+      text,
+      actions: why ? [{ label: "Почему не работает?", run: askWhy }] : [],
+      closeLabel: why ? "Скрыть" : "Понятно",
+    });
   }
 
   async function check(group: string) {
@@ -303,7 +343,7 @@
 
   async function runFullCheck(group: string) {
     fullChecking = group;
-    error = null;
+    dismissKey("error");
     const keys = new Set(groups.find((g) => g.id === group)?.servers.map((s) => s.key));
     outcomes = Object.fromEntries(Object.entries(outcomes).filter(([k]) => !keys.has(k)));
     try {
@@ -319,7 +359,7 @@
 
   async function refresh(group: string) {
     refreshing = group;
-    error = null;
+    dismissKey("error");
     try {
       await refreshSubscription(group);
       await reloadGroups();
@@ -366,7 +406,7 @@
 
   async function onstartservice() {
     busy = true;
-    error = null;
+    dismissKey("error");
     try {
       await startService();
       status = await serviceStatus().catch(() => null);
@@ -388,7 +428,7 @@
 
   async function onconnect() {
     busy = true;
-    error = null;
+    dismissKey("error");
     const target = { server: selected, mode, zapret: zapretKey() };
     try {
       await setChoice(currentChoice());
@@ -433,7 +473,7 @@
       if (busy) return;
       const next = await serviceStatus().catch(() => null);
       if (next?.state === "failed" && status?.state === "connected") {
-        error = { text: `Соединение прервано: ${next.reason}`, why: true };
+        showError(`Соединение прервано: ${next.reason}`, true);
       }
       const nextActive = next?.state === "connected" || next?.state === "zapret";
       if (!nextActive) connectedWith = null;
@@ -454,61 +494,31 @@
   <NavRail bind:current={page} />
 
   <main bind:this={mainEl}>
+    <NoticeStack />
     <!-- Новая вкладка проявляется с лёгким подъёмом; старая уходит сразу, без задержки. -->
     {#key page}
     <div class="page">
     {#if page === "home"}
       <h1>Главная</h1>
 
+      {#if restored && !onboarded}
+        <Onboarding
+          hasServers={allServers.length > 0}
+          bind:mode
+          {active}
+          {busy}
+          onadd={() => (adding = true)}
+          onmigrate={() => (page = "subscriptions")}
+          {onconnect}
+          ondone={() => (onboarded = true)}
+        />
+      {/if}
+
       <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {mismatch} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} onwhy={askWhy} />
 
-      {#each startupNotices as text, i (i)}
-        <Banner>
-          {text}
-          {#snippet action()}
-            <button class="btn" onclick={() => (startupNotices = startupNotices.filter((_, j) => j !== i))}>Понятно</button>
-          {/snippet}
-        </Banner>
-      {/each}
 
       {#if mode !== "vpn"}
         <ZapretCard bind:zapret vpnConnected={status?.state === "connected"} onopen={() => (page = "zapret")} />
-      {/if}
-
-      {#if error}
-        <Banner>
-          {error.text}
-          {#snippet action()}
-            {#if error?.why}
-              <button class="btn" onclick={askWhy}>Почему не работает?</button>
-            {/if}
-            <button class="btn" onclick={() => (error = null)}>{error?.why ? "Скрыть" : "Понятно"}</button>
-          {/snippet}
-        </Banner>
-      {/if}
-      {#if notice}
-        <Banner tone={captive ? "warn" : "info"}>
-          {notice}
-          {#snippet action()}
-            {#if captive && active}
-              <button
-                class="btn btn-primary"
-                onclick={async () => {
-                  notice = null;
-                  captive = false;
-                  await ondisconnect();
-                }}>Отключить VPN</button
-              >
-            {/if}
-            <button
-              class="btn"
-              onclick={() => {
-                notice = null;
-                captive = false;
-              }}>Понятно</button
-            >
-          {/snippet}
-        </Banner>
       {/if}
 
       {#if allServers.length > 0}
@@ -554,7 +564,12 @@
       />
     {:else if page === "settings"}
       <h1>Настройки</h1>
-      <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks bind:notifications bind:connectOnStart />
+      <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks bind:notifications bind:connectOnStart
+        onrestartonboarding={() => {
+          onboarded = false;
+          page = "home";
+        }}
+      />
     {:else}
       <h1>Журнал</h1>
       <NetJournal />

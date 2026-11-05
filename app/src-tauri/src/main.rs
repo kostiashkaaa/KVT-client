@@ -123,6 +123,8 @@ struct Choice {
     notifications: bool,
     /// Подключаться к выбранному серверу при запуске KVT.
     connect_on_start: bool,
+    /// Подсказки первого запуска пройдены или пропущены.
+    onboarded: bool,
     /// Автозапуск уже включался при первом запуске установленного KVT: если
     /// пользователь потом его выключил, не включать снова. Окно поле не присылает.
     autostart_offered: bool,
@@ -155,6 +157,7 @@ impl Default for Choice {
             recent: Vec::new(),
             notifications: true,
             connect_on_start: false,
+            onboarded: false,
             autostart_offered: false,
         }
     }

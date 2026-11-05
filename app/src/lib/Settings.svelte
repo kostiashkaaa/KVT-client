@@ -25,6 +25,7 @@
     networks = $bindable(),
     notifications = $bindable(),
     connectOnStart = $bindable(),
+    onrestartonboarding,
   }: {
     killSwitch: boolean;
     autoSwitch: boolean;
@@ -32,6 +33,8 @@
     networks: NetworkProfile[];
     notifications: boolean;
     connectOnStart: boolean;
+    /** Показать подсказки первого запуска снова. */
+    onrestartonboarding: () => void;
   } = $props();
 
   let about = $state<About | null>(null);
@@ -298,6 +301,7 @@
     загрузки: KVT сам ничего не скачивает.
   </p>
   <div class="links">
+    <button class="btn" onclick={onrestartonboarding}>Подсказки первого запуска</button>
     <button class="btn" onclick={() => void open("releases")}>Страница загрузки</button>
     <button class="btn" onclick={() => void open("source")}>Исходники</button>
     {#if about?.licenses}

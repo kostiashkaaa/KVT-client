@@ -156,6 +156,37 @@
       .filter(({ servers }) => !q || servers.length > 0);
   });
   const found = $derived(visible.reduce((n, v) => n + v.servers.length, 0));
+
+  // Длинные подписки (тысячи серверов) рисуются порциями: сначала PAGE строк,
+  // следующая порция — когда прокрутка доходит до конца отрисованного. Иначе 10 000
+  // строк — это 70 000 элементов, и окно замирает на секунды при каждом обновлении.
+  const PAGE = 150;
+  let limits = $state<Record<string, number>>({});
+  $effect(() => {
+    void query;
+    limits = {};
+  });
+  const limitOf = (id: string) => limits[id] ?? PAGE;
+  function grow(id: string) {
+    limits = { ...limits, [id]: limitOf(id) + PAGE };
+  }
+
+  /** Конец отрисованной части попал в окно (с запасом в экран) — дорисовать. */
+  function more(node: HTMLElement, onvisible: () => void) {
+    let callback = onvisible;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) callback();
+    }, { rootMargin: "600px 0px" });
+    observer.observe(node);
+    return {
+      update(next: () => void) {
+        callback = next;
+      },
+      destroy() {
+        observer.disconnect();
+      },
+    };
+  }
 </script>
 
 <section class="card list">
@@ -240,7 +271,7 @@
           <p class="announce">{g.meta.announce}</p>
         {/if}
         <ul role="listbox" aria-label={g.title}>
-          {#each servers as s (s.key)}
+          {#each servers.slice(0, limitOf(g.id)) as s (s.key)}
             {@const l = cell(g.id, s.key)}
             <li>
               <button
@@ -262,6 +293,12 @@
             </li>
           {/each}
         </ul>
+        {#if servers.length > limitOf(g.id)}
+          <p class="caption more" use:more={() => grow(g.id)}>
+            Показано {limitOf(g.id)} из {servers.length}
+            <button class="btn ghost" onclick={() => grow(g.id)}>Показать ещё</button>
+          </p>
+        {/if}
         {#if g.errors > 0}
           <p class="caption skipped">Пропущено строк с ошибками: {g.errors}</p>
         {/if}
@@ -311,6 +348,14 @@
     outline: none;
     border-bottom-color: var(--accent);
     box-shadow: inset 0 -1px 0 var(--accent);
+  }
+
+  .more {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin: 0;
+    padding: var(--space-3) var(--space-5);
   }
 
   .add {

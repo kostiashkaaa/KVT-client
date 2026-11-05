@@ -132,6 +132,8 @@ export interface Choice {
   notifications: boolean;
   /** Подключаться к выбранному серверу при запуске KVT. */
   connectOnStart: boolean;
+  /** Подсказки первого запуска пройдены или пропущены. */
+  onboarded: boolean;
 }
 
 export interface ListInfo {
@@ -162,7 +164,7 @@ export async function setChoice(choice: Choice): Promise<void> {
 
 /** Состояние для окна, открытого заново из трея. */
 export async function snapshot(): Promise<{ groups: Group[]; choice: Choice | null }> {
-  if (!inTauri) return { groups: previewGroups, choice: null };
+  if (!inTauri) return { groups: withStressGroup(previewGroups), choice: null };
   return invoke("snapshot");
 }
 
@@ -261,6 +263,15 @@ function previewServer(name: string, i: number, group: string): ServerSummary {
     sni: "www.microsoft.com",
     core: "xray",
   };
+}
+
+/** Превью: `?servers=10000` добавляет большую подписку — проверить главную на длинных списках. */
+function withStressGroup(groups: Group[]): Group[] {
+  const n = Number(new URLSearchParams(location.search).get("servers") ?? 0);
+  if (!n) return groups;
+  const flags = ["🇳🇱", "🇩🇪", "🇫🇮", "🇩🇰", "🇺🇸"];
+  const servers = Array.from({ length: n }, (_, i) => previewServer(`${flags[i % flags.length]} Сервер ${i + 1}`, i, "big"));
+  return [...groups, { ...groups[0]!, id: "big", title: `Большая подписка (${n})`, servers }];
 }
 
 const previewGroups: Group[] = [

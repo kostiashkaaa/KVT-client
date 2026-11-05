@@ -148,6 +148,7 @@ fn title(key: &str) -> String {
         "notifications" => "уведомления",
         "connectOnStart" => "подключение при запуске",
         "autostartOffered" => "автозапуск",
+        "onboarded" => "подсказки первого запуска",
         other => other,
     }
     .into()
