@@ -105,6 +105,10 @@
       : "Время с момента подключения",
   );
 
+  /** Вид круглой кнопки: выключено, идёт подключение, подключено (или без данных). */
+  const power = $derived(busy ? "pending" : noData ? "on warn" : connected ? "on" : "off");
+  const actionLabel = $derived(connected ? "Отключить" : busy ? "Подключение…" : "Подключить");
+
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
   const modes: { id: Mode; label: string; hint: string }[] = [
@@ -119,7 +123,8 @@
   <div class="state">
     <span class="dot {tone}" aria-hidden="true"></span>
     <div class="text">
-      <h2>{title}</h2>
+      <!-- Новый статус проявляется, а не подменяет прежний скачком. -->
+      <h2>{#key title}<span class="appear">{title}</span>{/key}</h2>
       <p class="muted">
         {#if serviceDown && mismatch}
           Похоже, обновление прервалось. Установите KVT заново — настройки и подписки сохранятся.
@@ -140,44 +145,64 @@
           Выберите сервер ниже
         {/if}
       </p>
-      {#if showSession}
-        <p class="caption session appear" title={sessionTitle}>
-          <span>{elapsed}</span>
-          {#if traffic}
-            <span class="sep" aria-hidden="true">·</span>
-            <span aria-label="Принято">↓&nbsp;{traffic.rx}</span>
-            <span aria-label="Отправлено">↑&nbsp;{traffic.tx}</span>
-          {/if}
-        </p>
-      {/if}
+      <!-- Строка сеанса занимает место всегда и только проявляется: карточка не
+           меняет высоту при подключении, кнопка не съезжает. -->
       {#if noData}
-        <p class="caption warn-text appear">
-          Сервер принял подключение, но данные через него не идут.
-          <button class="why inline" onclick={onwhy}>Почему?</button>
+        <p class="caption session warn-text appear">
+          <span class="clip">Сервер принял подключение, но данные не идут</span>
+          <button class="why" onclick={onwhy}>Почему?</button>
+        </p>
+      {:else}
+        <p class="caption session" class:shown={showSession} title={showSession ? sessionTitle : undefined}>
+          {#if showSession}
+            <span>{elapsed}</span>
+            {#if traffic}
+              <span class="sep" aria-hidden="true">·</span>
+              <span aria-label="Принято">↓&nbsp;{traffic.rx}</span>
+              <span aria-label="Отправлено">↑&nbsp;{traffic.tx}</span>
+            {/if}
+          {:else}&nbsp;{/if}
         </p>
       {/if}
     </div>
   </div>
 
-  <!-- Одна кнопка: при подключении цвет меняется плавно, а не скачком. -->
-  {#if serviceDown && mismatch}
-    <button class="btn btn-primary connect" onclick={onreinstall}>Страница загрузки</button>
-  {:else if serviceDown && !connected}
-    <button class="btn btn-primary connect" disabled={busy} onclick={onstartservice}>
-      {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
-      {busy ? "Запуск…" : "Запустить службу"}
-    </button>
-  {:else}
-  <button
-    class="btn connect"
-    class:btn-primary={!connected}
-    disabled={busy || (!connected && !server && mode !== "zapret")}
-    onclick={connected ? ondisconnect : onconnect}
-  >
-    {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
-    {connected ? "Отключить" : busy ? "Подключение…" : "Подключить"}
-  </button>
-  {/if}
+  <!-- Одно место для кнопки во всех состояниях: она не прыгает и не меняет размер. -->
+  <div class="action">
+    {#if serviceDown && mismatch}
+      <button class="btn btn-primary" onclick={onreinstall}>Страница загрузки</button>
+    {:else if serviceDown && !connected}
+      <button class="btn btn-primary" disabled={busy} onclick={onstartservice}>
+        {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
+        {busy ? "Запуск…" : "Запустить службу"}
+      </button>
+    {:else}
+      <button
+        class="power {power}"
+        disabled={busy || (!connected && !server && mode !== "zapret")}
+        aria-label={actionLabel}
+        title={actionLabel}
+        onclick={connected ? ondisconnect : onconnect}
+      >
+        <!-- В момент подключения от кнопки расходится зелёная волна (один раз). -->
+        {#if power !== "off" && power !== "pending"}
+          <span class="wave" aria-hidden="true"></span>
+        {/if}
+        <!-- Кольцо: при подключении по нему бежит дуга. -->
+        <svg class="ring" viewBox="0 0 80 80" aria-hidden="true">
+          <circle class="track" cx="40" cy="40" r="38" />
+          <circle class="arc" cx="40" cy="40" r="38" pathLength="100" />
+        </svg>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3.5v8" />
+          <path d="M7.1 6.6a7.5 7.5 0 1 0 9.8 0" />
+        </svg>
+      </button>
+      <span class="caption label">
+        {#key actionLabel}<span class="appear">{actionLabel}</span>{/key}
+      </span>
+    {/if}
+  </div>
 
   <div class="modes" role="radiogroup" aria-label="Режим работы" style:--i={modeIndex}>
     <span class="thumb" aria-hidden="true"></span>
@@ -206,6 +231,174 @@
     align-items: center;
     gap: var(--space-4);
     padding: var(--space-5);
+  }
+
+  /* Кнопка справа на высоту состояния и режимов, ширина постоянная. */
+  .action {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 132px;
+  }
+
+  .power {
+    --size: 76px;
+    --ring: var(--stroke-strong);
+    --fill: transparent;
+    --glyph: var(--accent);
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: var(--size);
+    height: var(--size);
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--fill);
+    color: var(--glyph);
+    cursor: pointer;
+    transition:
+      background-color 300ms var(--ease),
+      box-shadow 300ms var(--ease),
+      color 300ms var(--ease),
+      transform var(--dur-fast) var(--ease);
+  }
+
+  .power.off:hover:not(:disabled) {
+    --ring: var(--accent);
+    background: var(--accent-subtle);
+  }
+
+  .power:active:not(:disabled) {
+    transform: scale(0.96);
+  }
+
+  .power:disabled {
+    cursor: default;
+  }
+
+  .power.off:disabled {
+    opacity: 0.45;
+  }
+
+  /* Подключено: зелёные кольцо и значок на едва заметном зелёном фоне, без
+     сплошной заливки — спокойно, но сразу понятно. */
+  .power.on {
+    --ring: var(--ok);
+    --fill: var(--ok-subtle);
+    --glyph: var(--ok);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--ok) 14%, transparent);
+  }
+
+  .power.on:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--ok-subtle), var(--ok) 12%);
+  }
+
+  /* Подключено, но данные не идут — то же, жёлтым. */
+  .power.on.warn {
+    --ring: var(--warn);
+    --fill: var(--warn-subtle);
+    --glyph: var(--warn);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--warn) 14%, transparent);
+  }
+
+  .power.on.warn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--warn-subtle), var(--warn) 12%);
+  }
+
+  .wave {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2px solid var(--ring);
+    opacity: 0;
+    pointer-events: none;
+    animation: kvt-wave 700ms var(--ease);
+  }
+
+  @keyframes kvt-wave {
+    from {
+      opacity: 0.7;
+      transform: scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: scale(1.45);
+    }
+  }
+
+  .power:focus-visible {
+    outline: none;
+    box-shadow: var(--focus);
+  }
+
+  .ring {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke-width: 2.5;
+  }
+
+  .track {
+    stroke: var(--ring);
+    stroke-width: 2.5;
+    transition: stroke 300ms var(--ease);
+  }
+
+  /* Дуга видна только во время подключения и бежит по кругу. */
+  .arc {
+    stroke: var(--accent);
+    stroke-linecap: round;
+    stroke-dasharray: 28 72;
+    opacity: 0;
+    transform-origin: center;
+    transition: opacity var(--dur) var(--ease);
+  }
+
+  .pending .arc {
+    opacity: 1;
+    animation: kvt-spin 1s linear infinite;
+  }
+
+  .pending .icon {
+    animation: kvt-pulse 1.2s ease-in-out infinite;
+  }
+
+  .icon {
+    width: 30px;
+    height: 30px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    transition: transform 300ms var(--ease);
+  }
+
+  .on .icon {
+    transform: scale(1.06);
+  }
+
+  /* Подъём при появлении работает только у блочных элементов. */
+  h2 .appear,
+  .label .appear {
+    display: inline-block;
+  }
+
+  .label {
+    height: 16px;
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+
+  @keyframes kvt-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   /* Точка стоит по центру строки заголовка, а не между двумя строками. */
@@ -247,9 +440,22 @@
   .session {
     display: flex;
     gap: var(--space-2);
+    min-height: 16px;
     margin-top: var(--space-1);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease);
+  }
+
+  .session.shown,
+  .session.warn-text {
+    opacity: 1;
+  }
+
+  .clip {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .session .sep {
@@ -271,6 +477,13 @@
   .dot.on {
     background: var(--ok);
     box-shadow: 0 0 0 4px var(--ok-subtle);
+    animation: kvt-pop 300ms var(--ease);
+  }
+
+  @keyframes kvt-pop {
+    50% {
+      transform: scale(1.4);
+    }
   }
 
   /* Подключение — мягкая пульсация вместо статичной точки. */
@@ -289,18 +502,9 @@
     color: var(--warn);
   }
 
-  .why.inline {
-    margin-left: var(--space-1);
-  }
-
   .dot.error {
     background: var(--danger);
     box-shadow: 0 0 0 4px var(--danger-subtle);
-  }
-
-  .connect {
-    min-width: 148px;
-    height: 36px;
   }
 
   /* Сегменты одной ширины — подсветка выбранного плавно переезжает. */
