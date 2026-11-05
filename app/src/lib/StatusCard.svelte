@@ -47,6 +47,8 @@
   /** Работает только zapret, без VPN. */
   const zapretOnly = $derived(status?.state === "zapret" ? status : null);
   const connected = $derived(status?.state === "connected" || zapretOnly !== null);
+  /** Ядро остановилось, а kill switch держит интернет закрытым: нужна кнопка «Отключить». */
+  const blocked = $derived(status?.state === "failed" && status.blocked === true);
   /** Сервер принял подключение, но данные через туннель не идут. */
   const noData = $derived(status?.state === "connected" && tunnelOk === false);
   const tone = $derived(
@@ -69,7 +71,9 @@
           ? "Сайты не открываются"
           : connected
             ? "Подключено"
-            : serviceDown && mismatch
+            : blocked
+              ? "Интернет закрыт"
+              : serviceDown && mismatch
               ? "Окно и служба KVT разных версий"
               : serviceDown
               ? "Служба KVT не запущена"
@@ -106,8 +110,10 @@
   );
 
   /** Вид круглой кнопки: выключено, идёт подключение, подключено (или без данных). */
-  const power = $derived(busy ? "pending" : noData ? "on warn" : connected ? "on" : "off");
-  const actionLabel = $derived(connected ? "Отключить" : busy ? "Подключение…" : "Подключить");
+  const power = $derived(busy ? "pending" : noData || blocked ? "on warn" : connected ? "on" : "off");
+  /** Нажатие отключает: работает VPN или zapret, либо kill switch держит интернет. */
+  const stops = $derived(connected || blocked);
+  const actionLabel = $derived(stops ? "Отключить" : busy ? "Подключение…" : "Подключить");
 
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
@@ -130,6 +136,8 @@
           Похоже, обновление прервалось. Установите KVT заново — настройки и подписки сохранятся.
         {:else if serviceDown}
           Без неё KVT не подключится. Обычно служба стартует вместе с Windows.
+        {:else if blocked}
+          VPN остановился, а kill switch не выпускает трафик мимо туннеля. Отключите, чтобы вернуть интернет.
         {:else if zapretOnly}
           Стратегия {strategyTitle(zapretOnly.strategy)} · без VPN
         {:else if mode === "zapret" && !connected}
@@ -179,10 +187,10 @@
     {:else}
       <button
         class="power {power}"
-        disabled={busy || (!connected && !server && mode !== "zapret")}
+        disabled={busy || (!stops && !server && mode !== "zapret")}
         aria-label={actionLabel}
         title={actionLabel}
-        onclick={connected ? ondisconnect : onconnect}
+        onclick={stops ? ondisconnect : onconnect}
       >
         <!-- В момент подключения от кнопки расходится зелёная волна (один раз). -->
         {#if power !== "off" && power !== "pending"}

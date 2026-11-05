@@ -108,7 +108,7 @@ pub async fn start_service(app: tauri::AppHandle) -> Result<(), String> {
     Err("Служба запустилась, но не отвечает. Сохраните диагностику в разделе «Проверка».".into())
 }
 
-fn start_blocking() -> Result<(), String> {
+pub(crate) fn start_blocking() -> Result<(), String> {
     use windows_sys::Win32::Foundation::{
         GetLastError, ERROR_ACCESS_DENIED, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DISABLED,
         ERROR_SERVICE_DOES_NOT_EXIST,

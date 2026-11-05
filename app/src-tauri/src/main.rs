@@ -37,7 +37,7 @@ use kvt_core::compile::DnsPlan;
 use kvt_core::core_select::{select_core, CoreKind};
 use kvt_core::governor::{NetGovernor, NetPolicy};
 use kvt_core::ipc::{self, ConnectPlan, Request, Response, ServiceStatus, Session};
-use kvt_core::model::{Protocol, Security, Server, Transport};
+use kvt_core::model::{Protocol, Security, Server};
 use kvt_core::routing::presets::{self, RoutingSettings};
 use kvt_core::subscription::SubscriptionMeta;
 use kvt_core::tester::{self, Outcome, QuickResult};
@@ -96,6 +96,9 @@ pub(crate) struct AppState {
     session: Mutex<Option<Session>>,
     /// Страница, которую трей попросил открыть до появления окна.
     pending_page: Mutex<Option<String>>,
+    /// Растёт с каждым подключением и отключением по воле пользователя (окно, трей,
+    /// профиль сети). Автоматика, начатая раньше, видит, что её решение устарело.
+    epoch: std::sync::atomic::AtomicU64,
 }
 
 /// Выбор пользователя. Секретов не содержит, поэтому хранится в settings.json
@@ -230,6 +233,7 @@ impl Default for AppState {
             diag_files: Mutex::default(),
             session: Mutex::default(),
             pending_page: Mutex::default(),
+            epoch: Default::default(),
         }
     }
 }
@@ -248,6 +252,17 @@ impl AppState {
     fn selected(&self) -> Option<catalog::Entry> {
         let key = self.choice.lock().ok()?.server.clone()?;
         self.entry(&key)
+    }
+
+    /// Пользователь подключил, отключил или сменил сервер и режим. Автопереключение
+    /// и переподключение после сна, начатые раньше, после этого ничего не делают:
+    /// иначе «Отключить» во время проверки туннеля через полминуты включило бы VPN снова.
+    pub(crate) fn user_acted(&self) {
+        self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -288,14 +303,7 @@ pub(crate) struct ServerSummary {
 
 impl ServerSummary {
     fn new(s: &Server, key: &str) -> Self {
-        let transport = match s.transport {
-            Transport::Tcp => "tcp",
-            Transport::Ws { .. } => "ws",
-            Transport::Grpc { .. } => "grpc",
-            Transport::HttpUpgrade { .. } => "httpupgrade",
-            Transport::Xhttp { .. } => "xhttp",
-            Transport::Quic => "quic",
-        };
+        let transport = catalog::transport_kind(&s.transport);
         let security = match &s.security {
             Security::None => "none",
             Security::Tls(_) => "tls",
@@ -416,33 +424,37 @@ async fn quick_check(
     state: State<'_, AppState>,
 ) -> Result<HashMap<String, QuickResult>, String> {
     let (keys, servers) = servers_of(&state, group.as_deref())?;
-    // С VPN соединение из окна принял бы сам TUN (за 0 мс) — пингует служба,
-    // напрямую через физический адаптер.
-    let results = if matches!(
+    let results = ping_servers(&servers).await?;
+    Ok(keys.into_iter().zip(results).collect())
+}
+
+/// TCP-пинг серверов мимо туннеля. С VPN соединение из приложения принял бы сам
+/// TUN (за 0 мс, и любой сервер выглядел бы рабочим) — тогда пингует служба,
+/// напрямую через физический адаптер.
+pub(crate) async fn ping_servers(servers: &[Server]) -> Result<Vec<QuickResult>, String> {
+    if !matches!(
         query_status().await,
         Ok(Some(
             ServiceStatus::Connected { .. } | ServiceStatus::Connecting
         ))
     ) {
-        let targets = servers
-            .iter()
-            .map(|s| {
-                (!matches!(s.protocol, Protocol::Hysteria2 { .. })).then(|| ipc::PingTarget {
-                    host: s.address.clone(),
-                    port: s.port,
-                })
+        return Ok(tester::quick_check(servers, Duration::from_secs(3), 8).await);
+    }
+    let targets = servers
+        .iter()
+        .map(|s| {
+            (!matches!(s.protocol, Protocol::Hysteria2 { .. })).then(|| ipc::PingTarget {
+                host: s.address.clone(),
+                port: s.port,
             })
-            .collect();
-        match service_client::call(Request::Ping { targets }).await {
-            Ok(Response::Ping { results }) if results.len() == servers.len() => results,
-            Ok(Response::Error { message }) => return Err(message),
-            Ok(_) => return Err(crate::errors::UNEXPECTED.into()),
-            Err(e) => return Err(e),
-        }
-    } else {
-        tester::quick_check(&servers, Duration::from_secs(3), 8).await
-    };
-    Ok(keys.into_iter().zip(results).collect())
+        })
+        .collect();
+    match service_client::call(Request::Ping { targets }).await {
+        Ok(Response::Ping { results }) if results.len() == servers.len() => Ok(results),
+        Ok(Response::Error { message }) => Err(message),
+        Ok(_) => Err(crate::errors::UNEXPECTED.into()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Строит план подключения по текущему выбору и отправляет его службе.
@@ -529,6 +541,7 @@ pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
 
 #[tauri::command]
 async fn connect(app: AppHandle) -> Result<ServiceStatus, String> {
+    app.state::<AppState>().user_acted();
     let result = connect_current(&app, true).await;
     tray::refresh(&app).await;
     result
@@ -560,6 +573,7 @@ async fn disconnect_service() -> Result<ServiceStatus, String> {
 
 #[tauri::command]
 async fn disconnect(app: AppHandle) -> Result<ServiceStatus, String> {
+    app.state::<AppState>().user_acted();
     let result = disconnect_service().await;
     tray::refresh(&app).await;
     result
@@ -618,6 +632,40 @@ fn enable_autostart_once(app: &AppHandle) {
     let _ = save_choice(app, &choice);
 }
 
+/// Сколько ждать службу после запуска KVT. Служба стоит в отложенном автозапуске:
+/// Windows запускает её примерно через 2 минуты после загрузки, а KVT из автозагрузки
+/// стартует раньше. Поэтому KVT запускает службу сам (это разрешено пользователю),
+/// а если не вышло — ждёт с запасом.
+const SERVICE_WAIT: Duration = Duration::from_secs(5 * 60);
+
+/// Ждёт, пока служба начнёт отвечать. Если её нет — один раз просит Windows её
+/// запустить. `Err` — служба так и не ответила (текст для пользователя).
+pub(crate) async fn wait_for_service() -> Result<ServiceStatus, String> {
+    let start = Instant::now();
+    let mut asked = false;
+    loop {
+        if let Ok(Some(status)) = query_status().await {
+            return Ok(status);
+        }
+        if service_client::version_mismatch() {
+            return Err(errors::VERSION_MISMATCH.into());
+        }
+        if !asked {
+            asked = true;
+            match tauri::async_runtime::spawn_blocking(about::start_blocking).await {
+                Ok(Ok(())) => tracing::info!("служба KVT запущена из приложения"),
+                // Не установлена или отключена — ждать бесполезно.
+                Ok(Err(message)) => return Err(message),
+                Err(_) => {}
+            }
+        }
+        if start.elapsed() >= SERVICE_WAIT {
+            return Err(errors::NO_SERVICE.into());
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
 /// «Подключаться при запуске»: ждёт службу (после загрузки Windows она
 /// стартует не сразу) и подключается, если ничего ещё не работает.
 fn spawn_connect_on_start(app: AppHandle) {
@@ -631,37 +679,64 @@ fn spawn_connect_on_start(app: AppHandle) {
         return;
     }
     tauri::async_runtime::spawn(async move {
-        for _ in 0..30 {
-            match query_status().await {
-                Ok(Some(ServiceStatus::Disconnected | ServiceStatus::Failed { .. })) => {
-                    if let Err(message) = connect_current(&app, true).await {
-                        notify::error(
-                            &app,
-                            &format!("Не удалось подключиться при запуске: {message}"),
-                        );
-                    }
-                    tray::invalidate(&app);
-                    return;
-                }
-                // Уже подключено (профиль сети) или идёт подключение.
-                Ok(Some(_)) => return,
-                _ => tokio::time::sleep(Duration::from_secs(2)).await,
+        let epoch = app.state::<AppState>().epoch();
+        let result = match wait_for_service().await {
+            // Пока ждали, пользователь сам подключился или отключился.
+            Ok(_) if app.state::<AppState>().epoch() != epoch => return,
+            Ok(ServiceStatus::Disconnected | ServiceStatus::Failed { .. }) => {
+                connect_current(&app, true).await.map(|_| ())
             }
+            // Уже подключено (профиль сети) или идёт подключение.
+            Ok(_) => return,
+            Err(message) => Err(message),
+        };
+        if let Err(message) = result {
+            notify::error(
+                &app,
+                &format!("Не удалось подключиться при запуске: {message}"),
+            );
         }
+        tray::invalidate(&app);
     });
 }
 
-/// Выбор из версий до единого списка: номер сервера в «основной» подписке → ключ.
+/// Выбор из прежних версий: номер сервера в «основной» подписке (до единого списка)
+/// и ключи до 0.9.2 (с параметрами TLS) → нынешние ключи.
 fn migrate_choice(app: &AppHandle, state: &AppState) {
-    let active = state
-        .store
-        .lock()
-        .ok()
-        .and_then(|s| s.as_ref()?.active.clone());
+    let (active, legacy) = {
+        let Ok(store) = state.store.lock() else {
+            return;
+        };
+        let Some(store) = store.as_ref() else {
+            return;
+        };
+        let entries = state.servers.lock().map(|s| s.clone()).unwrap_or_default();
+        (store.active.clone(), catalog::legacy_keys(store, &entries))
+    };
     let Ok(mut choice) = state.choice.lock() else {
         return;
     };
+    let known = |key: &String| state.entry(key).is_some();
+    let mut changed = false;
+    if let Some(new) = choice
+        .server
+        .as_ref()
+        .filter(|k| !known(k))
+        .and_then(|k| legacy.get(k))
+    {
+        choice.server = Some(new.clone());
+        changed = true;
+    }
+    for key in &mut choice.recent {
+        if let Some(new) = legacy.get(key).filter(|_| !known(key)) {
+            *key = new.clone();
+            changed = true;
+        }
+    }
     let Some(index) = choice.server_index.take() else {
+        if changed {
+            let _ = save_choice(app, &choice);
+        }
         return;
     };
     if choice.server.is_none() {
@@ -724,6 +799,7 @@ fn main() {
             subs::add_subscription_url,
             subs::list_subscriptions,
             subs::remove_subscription,
+            subs::remove_server,
             subs::refresh_subscription,
             quick_check,
             prober::full_check,

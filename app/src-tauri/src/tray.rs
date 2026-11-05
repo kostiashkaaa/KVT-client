@@ -233,7 +233,7 @@ pub async fn refresh(app: &AppHandle) {
     let kind_changed = before != view.kind;
     if kind_changed {
         let reason = match tray.status.lock().ok().and_then(|s| s.clone()) {
-            Some(ServiceStatus::Failed { reason }) => Some(reason),
+            Some(ServiceStatus::Failed { reason, .. }) => Some(reason),
             _ => None,
         };
         crate::notify::status_changed(app, before, reason.as_deref());
@@ -408,8 +408,8 @@ fn describe(
             format!("{} · {server_text}", mode_title(&mode)),
             Tone::Pending,
         ),
-        Some(ServiceStatus::Failed { reason }) => {
-            let detail = if ks && reason.contains("Kill switch") {
+        Some(ServiceStatus::Failed { reason, blocked }) => {
+            let detail = if *blocked || (ks && reason.contains("Kill switch")) {
                 "Kill switch держит интернет закрытым".into()
             } else {
                 let short: String = reason.chars().take(60).collect();
@@ -533,6 +533,8 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<W
         Some(ServiceStatus::Connected { .. } | ServiceStatus::Zapret { .. })
     );
     let connecting = matches!(status, Some(ServiceStatus::Connecting));
+    // Ядро остановилось, а kill switch держит интернет закрытым.
+    let blocked = matches!(status, Some(ServiceStatus::Failed { blocked: true, .. }));
     let service = status.is_some();
 
     let menu = Menu::new(app)?;
@@ -552,6 +554,14 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<W
     let can_connect = service && (mode == "zapret" || state.selected().is_some());
     let toggle = if active {
         MenuItem::with_id(app, "toggle", "Отключить", true, None::<&str>)?
+    } else if blocked {
+        MenuItem::with_id(
+            app,
+            "toggle",
+            "Отключить и вернуть интернет",
+            true,
+            None::<&str>,
+        )?
     } else if connecting {
         MenuItem::with_id(app, "toggle", "Подключение…", false, None::<&str>)?
     } else {
@@ -784,14 +794,16 @@ fn on_menu(app: &AppHandle, id: &str) {
     }
 }
 
-/// Работает VPN или zapret (по последнему статусу).
-fn active(app: &AppHandle) -> (bool, bool) {
+/// Работает VPN, zapret, и держит ли kill switch интернет закрытым после сбоя
+/// (по последнему статусу).
+fn active(app: &AppHandle) -> (bool, bool, bool) {
     let status = app
         .try_state::<Tray>()
         .and_then(|t| t.status.lock().ok().and_then(|s| s.clone()));
     (
         matches!(status, Some(ServiceStatus::Connected { .. })),
         matches!(status, Some(ServiceStatus::Zapret { .. })),
+        matches!(status, Some(ServiceStatus::Failed { blocked: true, .. })),
     )
 }
 
@@ -813,7 +825,10 @@ async fn reconnect(app: &AppHandle) -> Result<(), String> {
 }
 
 async fn act(app: &AppHandle, id: &str) -> Result<(), String> {
-    let (vpn, zapret) = active(app);
+    if id != "auto" && id != "tool:refresh" {
+        app.state::<AppState>().user_acted();
+    }
+    let (vpn, zapret, blocked) = active(app);
     let running = vpn || zapret;
     if let Some(key) = id.strip_prefix("srv:").or_else(|| id.strip_prefix("rsrv:")) {
         let choice = change(app, |c| {
@@ -869,7 +884,7 @@ async fn act(app: &AppHandle, id: &str) -> Result<(), String> {
     }
     match id {
         "toggle" => {
-            if running {
+            if running || blocked {
                 disconnect_service().await?;
                 crate::tunnel::set(app, None);
             } else {
@@ -909,9 +924,9 @@ async fn quit(app: &AppHandle) {
         .lock()
         .map(|c| c.kill_switch)
         .unwrap_or(false);
-    let (vpn, _) = active(app);
+    let (vpn, _, blocked) = active(app);
     let _ = disconnect_service().await;
-    if ks && vpn {
+    if ks && (vpn || blocked) {
         crate::notify::show(
             app,
             crate::notify::Notice {

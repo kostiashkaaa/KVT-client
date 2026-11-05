@@ -20,6 +20,11 @@ use url::Url;
 pub const MAX_SUBSCRIPTION_LINES: usize = 10_000;
 /// Максимальная длина одной ссылки.
 pub const MAX_URI_LEN: usize = 8 * 1024;
+/// Разделитель вставок в группе «Добавлено вручную» (ASCII Record Separator, в
+/// подписках не встречается). Каждая вставка разбирается сама по себе: base64,
+/// конфиги Xray в JSON и ссылки нельзя склеить в один текст — после склейки base64
+/// перестаёт декодироваться, а JSON — разбираться.
+pub const CHUNK_SEPARATOR: char = '\u{1e}';
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ParseError {
@@ -88,10 +93,28 @@ pub fn parse_uri(input: &str) -> Result<Entry, ParseError> {
     Ok(Entry::Server(Box::new(server)))
 }
 
-/// Разбирает тело подписки: список ссылок, в том числе в base64.
+/// Разбирает тело подписки: список ссылок, в том числе в base64, или конфиги Xray.
+/// Тело из нескольких вставок (`CHUNK_SEPARATOR`) разбирается по кускам.
 pub fn parse_subscription_body(body: &str) -> SubscriptionContent {
     let mut out = SubscriptionContent::default();
-    let trimmed = body.trim();
+    let mut seen = HashSet::new();
+    let mut offset = 0;
+    for chunk in body.split(CHUNK_SEPARATOR) {
+        offset += parse_chunk(&mut out, &mut seen, chunk, offset);
+    }
+    out
+}
+
+/// Одна вставка. `offset` — сколько строк было в предыдущих вставках (для номеров
+/// строк в ошибках). Возвращает число строк этой вставки.
+fn parse_chunk(
+    out: &mut SubscriptionContent,
+    seen: &mut HashSet<String>,
+    chunk: &str,
+    offset: usize,
+) -> usize {
+    // BOM в начале (текст из Блокнота) — не часть base64 и не часть ссылки.
+    let trimmed = chunk.trim().trim_start_matches('\u{feff}').trim_start();
 
     let decoded;
     let text = if trimmed.contains("://") {
@@ -103,31 +126,81 @@ pub fn parse_subscription_body(body: &str) -> SubscriptionContent {
         trimmed
     };
 
-    let mut seen = HashSet::new();
     let is_json = text.starts_with('{') || text.starts_with('[');
     // Конфиги Xray: номер «строки» в ошибках — номер конфига в массиве.
     if let Some(entries) = is_json.then(|| xray_json::parse(text)).flatten() {
+        let count = entries.len();
         for (idx, entry) in entries.into_iter().enumerate() {
-            add_entry(&mut out, &mut seen, idx + 1, entry);
+            add_entry(out, seen, offset + idx + 1, entry);
         }
-        return out;
+        return count;
     }
     if is_json || text.contains("\nproxies:") {
         out.errors.push((
-            0,
+            offset,
             ParseError::Unsupported("подписки sing-box и Clash пока не поддерживаются"),
         ));
-        return out;
+        return 1;
     }
 
-    for (idx, line) in text.lines().enumerate().take(MAX_SUBSCRIPTION_LINES) {
+    let budget = MAX_SUBSCRIPTION_LINES.saturating_sub(offset);
+    let mut count = 0;
+    for (idx, line) in text.lines().enumerate().take(budget) {
+        count = idx + 1;
         let line = line.trim();
         if line.is_empty() || line.starts_with("//") || !line.contains("://") {
             continue;
         }
-        add_entry(&mut out, &mut seen, idx + 1, parse_uri(line));
+        add_entry(out, seen, offset + idx + 1, parse_uri(line));
     }
-    out
+    count
+}
+
+/// Вставка для группы «Добавлено вручную» в виде ссылок, по одной на строку:
+/// base64 раскрывается, конфиги Xray в JSON переводятся в ссылки. В группе остаются
+/// только ссылки — тогда один сервер удаляется вместе со своей строкой.
+/// Нераспознанное (например, Clash) остаётся как есть: разбор покажет ошибку.
+pub fn normalize_pasted(body: &str) -> String {
+    let trimmed = body.trim().trim_start_matches('\u{feff}').trim_start();
+    let decoded;
+    let text = if trimmed.contains("://") {
+        trimmed
+    } else if let Some(bytes) = decode_base64_lenient(trimmed) {
+        decoded = String::from_utf8_lossy(&bytes).into_owned();
+        decoded.trim()
+    } else {
+        trimmed
+    };
+    if text.starts_with('{') || text.starts_with('[') {
+        if let Some(links) = xray_json::links(text) {
+            // Конфиг без поддерживаемого подключения пропускается — как и при разборе.
+            return links.into_iter().flatten().collect::<Vec<_>>().join("\n");
+        }
+    }
+    text.to_owned()
+}
+
+/// Убирает из тела группы «Добавлено вручную» строки сервера `target` (и его
+/// точные повторы). `None` — строки этого сервера в теле нет (например, он из
+/// нераспознанного куска). Пустые куски выбрасываются.
+pub fn remove_server(body: &str, target: &Server) -> Option<String> {
+    let mut removed = false;
+    let chunks: Vec<String> = body
+        .split(CHUNK_SEPARATOR)
+        .map(|chunk| {
+            normalize_pasted(chunk)
+                .lines()
+                .filter(|line| {
+                    let hit = matches!(parse_uri(line), Ok(Entry::Server(s)) if *s == *target);
+                    removed |= hit;
+                    !hit
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .filter(|chunk| !chunk.trim().is_empty())
+        .collect();
+    removed.then(|| chunks.join(&format!("\n{CHUNK_SEPARATOR}\n")))
 }
 
 fn add_entry(
@@ -233,6 +306,30 @@ mod tests {
         assert_eq!(a.servers, b.servers);
         assert_eq!(a.servers.len(), 2);
         assert!(a.errors.is_empty());
+    }
+
+    /// Ручная группа: base64 и ссылки вставлены в разное время — видны все серверы.
+    #[test]
+    fn base64_and_links_pasted_separately() {
+        let link = "trojan://pass@example.com:443?sni=example.com#T";
+        let b64 = STANDARD.encode(VLESS_REALITY);
+        for body in [
+            format!("{b64}\n{CHUNK_SEPARATOR}\n{link}"),
+            format!("{link}\n{CHUNK_SEPARATOR}\n{b64}"),
+        ] {
+            let c = parse_subscription_body(&body);
+            assert_eq!(c.servers.len(), 2, "{body}");
+            assert!(c.errors.is_empty());
+        }
+        // Одинаковый сервер в двух вставках — один.
+        let twice = format!("{VLESS_REALITY}\n{CHUNK_SEPARATOR}\n{b64}");
+        assert_eq!(parse_subscription_body(&twice).servers.len(), 1);
+    }
+
+    #[test]
+    fn bom_before_base64_is_ignored() {
+        let body = format!("\u{feff}{}", STANDARD.encode(VLESS_REALITY));
+        assert_eq!(parse_subscription_body(&body).servers.len(), 1);
     }
 
     #[test]

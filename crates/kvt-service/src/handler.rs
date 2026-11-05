@@ -31,7 +31,10 @@ impl State {
             if self.supervisor.kill_switch_active() {
                 reason.push_str(" Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново.");
             }
-            self.status = ServiceStatus::Failed { reason };
+            self.status = ServiceStatus::Failed {
+                reason,
+                blocked: self.supervisor.kill_switch_active(),
+            };
             self.session = None;
         }
     }
@@ -172,6 +175,7 @@ async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
             tracing::warn!(%message, "подключение не удалось");
             state.status = ServiceStatus::Failed {
                 reason: message.clone(),
+                blocked: state.supervisor.kill_switch_active(),
             };
             state.session = None;
             Response::Error { message }
@@ -249,6 +253,7 @@ async fn start_zapret(state: &mut State, plan: &ZapretPlan) -> Response {
         Err(message) => {
             state.status = ServiceStatus::Failed {
                 reason: message.clone(),
+                blocked: state.supervisor.kill_switch_active(),
             };
             state.session = None;
             Response::Error { message }

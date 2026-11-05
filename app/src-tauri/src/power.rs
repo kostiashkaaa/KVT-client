@@ -82,8 +82,12 @@ async fn on_resume(app: &AppHandle) {
         return;
     }
     let state = app.state::<AppState>();
+    let epoch = state.epoch();
     if health::check(&state.health).await.is_ok() {
         crate::tunnel::set(app, Some(true));
+        return;
+    }
+    if state.epoch() != epoch {
         return;
     }
     tracing::info!("после сна данные не идут — переподключение");

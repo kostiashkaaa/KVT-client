@@ -934,7 +934,7 @@ pub fn conclude(f: &ZapretFacts) -> ZapretDiagnosis {
     }
     step(&mut steps, "Другие обходы", StepState::Ok, "Не найдены");
 
-    if let ServiceStatus::Failed { reason } = service {
+    if let ServiceStatus::Failed { reason, .. } = service {
         if reason.contains("zapret") {
             step(&mut steps, "winws", StepState::Fail, reason.clone());
             return done(
@@ -1193,6 +1193,7 @@ mod tests {
         let mut f = healthy_facts();
         f.service = Some(ServiceStatus::Failed {
             reason: "zapret остановился (exit code: 1)".into(),
+            blocked: false,
         });
         f.running = None;
         assert_eq!(conclude(&f).fix, Some(ZapretFix::Repair));

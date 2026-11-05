@@ -14,7 +14,7 @@ use crate::catalog::Entry;
 use crate::{connect_current, display_name, health, query_status, save_choice, AppState};
 use kvt_core::ipc::{Captive, Request, Response, ServiceStatus};
 use kvt_core::probe::Verdict;
-use kvt_core::tester::{self, Outcome, QuickResult};
+use kvt_core::tester::{Outcome, QuickResult};
 use kvt_core::Server;
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -121,7 +121,16 @@ pub(crate) async fn alternatives(state: &AppState, current: Option<&Entry>) -> V
         let mut ranked = rank(&outcomes, &HashMap::new(), &keys);
         if out.len() + ranked.len() < CANDIDATES {
             let servers: Vec<Server> = tier.iter().map(|e| e.server.clone()).collect();
-            let results = tester::quick_check(&servers, Duration::from_secs(3), 8).await;
+            // VPN подключён (иначе замена не нужна): пинг из приложения ушёл бы в TUN
+            // и «ответил» бы за любой сервер. Пингует служба мимо туннеля; если она не
+            // смогла — замена только среди проверенных полной проверкой.
+            let results = match crate::ping_servers(&servers).await {
+                Ok(results) => results,
+                Err(e) => {
+                    tracing::warn!(error = %e, "пинг кандидатов не удался");
+                    Vec::new()
+                }
+            };
             let quick: HashMap<String, QuickResult> = keys.iter().cloned().zip(results).collect();
             ranked = rank(&outcomes, &quick, &keys);
         }
@@ -177,8 +186,11 @@ pub(crate) async fn switch_to(app: &AppHandle, key: &str) -> Result<(), String> 
     Ok(())
 }
 
-async fn handle_incident(app: &AppHandle) {
+/// `epoch` — счётчик действий пользователя на момент, когда сбой начали проверять.
+/// Если пользователь с тех пор отключился или сам выбрал сервер, ничего не делаем.
+async fn handle_incident(app: &AppHandle, epoch: u64) {
     let state = app.state::<AppState>();
+    let stale = || state.epoch() != epoch;
     if tokio::task::spawn_blocking(crate::netinfo::current)
         .await
         .ok()
@@ -196,7 +208,16 @@ async fn handle_incident(app: &AppHandle) {
     let candidates = alternatives(&state, current.as_ref()).await;
     let tried = !candidates.is_empty();
     for key in candidates {
+        if stale() {
+            tracing::info!(
+                "пользователь сам подключился или отключился — автопереключение остановлено"
+            );
+            return;
+        }
         if switch_to(app, &key).await.is_ok() {
+            if stale() {
+                return;
+            }
             let to = server_name(&state, &key);
             let _ = app.emit(EVENT, Event::Switched { from, to });
             return;
@@ -204,6 +225,9 @@ async fn handle_incident(app: &AppHandle) {
     }
     // Замены не нашлось: возвращаем прежний сервер, иначе в окне остался бы выбран
     // последний неудачный кандидат, а уведомление говорило бы о другом.
+    if stale() {
+        return;
+    }
     if let (true, Some(original)) = (tried, current.as_ref()) {
         let _ = restore(app, &original.key).await;
     }
@@ -247,9 +271,15 @@ pub fn spawn(app: AppHandle) {
                 portal_reported = false;
                 continue;
             }
+            let epoch = state.epoch();
             if !tunnel_dead(&state.health).await {
                 crate::tunnel::set(&app, Some(true));
                 portal_reported = false;
+                continue;
+            }
+            // Пока подтверждали сбой (около 20 с), пользователь мог нажать «Отключить»
+            // или выбрать другой сервер — тогда это уже не наш сбой.
+            if state.epoch() != epoch {
                 continue;
             }
             crate::tunnel::set(&app, Some(false));
@@ -279,7 +309,7 @@ pub fn spawn(app: AppHandle) {
                 continue;
             }
             incidents.push_back(Instant::now());
-            handle_incident(&app).await;
+            handle_incident(&app, epoch).await;
         }
     });
 }

@@ -100,7 +100,8 @@ export type ServiceStatus =
   | { state: "connecting" }
   | { state: "connected"; core: "xray" | "sing-box" }
   | { state: "zapret"; strategy: string }
-  | { state: "failed"; reason: string };
+  /** `blocked` — ядро остановилось, а kill switch держит интернет закрытым. */
+  | { state: "failed"; reason: string; blocked?: boolean };
 
 export type ListAction = "proxy" | "direct" | "block";
 
@@ -368,6 +369,17 @@ export async function listSubscriptions(): Promise<SubscriptionItem[]> {
     }));
   }
   return invoke<SubscriptionItem[]>("list_subscriptions");
+}
+
+/** Удаляет один ключ из группы «Добавлено вручную» (последний — вместе с группой). */
+export async function removeServer(key: string): Promise<void> {
+  if (!inTauri) {
+    for (const g of previewGroups) g.servers = g.servers.filter((s) => s.key !== key);
+    const i = previewGroups.findIndex((g) => !g.byUrl && g.servers.length === 0);
+    if (i >= 0) previewGroups.splice(i, 1);
+    return;
+  }
+  await invoke("remove_server", { key });
 }
 
 export async function removeSubscription(id: string): Promise<void> {

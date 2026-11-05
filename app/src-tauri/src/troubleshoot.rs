@@ -167,9 +167,10 @@ pub fn conclude(f: &Facts) -> Diagnosis {
             None,
         );
     };
-    if let ServiceStatus::Failed { reason } = service {
+    if let ServiceStatus::Failed { reason, blocked } = service {
         out.step("Служба KVT", StepState::Fail, reason.clone());
-        let blocked = reason.contains("Kill switch");
+        // Текст — для службы прежней версии, которая флаг не присылает.
+        let blocked = *blocked || reason.contains("Kill switch");
         return out.finish(
             Tone::Error,
             "Соединение прервалось",
@@ -626,7 +627,8 @@ mod tests {
     fn kill_switch_after_crash_offers_disconnect() {
         let mut f = base();
         f.service = Some(ServiceStatus::Failed {
-            reason: "ядро остановилось. Kill switch держит интернет закрытым".into(),
+            reason: "ядро остановилось".into(),
+            blocked: true,
         });
         assert_eq!(conclude(&f).fix, Some(Fix::Disconnect));
     }

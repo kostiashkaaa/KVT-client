@@ -29,6 +29,16 @@ const SUPPORTED: [&str; 4] = ["vless", "trojan", "shadowsocks", "hysteria"];
 /// `None` — это не конфиги Xray (не JSON или ни в одном нет `outbounds`).
 /// Иначе по записи на каждый конфиг с `outbounds`, в порядке подписки.
 pub(super) fn parse(text: &str) -> Option<Vec<Result<Entry, ParseError>>> {
+    Some(
+        links(text)?
+            .into_iter()
+            .map(|uri| parse_uri(&uri?))
+            .collect(),
+    )
+}
+
+/// Те же конфиги как ссылки `scheme://…#name` (по одной на конфиг).
+pub(super) fn links(text: &str) -> Option<Vec<Result<String, ParseError>>> {
     let root: Value = serde_json::from_str(text).ok()?;
     let configs: Vec<&Value> = match &root {
         Value::Array(items) => items.iter().collect(),
@@ -43,10 +53,10 @@ pub(super) fn parse(text: &str) -> Option<Vec<Result<Entry, ParseError>>> {
     if configs.is_empty() {
         return None;
     }
-    Some(configs.into_iter().map(config_entry).collect())
+    Some(configs.into_iter().map(config_uri).collect())
 }
 
-fn config_entry(config: &Value) -> Result<Entry, ParseError> {
+fn config_uri(config: &Value) -> Result<String, ParseError> {
     let outbounds = config["outbounds"]
         .as_array()
         .map(Vec::as_slice)
@@ -61,7 +71,7 @@ fn config_entry(config: &Value) -> Result<Entry, ParseError> {
             "в конфиге нет подключения VLESS, Trojan, Shadowsocks или Hysteria2",
         ))?;
     let name = str_at(config, "remarks").unwrap_or_default();
-    parse_uri(&outbound_uri(outbound, name)?)
+    outbound_uri(outbound, name)
 }
 
 /// Подключение из конфига Xray как ссылка `scheme://…#name`.
@@ -365,6 +375,64 @@ mod tests {
         let c = super::super::parse_subscription_body(&sample());
         assert_eq!(c.servers.len(), 4);
         assert!(c.errors.is_empty(), "{:?}", c.errors);
+    }
+
+    /// Ручная группа: JSON и ссылки — разные вставки, ни одна не теряет серверов.
+    #[test]
+    fn json_and_links_pasted_separately() {
+        let sep = super::super::CHUNK_SEPARATOR;
+        let link = "trojan://pass@t.example.com:443?sni=t.example.com#T";
+        for body in [
+            format!("{}\n{sep}\n{link}", sample()),
+            format!("{link}\n{sep}\n{}", sample()),
+        ] {
+            let c = super::super::parse_subscription_body(&body);
+            assert_eq!(c.servers.len(), 5, "{:?}", c.errors);
+            assert!(c.errors.is_empty(), "{:?}", c.errors);
+        }
+    }
+
+    /// JSON во вставке становится ссылками с теми же серверами.
+    #[test]
+    fn pasted_json_becomes_links() {
+        let links = super::super::normalize_pasted(&sample());
+        assert!(!links.contains('{'));
+        assert_eq!(links.lines().count(), 4);
+        assert_eq!(
+            super::super::parse_subscription_body(&links).servers,
+            servers(&sample())
+        );
+    }
+
+    /// Удаление одного сервера из ручной группы: остальные на месте.
+    #[test]
+    fn one_server_is_removed_from_manual_group() {
+        let sep = super::super::CHUNK_SEPARATOR;
+        let link = "trojan://pass@t.example.com:443?sni=t.example.com#T";
+        let body = format!(
+            "{}\n{sep}\n{link}",
+            super::super::normalize_pasted(&sample())
+        );
+        let all = servers(&sample());
+
+        let without_de = super::super::remove_server(&body, &all[0]).unwrap();
+        let left = super::super::parse_subscription_body(&without_de).servers;
+        assert_eq!(left.len(), 4);
+        assert!(!left.contains(&all[0]));
+
+        let trojan = super::super::parse_subscription_body(link)
+            .servers
+            .remove(0);
+        let without_trojan = super::super::remove_server(&without_de, &trojan).unwrap();
+        assert!(!without_trojan.contains(sep), "пустой кусок выброшен");
+        assert_eq!(
+            super::super::parse_subscription_body(&without_trojan)
+                .servers
+                .len(),
+            3
+        );
+        // Того, чего нет, не удалить.
+        assert!(super::super::remove_server(&without_trojan, &trojan).is_none());
     }
 
     #[test]

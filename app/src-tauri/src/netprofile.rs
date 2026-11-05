@@ -88,7 +88,11 @@ pub fn current_network(state: State<'_, AppState>) -> NetworkView {
     view(&state)
 }
 
-async fn on_join(app: &AppHandle) {
+/// Действия профиля при входе в сеть. `retry` — повтор, потому что служба в прошлый
+/// раз ещё не отвечала. Возвращает `false`, если профиль просит включить VPN, а
+/// служба ещё не запустилась (после загрузки Windows она стартует с задержкой) —
+/// тогда цикл повторит попытку.
+async fn on_join(app: &AppHandle, retry: bool) -> bool {
     let state = app.state::<AppState>();
     let status = query_status().await.ok().flatten();
     // Работает VPN или только zapret — профилю есть что включать и выключать.
@@ -97,7 +101,9 @@ async fn on_join(app: &AppHandle) {
         Some(ServiceStatus::Connected { .. } | ServiceStatus::Zapret { .. })
     );
     // Новая сеть — новая проверка zapret (стратегия могла перестать работать).
-    state.zapret_wake.notify_one();
+    if !retry {
+        state.zapret_wake.notify_one();
+    }
     let plan = plan(view(&state).profile.as_ref(), active);
     let network = crate::zapret::network_key(&state);
     let (old_mode, strategy) = state
@@ -111,7 +117,7 @@ async fn on_join(app: &AppHandle) {
         })
         .unwrap_or_else(|_| ("vpn".into(), String::new()));
     let mode_changed = plan.mode.as_ref().is_some_and(|m| *m != old_mode);
-    if let Some(mode) = plan.mode {
+    if let Some(mode) = plan.mode.filter(|_| mode_changed) {
         let choice = state.choice.lock().ok().map(|mut c| {
             c.mode = Some(mode);
             c.clone()
@@ -126,6 +132,13 @@ async fn on_join(app: &AppHandle) {
     let other_strategy = matches!(&status, Some(ServiceStatus::Zapret { strategy: running }) if *running != strategy);
     let reconnect =
         active && !plan.disconnect && (old_mode == "hybrid" || mode_changed || other_strategy);
+    if plan.connect && status.is_none() {
+        // Режим уже применён, подключение — когда служба ответит.
+        return false;
+    }
+    if plan.connect || reconnect || plan.disconnect {
+        state.user_acted();
+    }
     if plan.connect || reconnect {
         let _ = connect_current(app, true).await;
     } else if plan.disconnect {
@@ -134,12 +147,19 @@ async fn on_join(app: &AppHandle) {
     if plan.connect || plan.disconnect || reconnect {
         crate::tray::refresh(app).await;
     }
+    true
 }
+
+/// Сколько раз (раз в `POLL`) повторять «Включать VPN», пока служба не ответит:
+/// 30 × 10 с — с запасом на отложенный автозапуск службы.
+const JOIN_RETRIES: u32 = 30;
 
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last_key: Option<String> = None;
         let mut first = true;
+        // Осталось повторов и счётчик действий пользователя, когда повтор назначили.
+        let mut pending: Option<(u32, u64)> = None;
         loop {
             let key = tokio::task::spawn_blocking(netinfo::current)
                 .await
@@ -162,9 +182,20 @@ pub fn spawn(app: AppHandle) {
                     n.clone_from(&network);
                 }
                 let _ = app.emit(EVENT, view(&state));
-                if network.is_some() {
-                    on_join(&app).await;
+                pending = None;
+                if network.is_some() && !on_join(&app, false).await {
+                    pending = Some((JOIN_RETRIES, state.epoch()));
                 }
+            } else if let Some((left, epoch)) = pending {
+                let state = app.state::<AppState>();
+                pending = if state.epoch() != epoch || left == 0 {
+                    // Пользователь сам подключился или отключился — профиль не вмешивается.
+                    None
+                } else if on_join(&app, true).await {
+                    None
+                } else {
+                    Some((left - 1, epoch))
+                };
             }
             tokio::time::sleep(POLL).await;
         }

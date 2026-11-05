@@ -3,7 +3,7 @@
 use crate::store::Store;
 use crate::{catalog, disconnect_service, display_name, fetch, query_status, watchdog, AppState};
 use kvt_core::ipc::ServiceStatus;
-use kvt_core::parser::parse_subscription_body;
+use kvt_core::parser::{normalize_pasted, parse_subscription_body};
 use kvt_core::subscription::{SubscriptionMeta, MAX_BODY_BYTES};
 use kvt_core::Secret;
 use serde::Serialize;
@@ -65,6 +65,7 @@ async fn guard_selected(app: &AppHandle, before: Option<catalog::Entry>) {
         return;
     }
     tracing::info!("выбранный сервер исчез из подписок — VPN отключён");
+    state.user_acted();
     let _ = disconnect_service().await;
     crate::tray::refresh(app).await;
     let _ = app.emit(
@@ -92,10 +93,7 @@ fn added(state: &AppState, id: String, body: &str) -> Result<Added, String> {
     let servers = state.servers.lock().map_err(lock_err)?;
     let first = new
         .first()
-        .and_then(|s| {
-            let key = catalog::key(&id, s);
-            servers.iter().find(|e| e.key == key)
-        })
+        .and_then(|s| servers.iter().find(|e| e.sub == id && e.server == *s))
         .or_else(|| servers.iter().find(|e| e.sub == id))
         .map(|e| e.key.clone());
     Ok(Added {
@@ -136,6 +134,8 @@ pub fn parse_subscription(
     if body.len() > MAX_BODY_BYTES {
         return Err("Подписка слишком большая".into());
     }
+    // В ручной группе — только ссылки: base64 раскрыт, конфиги Xray переведены.
+    let body = normalize_pasted(&body);
     ensure_servers(&body)?;
     let id = with_store(&state, |s| {
         s.add(None, body.clone(), SubscriptionMeta::default(), now())
@@ -300,6 +300,46 @@ pub async fn remove_subscription(
 ) -> Result<(), String> {
     let before = state.selected();
     with_store(&state, |s| s.remove(&id))?;
+    rebuild(&state)?;
+    guard_selected(&app, before).await;
+    notify(&app);
+    Ok(())
+}
+
+/// Удаляет один сервер из группы «Добавлено вручную». У подписки по ссылке
+/// так нельзя: провайдер вернёт сервер при следующем обновлении.
+#[tauri::command]
+pub async fn remove_server(
+    key: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let entry = state.entry(&key).ok_or("Этого сервера уже нет в списке.")?;
+    let before = state.selected();
+    with_store(&state, |store| {
+        let sub = store
+            .subscriptions
+            .iter_mut()
+            .find(|s| s.id == entry.sub)
+            .ok_or("Этого сервера уже нет в списке.")?;
+        if sub.url.is_some() {
+            return Err(
+                "Сервер из подписки по ссылке удалить нельзя — провайдер вернёт его при обновлении."
+                    .to_string(),
+            );
+        }
+        let body = kvt_core::parser::remove_server(sub.body.expose(), &entry.server)
+            .ok_or("Не удалось найти этот ключ среди добавленных вручную.")?;
+        if parse_subscription_body(&body).servers.is_empty() {
+            // Последний ключ — группа больше не нужна.
+            let id = sub.id.clone();
+            store.remove(&id);
+        } else {
+            sub.body = Secret::new(body);
+            sub.updated_at = now();
+        }
+        Ok(())
+    })??;
     rebuild(&state)?;
     guard_selected(&app, before).await;
     notify(&app);

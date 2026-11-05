@@ -43,6 +43,7 @@
     type TrayPage,
     tunnelState,
     refreshSubscription,
+    removeServer,
     defaultRouting,
     defaultDns,
     defaultZapret,
@@ -377,6 +378,17 @@
     }
   }
 
+  /** Ключ из группы «Добавлено вручную». Если VPN шёл через него, Rust уже отключил
+   *  VPN и сообщил об этом; `reloadGroups` выберет другой сервер. */
+  async function removeKey(key: string) {
+    try {
+      await removeServer(key);
+      await reloadGroups();
+    } catch (e) {
+      failed(e);
+    }
+  }
+
   function closeAdd() {
     if (busy) return;
     adding = false;
@@ -556,6 +568,7 @@
           {refreshing}
           onrefresh={refresh}
           onadd={() => (adding = true)}
+          onremove={removeKey}
         />
       {:else}
         <AddSubscription onadd={add} {busy} />

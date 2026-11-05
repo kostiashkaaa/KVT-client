@@ -17,6 +17,7 @@
     refreshing,
     onrefresh,
     onadd,
+    onremove,
   }: {
     groups: Group[];
     /** Ключ выбранного сервера. */
@@ -35,9 +36,26 @@
     refreshing: string | null;
     onrefresh: (group: string) => void;
     onadd: () => void;
+    /** Удалить ключ из группы «Добавлено вручную». */
+    onremove?: (key: string) => Promise<void>;
   } = $props();
 
-  type Cell = { text: string; tone: "" | "good" | "bad" | "muted" | "warn"; hint: string };
+  /** Ключ, удаление которого ждёт подтверждения. */
+  let confirmKey = $state<string | null>(null);
+  let removing = $state(false);
+
+  async function remove(key: string) {
+    if (!onremove) return;
+    removing = true;
+    try {
+      await onremove(key);
+      confirmKey = null;
+    } finally {
+      removing = false;
+    }
+  }
+
+  type Cell ={ text: string; tone: "" | "good" | "bad" | "muted" | "warn"; hint: string };
 
   function outcomeCell(o: Outcome): Cell {
     if (o.kind === "deferred") {
@@ -278,7 +296,7 @@
         <ul role="listbox" aria-label={g.title}>
           {#each servers.slice(0, limitOf(g.id)) as s (s.key)}
             {@const l = cell(g.id, s.key)}
-            <li>
+            <li class:manual={!g.byUrl && onremove}>
               <button
                 class="row"
                 role="option"
@@ -299,7 +317,31 @@
                   <span class="latency {l.tone}" title={l.hint}>{l.text}</span>
                 {/key}
               </button>
+              <!-- Ключ, добавленный вручную, удаляется по одному; подписку провайдер
+                   обновляет сам — её серверы удаляются только всей подпиской. -->
+              {#if !g.byUrl && onremove}
+                <button
+                  class="remove"
+                  class:shown={confirmKey === s.key}
+                  title="Удалить ключ"
+                  aria-label={`Удалить ключ ${s.name}`}
+                  onclick={() => (confirmKey = confirmKey === s.key ? null : s.key)}
+                >
+                  <Icon name="trash" size={16} />
+                </button>
+              {/if}
             </li>
+            {#if confirmKey === s.key && onremove}
+              <li class="confirm" transition:slide={{ duration: 150 }}>
+                <span class="caption">
+                  Удалить ключ «{s.name}»?{#if selected === s.key} Если VPN подключён к нему, он отключится.{/if}
+                </span>
+                <button class="btn danger" disabled={removing} onclick={() => void remove(s.key)}>
+                  {#if removing}<span class="spinner" aria-hidden="true"></span>{/if}Удалить
+                </button>
+                <button class="btn" disabled={removing} onclick={() => (confirmKey = null)}>Отмена</button>
+              </li>
+            {/if}
           {/each}
         </ul>
         {#if servers.length > limitOf(g.id)}
@@ -589,6 +631,76 @@
 
   .latency.muted {
     color: var(--text-3);
+  }
+
+  /* Корзина у ключа, добавленного вручную: появляется поверх колонки задержки при
+     наведении, строка не меняет ширину и не выбивается из сетки других групп. */
+  li.manual {
+    position: relative;
+  }
+
+  .remove {
+    position: absolute;
+    top: 50%;
+    right: var(--space-2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-s);
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+    opacity: 0;
+    transform: translateY(-50%);
+    transition:
+      opacity var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease);
+  }
+
+  li.manual:hover .remove,
+  .remove:focus-visible,
+  .remove.shown {
+    opacity: 1;
+  }
+
+  /* Задержка уступает место корзине, пока та видна. */
+  li.manual:hover .latency,
+  li.manual:has(.remove:focus-visible) .latency,
+  li.manual:has(.remove.shown) .latency {
+    visibility: hidden;
+  }
+
+  .remove:hover,
+  .remove.shown {
+    color: var(--danger);
+  }
+
+  .confirm {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3) var(--space-2) calc(16px + 20px + 2 * var(--space-3) + var(--space-3));
+  }
+
+  .confirm .caption {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .btn.danger {
+    border-color: transparent;
+    background: var(--danger);
+    color: var(--accent-text);
+  }
+
+  .btn.danger:hover:not(:disabled) {
+    background: var(--danger);
+    opacity: 0.9;
   }
 
   @media (max-width: 720px) {

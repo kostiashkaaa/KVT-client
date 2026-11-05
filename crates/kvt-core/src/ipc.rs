@@ -212,6 +212,10 @@ pub enum ServiceStatus {
     },
     Failed {
         reason: String,
+        /// Kill switch остался включён и держит интернет закрытым: окну и трею
+        /// нужна кнопка «Отключить», а не «Подключить».
+        #[serde(default)]
+        blocked: bool,
     },
 }
 

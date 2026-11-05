@@ -7,6 +7,7 @@
 use crate::dpapi;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use kvt_core::parser::CHUNK_SEPARATOR;
 use kvt_core::subscription::{next_update_delay, SubscriptionMeta};
 use kvt_core::Secret;
 use serde::{Deserialize, Serialize};
@@ -182,10 +183,10 @@ impl Store {
                 return id;
             }
         } else if let Some(manual) = self.subscriptions.iter_mut().find(|s| s.url.is_none()) {
-            // Повторы разбор подписки отбросит сам.
+            // Каждая вставка — отдельным куском: base64, JSON и ссылки в одном
+            // тексте не разобрать. Повторы разбор подписки отбросит сам.
             manual.body = Secret::new(format!(
-                "{}
-{}",
+                "{}\n{CHUNK_SEPARATOR}\n{}",
                 manual.body.expose(),
                 body
             ));
@@ -304,8 +305,7 @@ mod tests {
         assert_eq!(store.subscriptions.len(), 1);
         assert_eq!(
             store.get(&a).unwrap().body.expose(),
-            "vless://a
-vless://b"
+            format!("vless://a\n{CHUNK_SEPARATOR}\nvless://b")
         );
     }
 
