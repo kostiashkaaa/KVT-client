@@ -72,9 +72,16 @@ try {
     if ($template -notmatch "tauri-cli $([regex]::Escape($cli))") {
         throw "Шаблон src-tauri\windows\installer.nsi сделан не для Tauri CLI $cli — обновите его (см. комментарий в начале файла)."
     }
+    # Дополнительные настройки Tauri — файлами, а не строкой JSON: при вызове npx
+    # (это .cmd) PowerShell 7 срезает кавычки внутри аргумента, и JSON ломается.
+    function Write-TauriConfig([string]$Name, [hashtable]$Config) {
+        $path = Join-Path $release $Name
+        [IO.File]::WriteAllText($path, ($Config | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
+        return $path
+    }
     $configs = @('--config', 'src-tauri/tauri.release.conf.json')
     if ($env:KVT_SIGN_COMMAND) {
-        $sign = @{ bundle = @{ windows = @{ signCommand = $env:KVT_SIGN_COMMAND } } } | ConvertTo-Json -Depth 5 -Compress
+        $sign = Write-TauriConfig 'tauri.sign.conf.json' @{ bundle = @{ windows = @{ signCommand = $env:KVT_SIGN_COMMAND } } }
         $configs += @('--config', $sign)
     }
     Invoke-Checked 'установщик' { npx tauri build @configs }
@@ -87,7 +94,7 @@ try {
     Copy-Item $setup.FullName (Join-Path $dist "KVT-$version-setup.exe")
 
     if ($Offline) {
-        $offlineConfig = @{ bundle = @{ windows = @{ webviewInstallMode = @{ type = 'offlineInstaller' } } } } | ConvertTo-Json -Depth 5 -Compress
+        $offlineConfig = Write-TauriConfig 'tauri.offline.conf.json' @{ bundle = @{ windows = @{ webviewInstallMode = @{ type = 'offlineInstaller' } } } }
         Invoke-Checked 'установщик со встроенным WebView2' { npx tauri build @configs --config $offlineConfig }
         $setup = Get-ChildItem $nsis -Filter "*_${version}_*-setup.exe" | Select-Object -First 1
         Copy-Item $setup.FullName (Join-Path $dist "KVT-$version-offline-setup.exe")
