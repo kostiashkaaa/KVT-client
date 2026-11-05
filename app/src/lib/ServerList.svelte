@@ -231,13 +231,13 @@
         <div class="group-actions">
           {#if g.byUrl}
             <button
-              class="btn ghost"
+              class="btn ghost square"
               disabled={refreshing !== null}
               onclick={() => onrefresh(g.id)}
               title="Обновить подписку"
               aria-label={`Обновить ${g.title}`}
             >
-              <span class:spin={refreshing === g.id}><Icon name="refresh" size={16} /></span>
+              <span class="glyph" class:spin={refreshing === g.id}><Icon name="refresh" size={16} /></span>
             </button>
           {/if}
           <!-- Подпись не меняется, поверх неё крутится кольцо — кнопки не прыгают. -->
@@ -373,11 +373,13 @@
     border-top: 1px solid var(--stroke);
   }
 
+  /* Края — по сетке карточки: стрелка над переключателями строк, кнопки — по правому
+     краю «+» и колонки задержки (отступ кнопки-стрелки 8 + 12 = 20, как у карточки). */
   .group-head {
     display: flex;
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-2) var(--space-3) var(--space-1) var(--space-2);
+    padding: var(--space-2) var(--space-5) var(--space-1) var(--space-3);
   }
 
   .toggle {
@@ -451,8 +453,18 @@
     color: var(--text);
   }
 
+  /* Кнопка-иконка — квадрат высотой с соседние «Пинг» и «Проверить». */
+  .btn.square {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+  }
+
+  .glyph {
+    display: flex;
+  }
+
   .spin {
-    display: inline-flex;
     animation: spin 900ms linear infinite;
   }
 

@@ -367,9 +367,10 @@
     margin-left: auto;
   }
 
+  /* Высота строки как у h2: переключатель справа встаёт по центру заголовка. */
   h3 {
     font-size: 14px;
-    line-height: 20px;
+    line-height: 22px;
   }
 
   .error-text {
