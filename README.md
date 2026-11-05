@@ -95,7 +95,10 @@ Kill switch включается в «Настройках» и применяе
 лицензий и собирает `setup.exe` (NSIS, установка в `C:\Program Files\KVT`, один запрос
 прав администратора). Готовый файл и `SHA256SUMS.txt` — в `target\release\dist`.
 Ключ `-Offline` добавляет установщик со встроенным WebView2, `-SkipFetch` — без
-повторной загрузки ядер.
+повторной загрузки ядер. Там же собирается `KVT-x.y.z-update.exe` — обновление
+установленного KVT (`app/src-tauri/windows/update.nsi`): kvt.exe и служба, ядра и zapret —
+только если изменились с версии из `scripts/update-baseline.json`; не вышло — откат.
+Полный установщик поверх старой версии тоже обновляет, сохраняя настройки.
 
 Ресурсы установщика (служба, ядра, zapret, лицензии) подключает отдельный
 `app/src-tauri/tauri.release.conf.json`, поэтому обычный `npm run tauri build` их не

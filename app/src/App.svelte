@@ -22,6 +22,8 @@
     serviceStatus,
     serviceSession,
     startService,
+    serviceMismatch,
+    openLink,
     inApp,
     setChoice,
     snapshot,
@@ -359,6 +361,8 @@
   /** Служба ответила хотя бы раз с открытия окна (до этого «не запущена» не показываем). */
   let polled = $state(false);
   const serviceDown = $derived(inApp && polled && status === null);
+  /** Служба ответила, но другой версии: вместо «Запустить службу» — переустановка. */
+  let mismatch = $state(false);
 
   async function onstartservice() {
     busy = true;
@@ -437,6 +441,7 @@
       else if (!connectedWith && restored) connectedWith = { server: selected, mode, zapret: zapretKey() };
       status = next;
       polled = true;
+      mismatch = next === null && (await serviceMismatch().catch(() => false));
       session = nextActive ? await serviceSession().catch(() => null) : null;
     };
     void refreshStatus();
@@ -455,7 +460,7 @@
     {#if page === "home"}
       <h1>Главная</h1>
 
-      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {onstartservice} {onconnect} {ondisconnect} onwhy={askWhy} />
+      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {mismatch} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} onwhy={askWhy} />
 
       {#each startupNotices as text, i (i)}
         <Banner>

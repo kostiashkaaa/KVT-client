@@ -742,6 +742,7 @@ fn main() {
             about::about_info,
             about::open_link,
             about::start_service,
+            service_client::service_mismatch,
             tunnel::tunnel_state,
             diagexport::diag_preview,
             diagexport::diag_save

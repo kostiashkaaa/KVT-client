@@ -1240,6 +1240,12 @@ export function onNavigate(handler: (page: TrayPage) => void): () => void {
   return () => void off.then((f) => f());
 }
 
+/** Служба отвечает, но другой версии (прерванное обновление) — нужна переустановка. */
+export async function serviceMismatch(): Promise<boolean> {
+  if (!inTauri) return false;
+  return invoke<boolean>("service_mismatch");
+}
+
 /** Запускает службу KVT (право на запуск выдаёт установщик) и ждёт её ответа. */
 export async function startService(): Promise<void> {
   if (inTauri) await invoke("start_service");

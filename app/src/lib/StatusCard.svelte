@@ -18,10 +18,12 @@
     session,
     tunnelOk,
     serviceDown = false,
+    mismatch = false,
     onconnect,
     ondisconnect,
     onwhy,
     onstartservice,
+    onreinstall,
   }: {
     server: ServerSummary | null;
     mode: Mode;
@@ -33,10 +35,13 @@
     tunnelOk: boolean | null;
     /** Служба KVT не отвечает: вместо «Подключить» — «Запустить службу». */
     serviceDown?: boolean;
+    /** Служба другой версии (прерванное обновление): кнопка ведёт на страницу загрузки. */
+    mismatch?: boolean;
     onconnect: () => void;
     ondisconnect: () => void;
     onwhy: () => void;
     onstartservice?: () => void;
+    onreinstall?: () => void;
   } = $props();
 
   /** Работает только zapret, без VPN. */
@@ -64,7 +69,9 @@
           ? "Сайты не открываются"
           : connected
             ? "Подключено"
-            : serviceDown
+            : serviceDown && mismatch
+              ? "Окно и служба KVT разных версий"
+              : serviceDown
               ? "Служба KVT не запущена"
               : tone === "error"
                 ? "Ошибка"
@@ -114,7 +121,9 @@
     <div class="text">
       <h2>{title}</h2>
       <p class="muted">
-        {#if serviceDown}
+        {#if serviceDown && mismatch}
+          Похоже, обновление прервалось. Установите KVT заново — настройки и подписки сохранятся.
+        {:else if serviceDown}
           Без неё KVT не подключится. Обычно служба стартует вместе с Windows.
         {:else if zapretOnly}
           Стратегия {strategyTitle(zapretOnly.strategy)} · без VPN
@@ -150,7 +159,9 @@
   </div>
 
   <!-- Одна кнопка: при подключении цвет меняется плавно, а не скачком. -->
-  {#if serviceDown && !connected}
+  {#if serviceDown && mismatch}
+    <button class="btn btn-primary connect" onclick={onreinstall}>Страница загрузки</button>
+  {:else if serviceDown && !connected}
     <button class="btn btn-primary connect" disabled={busy} onclick={onstartservice}>
       {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
       {busy ? "Запуск…" : "Запустить службу"}

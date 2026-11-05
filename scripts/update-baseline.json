@@ -1,0 +1,8 @@
+{
+  "_comment": "Обновление (KVT-x.y.z-update.exe) ставится поверх minVersion и новее. components — что входило в установку minVersion: ядра и zapret попадают в обновление, только если их версии теперь другие. Поднимая minVersion (например, держать три последних релиза), переписать components по той версии.",
+  "minVersion": "0.1.0",
+  "components": {
+    "cores": { "xray": "26.10.31", "sing-box": "1.14.4", "wintun": "0.14.1" },
+    "zapret": "1.10.4"
+  }
+}

@@ -8,7 +8,8 @@
 # Подпись: если задана переменная KVT_SIGN_COMMAND (команда signtool с %1 вместо пути
 # к файлу), подписываются kvt-service.exe, kvt.exe и установщик. Без неё сборка без подписи.
 #
-# Готовые файлы и их SHA-256 — в target\release\dist.
+# Готовые файлы и их SHA-256 — в target\release\dist: KVT-x.y.z-setup.exe (полная
+# установка) и KVT-x.y.z-update.exe (обновление установленного KVT, шаг 5.7).
 
 param(
     [switch]$Offline,
@@ -65,6 +66,12 @@ try {
     if ($env:CI -or -not (Test-Path 'node_modules')) {
         Invoke-Checked 'зависимости интерфейса' { npm ci }
     }
+    # Свой шаблон NSIS (windows\installer.nsi) — копия из конкретной версии Tauri CLI.
+    $cli = (Get-Content 'node_modules\@tauri-apps\cli\package.json' -Raw | ConvertFrom-Json).version
+    $template = Get-Content 'src-tauri\windows\installer.nsi' -TotalCount 6 -Encoding UTF8 | Out-String
+    if ($template -notmatch "tauri-cli $([regex]::Escape($cli))") {
+        throw "Шаблон src-tauri\windows\installer.nsi сделан не для Tauri CLI $cli — обновите его (см. комментарий в начале файла)."
+    }
     $configs = @('--config', 'src-tauri/tauri.release.conf.json')
     if ($env:KVT_SIGN_COMMAND) {
         $sign = @{ bundle = @{ windows = @{ signCommand = $env:KVT_SIGN_COMMAND } } } | ConvertTo-Json -Depth 5 -Compress
@@ -89,6 +96,33 @@ try {
 finally {
     Pop-Location
 }
+
+# Обновление: kvt.exe и служба всегда, ядра и zapret — если изменились с minVersion.
+$baseline = Get-Content (Join-Path $PSScriptRoot 'update-baseline.json') -Raw | ConvertFrom-Json
+$cores = Get-Content (Join-Path $release 'cores\versions.json') -Raw | ConvertFrom-Json
+$coresChanged = $false
+foreach ($name in 'xray', 'sing-box', 'wintun') {
+    if ($cores.$name -ne $baseline.components.cores.$name) { $coresChanged = $true }
+}
+$zapretVersion = (Get-Content (Join-Path $release 'zapret\VERSION') -Raw).Trim()
+$zapretChanged = $zapretVersion -ne $baseline.components.zapret
+$makensis = Join-Path $env:LOCALAPPDATA 'tauri\NSIS\makensis.exe'
+$update = Join-Path $dist "KVT-$version-update.exe"
+$defines = @(
+    "/DVERSION=$version",
+    "/DMIN_VERSION=$($baseline.minVersion)",
+    "/DSRC=$release",
+    "/DOUTFILE=$update",
+    "/DPLUGINS=$(Join-Path $env:LOCALAPPDATA 'tauri\NSIS\Plugins\x86-unicode\additional')",
+    "/DICON=$(Join-Path $app 'src-tauri\icons\icon.ico')"
+)
+if ($coresChanged) { $defines += '/DWITH_CORES' }
+if ($zapretChanged) { $defines += '/DWITH_ZAPRET' }
+$coresNote = if ($coresChanged) { 'входят' } else { 'не изменились' }
+$zapretNote = if ($zapretChanged) { 'входит' } else { 'не изменился' }
+Write-Host "обновление от $($baseline.minVersion): ядра $coresNote, zapret $zapretNote"
+Invoke-Checked 'обновление' { & $makensis /V2 /INPUTCHARSET UTF8 @defines (Join-Path $app 'src-tauri\windows\update.nsi') }
+Invoke-Sign $update
 
 $sums = Get-ChildItem $dist -Filter '*.exe' | ForEach-Object {
     "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant())  $($_.Name)"

@@ -431,6 +431,12 @@ fn describe(
             },
             Tone::Off,
         ),
+        None if crate::service_client::version_mismatch() => (
+            "mismatch",
+            "Окно и служба KVT разных версий".into(),
+            "Установите KVT заново".into(),
+            Tone::Problem,
+        ),
         None => (
             "no_service",
             "Служба KVT не запущена".into(),
@@ -446,6 +452,7 @@ fn describe(
         "connecting" => "KVT — подключение…",
         "failed" => "KVT — ошибка подключения",
         "disconnected" => "KVT — отключено",
+        "mismatch" => "KVT — установите заново",
         _ => "KVT — служба не запущена",
     };
     let second = match kind {

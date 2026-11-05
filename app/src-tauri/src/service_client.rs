@@ -1,6 +1,7 @@
 //! Клиент службы KVT: одно соединение на запрос, сначала проверка версии протокола.
 
 use kvt_core::ipc::{self, Request, Response, PIPE_NAME, PROTOCOL_VERSION};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
@@ -56,19 +57,38 @@ async fn exchange(pipe: &mut NamedPipeClient, request: &Request) -> Result<Respo
     ipc::decode(&body).map_err(|e| crate::errors::logged(crate::errors::UNEXPECTED, e))
 }
 
+/// Служба отвергла приветствие: окно и служба разных версий (прерванное обновление).
+/// Тогда «Запустить службу» не поможет — окно и трей просят переустановить KVT.
+static MISMATCH: AtomicBool = AtomicBool::new(false);
+
+pub fn version_mismatch() -> bool {
+    MISMATCH.load(Ordering::Relaxed)
+}
+
+/// Окно спрашивает после статуса: служба отвечает, но другой версии.
+#[tauri::command]
+pub fn service_mismatch() -> bool {
+    version_mismatch()
+}
+
 pub async fn call(request: Request) -> Result<Response, String> {
     let mut pipe = open().await?;
-    match exchange(
+    let hello = exchange(
         &mut pipe,
         &Request::Hello {
             protocol_version: PROTOCOL_VERSION,
         },
     )
-    .await?
-    {
-        Response::Hello { .. } => {}
-        Response::Error { message } => return Err(message),
-        _ => return Err(crate::errors::UNEXPECTED.into()),
+    .await;
+    match hello {
+        Ok(Response::Hello { .. }) => MISMATCH.store(false, Ordering::Relaxed),
+        // Связь оборвалась — это не версия, а сбой канала.
+        Err(e) if e != crate::errors::UNEXPECTED => return Err(e),
+        // Служба старше или новее: приветствие не принято или ответ не разобрался.
+        _ => {
+            MISMATCH.store(true, Ordering::Relaxed);
+            return Err(crate::errors::VERSION_MISMATCH.into());
+        }
     }
     exchange(&mut pipe, &request).await
 }
