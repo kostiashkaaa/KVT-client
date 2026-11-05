@@ -1274,7 +1274,7 @@ export interface About {
 export async function aboutInfo(): Promise<About> {
   if (!inTauri) {
     return {
-      version: "0.1.0",
+      version: "0.9.0",
       cores: { xray: "26.10.31", "sing-box": "1.14.4", wintun: "0.14.1" },
       sourceUrl: "https://github.com/kostiashkaaa/KVT-client",
       licenses: true,
