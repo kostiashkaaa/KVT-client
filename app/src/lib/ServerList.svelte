@@ -519,6 +519,13 @@
     animation: spin 900ms linear infinite;
   }
 
+  /* Индикатор обновления крутится и при выключенных эффектах анимации (см. app.css). */
+  @media (prefers-reduced-motion: reduce) {
+    .spin {
+      animation: spin 1.6s linear infinite !important;
+    }
+  }
+
   @keyframes spin {
     to {
       transform: rotate(360deg);

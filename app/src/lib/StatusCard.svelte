@@ -373,6 +373,14 @@
     animation: kvt-spin 1s linear infinite;
   }
 
+  /* В Windows выключены эффекты анимации: дуга всё равно бежит, только медленнее,
+     иначе кнопка выглядит зависшей (см. app.css). */
+  @media (prefers-reduced-motion: reduce) {
+    .pending .arc {
+      animation: kvt-spin 2s linear infinite !important;
+    }
+  }
+
   .pending .icon {
     animation: kvt-pulse 1.2s ease-in-out infinite;
   }

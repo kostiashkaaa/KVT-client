@@ -294,6 +294,13 @@ textarea {
     transition: none !important;
     animation: none !important;
   }
+
+  /* Индикатор загрузки — не украшение: замершее кольцо выглядит как зависание.
+     Вращение остаётся (медленнее), остальные эффекты выключены. Так же — дуга
+     круглой кнопки (StatusCard) и «Обновить» у подписки (ServerList). */
+  .spinner {
+    animation: kvt-spin 1.4s linear infinite !important;
+  }
 }
 
 select {
