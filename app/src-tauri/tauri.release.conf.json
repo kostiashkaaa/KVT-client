@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../../target/release/kvt-service.exe": "kvt-service.exe",
+      "../../target/release/cores/": "cores/",
+      "../../target/release/zapret/": "zapret/",
+      "../../target/release/licenses/": "licenses/"
+    }
+  }
+}

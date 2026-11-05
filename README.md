@@ -26,7 +26,8 @@ presets/             данные: пороги сетевой политики,
 ## Разработка
 
 Нужны Rust (stable, MSVC), Node.js 20+, Visual Studio Build Tools с C++.
-Установщик (exe/msi) для проверки не нужен — всё запускается из исходников.
+Установщик для проверки не нужен — всё запускается из исходников (сборка установщика —
+в разделе «Установщик» ниже).
 
 | Что проверить | Команда | Что происходит |
 |---|---|---|
@@ -81,11 +82,30 @@ Kill switch включается в «Настройках» и применяе
 `cargo test -p kvt-service kill_switch -- --ignored`.
 
 Закрытие окна не завершает KVT: окно выгружается, приложение остаётся в трее
-(левый клик — открыть, меню — подключить/отключить, выход).
+(левый клик — открыть окно; меню — подключение, сервер, режим, kill switch и т. д.).
 
 Проверка сгенерированных конфигов настоящими ядрами:
 `cargo run -p kvt-service -- update-rules --dir target\debug\cores\rules`, затем
 `cargo test -p kvt-core --test real_cores`.
+
+### Установщик
+
+`powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1` собирает службу,
+скачивает ядра, Wintun и комплект zapret по зафиксированным SHA-256, кладёт тексты
+лицензий и собирает `setup.exe` (NSIS, установка в `C:\Program Files\KVT`, один запрос
+прав администратора). Готовый файл и `SHA256SUMS.txt` — в `target\release\dist`.
+Ключ `-Offline` добавляет установщик со встроенным WebView2, `-SkipFetch` — без
+повторной загрузки ядер.
+
+Ресурсы установщика (служба, ядра, zapret, лицензии) подключает отдельный
+`app/src-tauri/tauri.release.conf.json`, поэтому обычный `npm run tauri build` их не
+требует. Установщик регистрирует службу (`kvt-service install`: автозапуск с отложенным
+стартом, перезапуск при сбое, право запуска для пользователей, манифест с SHA-256
+`kvt.exe`), удаление — снимает её, драйвер WinDivert и `C:\ProgramData\KVT`.
+
+Релиз собирает GitHub Actions по тегу `vX.Y.Z` (`.github/workflows/release.yml`):
+черновик релиза с установщиками, SHA-256 и аттестацией происхождения
+(`gh attestation verify <файл> --repo <владелец>/<репозиторий>`).
 
 ### VS Code
 
@@ -93,7 +113,8 @@ Kill switch включается в «Настройках» и применяе
 (rust-analyzer, Svelte, Tauri, C/C++). После этого:
 
 - **F5 → «Приложение KVT»** — запуск под отладчиком: точки останова в Rust-коде
-  (`app/src-tauri`, `crates/`). Отладчик UI — правый клик в окне → «Проверить».
+  (`app/src-tauri`, `crates/`). Отладчик UI — F12 или Ctrl+Shift+I (только в
+  отладочной сборке; браузерное меню правой кнопки в окне выключено).
 - **Ctrl+Shift+P → Tasks: Run Task** — тесты, clippy, dev-сервер, tauri dev.
 - **Ctrl+Shift+P → Tasks: Run Test Task** — все Rust-тесты.
 - Над каждым `#[test]` rust-analyzer показывает «▶ Run Test | Debug».

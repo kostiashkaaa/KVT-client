@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+mod about;
 mod applog;
 mod audit;
 mod autostart;
@@ -122,6 +123,9 @@ struct Choice {
     notifications: bool,
     /// Подключаться к выбранному серверу при запуске KVT.
     connect_on_start: bool,
+    /// Автозапуск уже включался при первом запуске установленного KVT: если
+    /// пользователь потом его выключил, не включать снова. Окно поле не присылает.
+    autostart_offered: bool,
 }
 
 /// Сколько серверов помнит «Недавние» в трее.
@@ -151,6 +155,7 @@ impl Default for Choice {
             recent: Vec::new(),
             notifications: true,
             connect_on_start: false,
+            autostart_offered: false,
         }
     }
 }
@@ -342,6 +347,7 @@ fn set_choice(
     {
         let old = state.choice.lock().map_err(crate::errors::state)?;
         choice.recent = old.recent.clone();
+        choice.autostart_offered = old.autostart_offered;
         if let Some(key) = choice
             .server
             .clone()
@@ -568,6 +574,28 @@ async fn query_status() -> Result<Option<ServiceStatus>, String> {
 /// Для мест без `AppHandle` под рукой (статус службы спрашивают отовсюду).
 static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
+/// Первый запуск установленного KVT включает автозапуск («включён после установки»).
+/// Установщик этого не делает: он работает от администратора, и `HKCU` у него может
+/// оказаться чужим. Сборка для разработки автозапуск не трогает.
+fn enable_autostart_once(app: &AppHandle) {
+    if !autostart::installed() {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let Ok(mut choice) = state.choice.lock() else {
+        return;
+    };
+    if choice.autostart_offered {
+        return;
+    }
+    if let Err(e) = autostart::set_autostart(true) {
+        tracing::warn!(error = %e, "автозапуск не включился");
+        return;
+    }
+    choice.autostart_offered = true;
+    let _ = save_choice(app, &choice);
+}
+
 /// «Подключаться при запуске»: ждёт службу (после загрузки Windows она
 /// стартует не сразу) и подключается, если ничего ещё не работает.
 fn spawn_connect_on_start(app: AppHandle) {
@@ -661,6 +689,7 @@ fn main() {
                 tray::show_main_window(app.handle());
             }
             spawn_connect_on_start(app.handle().clone());
+            enable_autostart_once(app.handle());
             netprofile::spawn(app.handle().clone());
             watchdog::spawn(app.handle().clone());
             zapret::spawn_watch(app.handle().clone());
@@ -710,6 +739,9 @@ fn main() {
             tray::take_page,
             autostart::autostart_enabled,
             autostart::set_autostart,
+            about::about_info,
+            about::open_link,
+            about::start_service,
             tunnel::tunnel_state,
             diagexport::diag_preview,
             diagexport::diag_save

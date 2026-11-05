@@ -35,6 +35,17 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
     result.map_err(|e| crate::errors::io("Не удалось изменить автозапуск", &e))
 }
 
+/// KVT установлен (kvt.exe в Program Files), а не запущен из каталога сборки.
+pub fn installed() -> bool {
+    let (Ok(exe), Some(pf)) = (std::env::current_exe(), std::env::var_os("ProgramFiles")) else {
+        return false;
+    };
+    let pf = std::path::PathBuf::from(pf)
+        .to_string_lossy()
+        .to_lowercase();
+    exe.to_string_lossy().to_lowercase().starts_with(&pf)
+}
+
 /// KVT запущен автозапуском — окно не открывать.
 pub fn started_in_tray() -> bool {
     std::env::args().any(|a| a == TRAY_FLAG)

@@ -5,7 +5,9 @@
 //! Команды (из терминала администратора):
 //!
 //! - `kvt-service --console` — запуск в консоли для разработки (Ctrl+C — выход);
-//! - `kvt-service install` / `uninstall` — регистрация службы Windows;
+//! - `kvt-service install` / `uninstall` — регистрация службы Windows (установщик:
+//!   автозапуск, перезапуск при сбое, манифест клиента); `stop` — остановить и
+//!   дождаться (перед заменой файлов);
 //! - `kvt-service update-rules --dir <каталог> [--full] [--force]` — загрузка списков.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
@@ -16,6 +18,8 @@ mod audit;
 mod handler;
 #[cfg(windows)]
 mod logging;
+#[cfg(windows)]
+mod manifest;
 #[cfg(windows)]
 mod net;
 #[cfg(windows)]
@@ -93,50 +97,117 @@ mod service {
         result
     }
 
-    /// Регистрирует службу на текущий исполняемый файл (запуск вручную —
-    /// приложение стартует её при подключении, этап 5 переведёт на автозапуск).
+    /// Права на службу: стандартные плюс запуск (RP) для интерактивных пользователей —
+    /// окно поднимает остановленную службу кнопкой «Запустить службу» без прав
+    /// администратора. Остановить, перенастроить или удалить её они не могут.
+    const SERVICE_SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
+
+    /// Регистрирует службу на текущий исполняемый файл (или обновляет регистрацию —
+    /// установка поверх прежней версии) и запускает её. Вызывает установщик.
     pub fn install() -> anyhow::Result<()> {
+        use windows_service::service::{
+            ServiceAction, ServiceActionType, ServiceFailureActions, ServiceFailureResetPeriod,
+        };
         let manager = ServiceManager::local_computer(
             None::<&str>,
             ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
         )?;
+        let exe = std::env::current_exe()?;
         let info = ServiceInfo {
             name: OsString::from(SERVICE_NAME),
             display_name: OsString::from("KVT VPN"),
             service_type: ServiceType::OWN_PROCESS,
-            start_type: ServiceStartType::OnDemand,
+            // После перезагрузки KVT должен подключаться без участия пользователя.
+            start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
-            executable_path: std::env::current_exe()?,
+            executable_path: exe.clone(),
             launch_arguments: vec![],
             dependencies: vec![],
             // LocalSystem: нужен для TUN, маршрутов и WFP.
             account_name: None,
             account_password: None,
         };
-        let service =
-            manager.create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)?;
+        // Установщик работает от администратора; WRITE_DAC (права на службу) отдельным
+        // флагом в windows-service нет — он входит в ALL_ACCESS.
+        let access = ServiceAccess::ALL_ACCESS;
+        let service = match manager.open_service(SERVICE_NAME, access) {
+            Ok(service) => {
+                service.change_config(&info)?;
+                service
+            }
+            Err(_) => manager.create_service(&info, access)?,
+        };
         service.set_description("Служба KVT: запуск VPN-ядер, TUN и защита от утечек")?;
-        service.start::<&OsStr>(&[])?;
+        // Отложенный запуск: не задерживает загрузку Windows, сеть к этому времени есть.
+        service.set_delayed_auto_start(true)?;
+        // Упала — перезапуск через 5, 10 и 30 с; счётчик сбрасывается через сутки.
+        service.update_failure_actions(ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 3600)),
+            reboot_msg: None,
+            command: None,
+            actions: Some(
+                [5, 10, 30]
+                    .into_iter()
+                    .map(|secs| ServiceAction {
+                        action_type: ServiceActionType::Restart,
+                        delay: Duration::from_secs(secs),
+                    })
+                    .collect(),
+            ),
+        })?;
+        service.set_failure_actions_on_non_crash_failures(true)?;
+        crate::win::set_service_sddl(service.raw_handle() as usize, SERVICE_SDDL)?;
+        let dir = exe
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        crate::manifest::write(&dir)?;
+        if service.query_status()?.current_state == ServiceState::Stopped {
+            service.start::<&OsStr>(&[])?;
+        }
         println!("Служба {SERVICE_NAME} установлена и запущена.");
         Ok(())
     }
 
-    pub fn uninstall() -> anyhow::Result<()> {
+    /// Останавливает службу и ждёт остановки (до 15 с). Нет службы — не ошибка.
+    /// Установщик вызывает это перед заменой файлов: работающая служба их держит.
+    pub fn stop() -> anyhow::Result<()> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-        let service = manager.open_service(
+        let Ok(service) = manager.open_service(
             SERVICE_NAME,
-            ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
-        )?;
+            ServiceAccess::QUERY_STATUS | ServiceAccess::STOP,
+        ) else {
+            return Ok(());
+        };
         if service.query_status()?.current_state != ServiceState::Stopped {
             let _ = service.stop();
-            for _ in 0..50 {
+            for _ in 0..150 {
                 if service.query_status()?.current_state == ServiceState::Stopped {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
-        service.delete()?;
+        Ok(())
+    }
+
+    /// Удаляет службу, драйвер WinDivert (если им не пользуется чужой winws) и
+    /// манифест. Фильтры WFP динамические — их снимает уже остановка службы.
+    pub fn uninstall() -> anyhow::Result<()> {
+        stop()?;
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+        if let Ok(service) = manager.open_service(SERVICE_NAME, ServiceAccess::DELETE) {
+            service.delete()?;
+        }
+        match crate::supervisor::Paths::standard() {
+            Ok(paths) => {
+                if let Err(e) = crate::zapret::remove_driver_if_unused(&paths) {
+                    eprintln!("Драйвер WinDivert не удалён: {e}");
+                }
+            }
+            Err(e) => eprintln!("Каталоги службы не найдены: {e}"),
+        }
+        let _ = std::fs::remove_file(crate::supervisor::data_dir().join("manifest.json"));
         println!("Служба {SERVICE_NAME} удалена.");
         Ok(())
     }
@@ -168,6 +239,10 @@ fn main() -> anyhow::Result<()> {
         Some("uninstall") => {
             logging::init_console();
             return service::uninstall();
+        }
+        Some("stop") => {
+            logging::init_console();
+            return service::stop();
         }
         Some("--console") => {
             logging::init_service(true);

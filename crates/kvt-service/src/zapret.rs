@@ -167,6 +167,14 @@ fn remove_driver() -> Result<(), String> {
     service.delete().map_err(|e| e.to_string())
 }
 
+/// При удалении KVT: драйвер убирается, если им сейчас не пользуется чужой winws.
+pub fn remove_driver_if_unused(paths: &Paths) -> Result<(), String> {
+    if conflicts(paths, None).iter().any(|(c, _)| !c.service) {
+        return Err("им пользуется другая программа".into());
+    }
+    remove_driver()
+}
+
 pub fn info(paths: &Paths) -> ZapretInfo {
     let bundle = active_bundle(paths);
     let checked = check_bundle(&bundle);

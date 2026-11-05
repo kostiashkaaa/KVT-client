@@ -4,6 +4,7 @@
 //! - только локальные клиенты;
 //! - клиент должен быть `kvt.exe` из каталога службы (Program Files в установке,
 //!   target\debug при разработке) — чужая программа управлять VPN не сможет;
+//! - у установленной службы SHA-256 клиента сверяется с манифестом установки;
 //! - кадры с ограничением длины, неизвестные команды отвергаются.
 //!
 //! TODO(этап 5): дополнительно проверять Authenticode-подпись клиента.
@@ -23,6 +24,10 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_default();
+    // Манифест сверяется только у установленной службы: при разработке рядом может
+    // стоять установленный KVT со своим манифестом, а kvt.exe из сборки — другой.
+    let manifest =
+        crate::manifest::installed(&allowed_dir).then(crate::manifest::Verifier::default);
     let mut server = win::create_pipe(PIPE_NAME, true)?;
     tracing::info!(pipe = PIPE_NAME, "служба слушает");
 
@@ -35,7 +40,10 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
         server = win::create_pipe(PIPE_NAME, false)?;
 
         match win::pipe_client_image(&client) {
-            Ok(image) if is_trusted_client(&image, &allowed_dir) => {
+            Ok(image)
+                if is_trusted_client(&image, &allowed_dir)
+                    && manifest.as_ref().map_or(true, |m| m.check(&image)) =>
+            {
                 tracing::debug!(image = %image.display(), "клиент принят");
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {

@@ -54,6 +54,8 @@ export interface Added {
 export type Mode = "vpn" | "hybrid" | "zapret";
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/** Окно работает в приложении, а не в превью браузера (`npm run dev`). */
+export const inApp = inTauri;
 
 /** Одна https-ссылка — это адрес подписки; всё остальное — содержимое (ссылки на серверы). */
 export function isSubscriptionUrl(input: string): boolean {
@@ -1236,6 +1238,37 @@ export function onNavigate(handler: (page: TrayPage) => void): () => void {
   if (!inTauri) return () => {};
   const off = listen<TrayPage>("navigate", (e) => handler(e.payload));
   return () => void off.then((f) => f());
+}
+
+/** Запускает службу KVT (право на запуск выдаёт установщик) и ждёт её ответа. */
+export async function startService(): Promise<void> {
+  if (inTauri) await invoke("start_service");
+}
+
+export interface About {
+  version: string;
+  /** xray, sing-box, wintun → версия. */
+  cores: Record<string, string>;
+  sourceUrl: string;
+  /** Есть папка с текстами лицензий (в установленном KVT). */
+  licenses: boolean;
+}
+
+export async function aboutInfo(): Promise<About> {
+  if (!inTauri) {
+    return {
+      version: "0.1.0",
+      cores: { xray: "26.10.31", "sing-box": "1.14.4", wintun: "0.14.1" },
+      sourceUrl: "https://github.com/kostiashkaaa/KVT-client",
+      licenses: true,
+    };
+  }
+  return invoke<About>("about_info");
+}
+
+/** Открывает исходники, страницу загрузки или папку лицензий — только их. */
+export async function openLink(target: "source" | "releases" | "licenses"): Promise<void> {
+  if (inTauri) await invoke("open_link", { target });
 }
 
 /** Автозапуск с Windows свёрнутым в трей (значение в реестре, не в настройках). */

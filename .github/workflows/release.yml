@@ -1,0 +1,78 @@
+# Релиз собирается здесь, а не на компьютере разработчика: чистая машина, исходники
+# ровно из тега, ядра и zapret — по зафиксированным SHA-256. Аттестация происхождения
+# позволяет любому проверить, что установщик собран из этого коммита:
+#
+#   gh attestation verify KVT-x.y.z-setup.exe --repo <владелец>/<репозиторий>
+#
+# Релиз создаётся черновиком с SHA-256 файлов в описании; публикует его разработчик
+# после проверки на чистых машинах (чек-лист 5.8).
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Версия тега совпадает с tauri.conf.json
+        shell: pwsh
+        run: |
+          $version = (Get-Content app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Тег ${{ github.ref_name }}, а в tauri.conf.json — $version"
+          }
+
+      - name: Тесты
+        shell: pwsh
+        run: |
+          cd app; npm ci; npm run build; cd ..
+          cargo test --workspace --locked
+
+      # Подпись включится, когда появится сертификат (секрет KVT_SIGN_COMMAND).
+      - name: Сборка установщиков
+        shell: pwsh
+        env:
+          KVT_SIGN_COMMAND: ${{ secrets.KVT_SIGN_COMMAND }}
+        run: ./scripts/build-release.ps1 -Offline
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/release/dist/*.exe
+
+      - name: Черновик релиза
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $sums = Get-Content target/release/dist/SHA256SUMS.txt -Raw
+          $notes = @"
+          Какой файл скачать:
+          - **KVT-*-setup.exe** — обычная установка (WebView2 докачается, если его нет).
+          - **KVT-*-offline-setup.exe** — для компьютера без интернета (WebView2 внутри).
+
+          Windows может показать «Система Windows защитила ваш компьютер»: у KVT пока нет
+          сертификата подписи. Нажмите «Подробнее» → «Выполнить в любом случае».
+
+          SHA-256:
+          ``````
+          $sums
+          ``````
+          Происхождение: ``gh attestation verify <файл> --repo ${{ github.repository }}``
+          "@
+          # PowerShell не раскрывает * для внешних программ — список файлов явно.
+          $files = (Get-ChildItem target/release/dist -File).FullName
+          gh release create "${{ github.ref_name }}" --draft --title "KVT ${{ github.ref_name }}" --notes $notes @files

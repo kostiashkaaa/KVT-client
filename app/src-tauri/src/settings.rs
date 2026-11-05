@@ -147,6 +147,7 @@ fn title(key: &str) -> String {
         "recent" => "недавние серверы",
         "notifications" => "уведомления",
         "connectOnStart" => "подключение при запуске",
+        "autostartOffered" => "автозапуск",
         other => other,
     }
     .into()

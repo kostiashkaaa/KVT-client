@@ -15,21 +15,28 @@ $ProgressPreference = 'SilentlyContinue'
 $packages = @(
     @{
         # v26.10.29 отозван авторами: в v26.10.31 по умолчанию выключен MPTCP.
-        Name   = 'Xray v26.10.31'
-        Url    = 'https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-windows-64.zip'
-        Sha256 = '2e04a9995a6f2ad1b28c0bb25c708ecb2695e43a1c9c7889c4b6ac2b48cf7a6a'
-        Files  = @{ 'xray.exe' = 'xray.exe' }
+        Name     = 'Xray v26.10.31'
+        Id       = 'xray'
+        Version  = '26.10.31'
+        Url      = 'https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-windows-64.zip'
+        Sha256   = '2e04a9995a6f2ad1b28c0bb25c708ecb2695e43a1c9c7889c4b6ac2b48cf7a6a'
+        Files    = @{ 'xray.exe' = 'xray.exe' }
+        Licenses = @{ 'LICENSE' = 'Xray-LICENSE.txt' }
     },
     @{
-        Name   = 'sing-box 1.14.4'
-        Url    = 'https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip'
-        Sha256 = '99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df'
-        Files  = @{ 'sing-box-1.14.4-windows-amd64\sing-box.exe' = 'sing-box.exe' }
+        Name     = 'sing-box 1.14.4'
+        Id       = 'sing-box'
+        Version  = '1.14.4'
+        Url      = 'https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip'
+        Sha256   = '99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df'
+        Files    = @{ 'sing-box-1.14.4-windows-amd64\sing-box.exe' = 'sing-box.exe' }
+        Licenses = @{ 'sing-box-1.14.4-windows-amd64\LICENSE' = 'sing-box-LICENSE.txt' }
     }
 )
 
 # Wintun нужен Xray для TUN на Windows.
 $wintun = @{
+    Version = '0.14.1'
     Url    = 'https://www.wintun.net/builds/wintun-0.14.1.zip'
     Sha256 = '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51'
 }
@@ -38,6 +45,11 @@ $wintun = @{
 $work = Join-Path ([IO.Path]::GetTempPath()) ("kvt-fetch-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Force $work | Out-Null
 New-Item -ItemType Directory -Force $Dest | Out-Null
+# Тексты лицензий ядер — в установщик (папка licenses рядом с kvt.exe).
+$licenses = Join-Path $Dest 'licenses'
+New-Item -ItemType Directory -Force $licenses | Out-Null
+# Версии для «О программе» (cores\versions.json).
+$versions = [ordered]@{}
 
 function Get-Verified([string]$Url, [string]$Expected, [string]$OutFile) {
     Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 120
@@ -70,6 +82,10 @@ try {
         foreach ($entry in $p.Files.GetEnumerator()) {
             Copy-Item -Force (Join-Path $unpacked $entry.Key) (Join-Path $Dest $entry.Value)
         }
+        foreach ($entry in $p.Licenses.GetEnumerator()) {
+            Copy-Item -Force (Join-Path $unpacked $entry.Key) (Join-Path $licenses $entry.Value)
+        }
+        $versions[$p.Id] = $p.Version
     }
 
     Write-Host '-> Wintun 0.14.1'
@@ -80,6 +96,7 @@ try {
         Get-Verified $wintun.Url $wintun.Sha256 (Join-Path $dir 'wintun.zip')
         Expand-Archive -Path (Join-Path $dir 'wintun.zip') -DestinationPath (Join-Path $dir 'unpacked')
         Copy-Item -Force (Join-Path $dir 'unpacked\wintun\bin\amd64\wintun.dll') $wintunOut
+        Copy-Item -Force (Join-Path $dir 'unpacked\wintun\LICENSE.txt') (Join-Path $licenses 'Wintun-LICENSE.txt')
     }
     catch {
         # wintun.net из России часто «замерзает» после первых ~16 КБ.
@@ -97,6 +114,9 @@ try {
         Copy-Item -Force $found.FullName $wintunOut
     }
     if (-not (Test-WintunDll $wintunOut)) { throw 'wintun.dll не прошёл проверку подписи' }
+    $versions['wintun'] = $wintun.Version
+    # Без BOM: Set-Content -Encoding UTF8 в PowerShell 5.1 его добавляет, а JSON-разбор KVT — нет.
+    [IO.File]::WriteAllText((Join-Path $Dest 'versions.json'), ($versions | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
 
     Write-Host "Готово: $((Resolve-Path $Dest).Path)"
     Write-Host "Списки для тестов: cargo run -p kvt-service -- update-rules --dir target\debug\cores\rules"

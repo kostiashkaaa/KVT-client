@@ -144,6 +144,42 @@ pub fn is_elevated() -> bool {
     ok != 0 && elevation.TokenIsElevated != 0
 }
 
+/// Права на саму службу (не на её файлы) строкой SDDL — например, чтобы обычный
+/// пользователь мог её запустить. `handle` — SC_HANDLE открытой службы.
+pub fn set_service_sddl(handle: usize, sddl: &str) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::System::Services::SetServiceObjectSecurity;
+    let wide: Vec<u16> = std::ffi::OsStr::new(sddl)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut sd: *mut c_void = std::ptr::null_mut();
+    // SAFETY: строка заканчивается нулём; sd освобождается LocalFree ниже.
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: handle — открытая служба с правом WRITE_DAC, sd — разобранный дескриптор.
+    let ok =
+        unsafe { SetServiceObjectSecurity(handle as *mut c_void, DACL_SECURITY_INFORMATION, sd) };
+    let result = if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    };
+    // SAFETY: sd выделен ConvertStringSecurityDescriptor… и освобождается один раз.
+    unsafe { LocalFree(sd) };
+    result
+}
+
 /// Счётчики адаптера по имени: (принято, отправлено) байт с его создания.
 /// `None` — адаптера нет (ядро не запущено или режим Zapret).
 pub fn adapter_octets(alias: &str) -> Option<(u64, u64)> {

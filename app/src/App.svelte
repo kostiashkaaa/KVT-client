@@ -21,6 +21,8 @@
     fullCheck,
     serviceStatus,
     serviceSession,
+    startService,
+    inApp,
     setChoice,
     snapshot,
     onSubscriptionsChanged,
@@ -354,6 +356,23 @@
   }
 
   let status = $state<ServiceStatus | null>(null);
+  /** Служба ответила хотя бы раз с открытия окна (до этого «не запущена» не показываем). */
+  let polled = $state(false);
+  const serviceDown = $derived(inApp && polled && status === null);
+
+  async function onstartservice() {
+    busy = true;
+    error = null;
+    try {
+      await startService();
+      status = await serviceStatus().catch(() => null);
+    } catch (e) {
+      failed(e, false);
+    } finally {
+      busy = false;
+    }
+  }
+
   /** Время и трафик сеанса — из того же ответа службы, что и статус. */
   let session = $state<Session | null>(null);
   /** Работает VPN или только zapret. */
@@ -417,6 +436,7 @@
       // Подключились из трея или профиля сети — считаем, что с текущим выбором.
       else if (!connectedWith && restored) connectedWith = { server: selected, mode, zapret: zapretKey() };
       status = next;
+      polled = true;
       session = nextActive ? await serviceSession().catch(() => null) : null;
     };
     void refreshStatus();
@@ -435,7 +455,7 @@
     {#if page === "home"}
       <h1>Главная</h1>
 
-      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {onconnect} {ondisconnect} onwhy={askWhy} />
+      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {onstartservice} {onconnect} {ondisconnect} onwhy={askWhy} />
 
       {#each startupNotices as text, i (i)}
         <Banner>

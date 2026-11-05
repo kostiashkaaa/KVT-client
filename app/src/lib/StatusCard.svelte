@@ -17,9 +17,11 @@
     status,
     session,
     tunnelOk,
+    serviceDown = false,
     onconnect,
     ondisconnect,
     onwhy,
+    onstartservice,
   }: {
     server: ServerSummary | null;
     mode: Mode;
@@ -29,9 +31,12 @@
     session: Session | null;
     /** Идут ли данные через туннель (null — ещё не проверяли). */
     tunnelOk: boolean | null;
+    /** Служба KVT не отвечает: вместо «Подключить» — «Запустить службу». */
+    serviceDown?: boolean;
     onconnect: () => void;
     ondisconnect: () => void;
     onwhy: () => void;
+    onstartservice?: () => void;
   } = $props();
 
   /** Работает только zapret, без VPN. */
@@ -46,7 +51,7 @@
         ? "warn"
         : connected
           ? "on"
-          : status?.state === "failed"
+          : status?.state === "failed" || serviceDown
             ? "error"
             : "off",
   );
@@ -59,9 +64,11 @@
           ? "Сайты не открываются"
           : connected
             ? "Подключено"
-            : tone === "error"
-              ? "Ошибка"
-              : "Отключено",
+            : serviceDown
+              ? "Служба KVT не запущена"
+              : tone === "error"
+                ? "Ошибка"
+                : "Отключено",
   );
   // Служба отвечает раз в 3 с, а секунды тикают здесь: от последнего ответа.
   let received = $state({ secs: 0, at: 0 });
@@ -107,7 +114,9 @@
     <div class="text">
       <h2>{title}</h2>
       <p class="muted">
-        {#if zapretOnly}
+        {#if serviceDown}
+          Без неё KVT не подключится. Обычно служба стартует вместе с Windows.
+        {:else if zapretOnly}
           Стратегия {strategyTitle(zapretOnly.strategy)} · без VPN
         {:else if mode === "zapret" && !connected}
           Обход DPI без VPN — сервер не нужен
@@ -141,6 +150,12 @@
   </div>
 
   <!-- Одна кнопка: при подключении цвет меняется плавно, а не скачком. -->
+  {#if serviceDown && !connected}
+    <button class="btn btn-primary connect" disabled={busy} onclick={onstartservice}>
+      {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
+      {busy ? "Запуск…" : "Запустить службу"}
+    </button>
+  {:else}
   <button
     class="btn connect"
     class:btn-primary={!connected}
@@ -150,6 +165,7 @@
     {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
     {connected ? "Отключить" : busy ? "Подключение…" : "Подключить"}
   </button>
+  {/if}
 
   <div class="modes" role="radiogroup" aria-label="Режим работы" style:--i={modeIndex}>
     <span class="thumb" aria-hidden="true"></span>

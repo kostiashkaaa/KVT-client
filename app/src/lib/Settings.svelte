@@ -1,6 +1,10 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
   import {
+    aboutInfo,
+    openLink,
+    zapretInfo,
+    type About,
     autostartEnabled,
     setAutostart,
     currentNetwork,
@@ -29,6 +33,25 @@
     notifications: boolean;
     connectOnStart: boolean;
   } = $props();
+
+  let about = $state<About | null>(null);
+  let flowseal = $state<string | null>(null);
+  let linkError = $state<string | null>(null);
+  $effect(() => {
+    void aboutInfo().then((a) => (about = a));
+    void zapretInfo()
+      .then((z) => (flowseal = z.version))
+      .catch(() => (flowseal = null));
+  });
+  const coreTitles: Record<string, string> = { xray: "Xray", "sing-box": "sing-box", wintun: "Wintun" };
+  async function open(target: "source" | "releases" | "licenses") {
+    linkError = null;
+    try {
+      await openLink(target);
+    } catch (e) {
+      linkError = String(e);
+    }
+  }
 
   // Автозапуск хранится в реестре Windows: его можно выключить и в «Диспетчере задач».
   let autostart = $state(false);
@@ -253,6 +276,39 @@
   {/if}
 </section>
 
+<section class="card block">
+  <h2>О программе</h2>
+  {#if about}
+    <dl class="versions">
+      <dt>KVT</dt>
+      <dd>{about.version}</dd>
+      {#each Object.entries(about.cores) as [id, version] (id)}
+        <dt>{coreTitles[id] ?? id}</dt>
+        <dd>{version}</dd>
+      {/each}
+      {#if flowseal}
+        <dt>zapret (Flowseal)</dt>
+        <dd>{flowseal}</dd>
+      {/if}
+    </dl>
+  {/if}
+  <p class="muted">
+    KVT — свободная программа под лицензией GPL-3.0. В составе: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert
+    (LGPL-3.0), zapret и Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0). Новые версии — на странице
+    загрузки: KVT сам ничего не скачивает.
+  </p>
+  <div class="links">
+    <button class="btn" onclick={() => void open("releases")}>Страница загрузки</button>
+    <button class="btn" onclick={() => void open("source")}>Исходники</button>
+    {#if about?.licenses}
+      <button class="btn" onclick={() => void open("licenses")}>Тексты лицензий</button>
+    {/if}
+  </div>
+  {#if linkError}
+    <p class="caption error-text">{linkError}</p>
+  {/if}
+</section>
+
 <style>
   .block {
     display: flex;
@@ -314,6 +370,29 @@
 
   .error-text {
     color: var(--danger);
+  }
+
+  .versions {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: var(--space-1) var(--space-4);
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .versions dt {
+    color: var(--text-2);
+  }
+
+  .versions dd {
+    margin: 0;
+    user-select: text;
+  }
+
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
 
   .profiles {
