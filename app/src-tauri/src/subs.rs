@@ -268,6 +268,26 @@ pub struct SubscriptionItem {
     total_bytes: Option<u64>,
     expire: Option<u64>,
     updated_at: u64,
+    /// Ключи группы «Добавлено вручную» — каждый можно переименовать, заменить или
+    /// удалить. У подписок по ссылке пусто: серверы там задаёт провайдер.
+    keys: Vec<ManualKey>,
+}
+
+/// Ключ, добавленный вручную, для редактирования. Без секретов: ссылка (в ней
+/// UUID или пароль) в окно не уходит — её можно только заменить новой.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualKey {
+    key: String,
+    /// Название целиком, как в ссылке (с флагами-эмодзи) — для правки.
+    name: String,
+    /// Название без флагов — для списка: Windows рисует флаги-эмодзи буквами.
+    title: String,
+    /// Страна из флага — для картинки флага.
+    flag: Option<String>,
+    protocol: &'static str,
+    address: String,
+    port: u16,
 }
 
 #[tauri::command]
@@ -276,6 +296,7 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
     let Some(store) = guard.as_ref() else {
         return Ok(Vec::new());
     };
+    let entries = state.servers.lock().map_err(lock_err)?;
     Ok(store
         .subscriptions
         .iter()
@@ -288,6 +309,26 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
             total_bytes: s.meta.total,
             expire: s.meta.expire,
             updated_at: s.updated_at,
+            keys: if s.url.is_some() {
+                Vec::new()
+            } else {
+                entries
+                    .iter()
+                    .filter(|e| e.sub == s.id)
+                    .map(|e| {
+                        let f = kvt_core::flag::split_flags(&e.server.name);
+                        ManualKey {
+                            key: e.key.clone(),
+                            name: e.server.name.clone(),
+                            title: f.name,
+                            flag: f.flag,
+                            protocol: e.server.protocol.kind(),
+                            address: e.server.address.clone(),
+                            port: e.server.port,
+                        }
+                    })
+                    .collect()
+            },
         })
         .collect())
 }
@@ -344,6 +385,152 @@ pub async fn remove_server(
     guard_selected(&app, before).await;
     notify(&app);
     Ok(())
+}
+
+/// Меняет ключ из группы «Добавлено вручную»: название и, если вставлена, саму
+/// ссылку. Пустое название при новой ссылке — название из неё. Если VPN работает
+/// через этот ключ и ссылка изменилась, KVT переподключается с новыми параметрами.
+/// Возвращает ключ сервера после правки (он меняется вместе с адресом или портом).
+#[tauri::command]
+pub async fn edit_server(
+    key: String,
+    name: String,
+    link: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let entry = state.entry(&key).ok_or("Этого сервера уже нет в списке.")?;
+    let link = link.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
+    // Новая ссылка — ровно один сервер (base64 и JSON раскрываются как при добавлении).
+    let new_line = match &link {
+        Some(raw) => {
+            if raw.len() > kvt_core::parser::MAX_URI_LEN * 4 {
+                return Err("Ссылка слишком длинная.".into());
+            }
+            let normalized = normalize_pasted(raw);
+            let content = parse_subscription_body(&normalized);
+            if content.servers.len() != 1 {
+                return Err(if content.servers.is_empty() {
+                    "В ссылке не нашлось сервера — проверьте, что она скопирована целиком.".into()
+                } else {
+                    "Вставьте ссылку на один сервер — чтобы добавить несколько, нажмите «Добавить»."
+                        .into()
+                });
+            }
+            normalized
+                .lines()
+                .find(|l| {
+                    matches!(
+                        kvt_core::parser::parse_uri(l),
+                        Ok(kvt_core::parser::Entry::Server(_))
+                    )
+                })
+                .map(str::to_owned)
+                .ok_or("В ссылке не нашлось сервера.")?
+        }
+        None => String::new(),
+    };
+    let name = name.trim();
+    let changed_link = link.is_some();
+
+    let new_server = with_store(&state, |store| {
+        let sub = store
+            .subscriptions
+            .iter_mut()
+            .find(|s| s.id == entry.sub)
+            .ok_or("Этого сервера уже нет в списке.")?;
+        if sub.url.is_some() {
+            return Err(
+                "Сервер из подписки по ссылке изменить нельзя — провайдер вернёт прежний при обновлении."
+                    .to_string(),
+            );
+        }
+        // Без новой ссылки правится название прежней: её строка — из тела группы.
+        let base = if changed_link {
+            new_line.clone()
+        } else {
+            find_line(sub.body.expose(), &entry.server)
+                .ok_or("Не удалось найти этот ключ среди добавленных вручную.")?
+        };
+        let line = if name.is_empty() {
+            base
+        } else {
+            kvt_core::parser::with_name(&base, name)
+                .map_err(|e| format!("Название не подходит: {e}."))?
+        };
+        let server = match kvt_core::parser::parse_uri(&line) {
+            Ok(kvt_core::parser::Entry::Server(s)) => *s,
+            _ => return Err("Ссылка не разобралась.".to_string()),
+        };
+        let body = kvt_core::parser::replace_server(sub.body.expose(), &entry.server, &line)
+            .ok_or("Не удалось найти этот ключ среди добавленных вручную.")?;
+        sub.body = Secret::new(body);
+        sub.updated_at = now();
+        Ok(server)
+    })??;
+    rebuild(&state)?;
+
+    let new_key = state
+        .servers
+        .lock()
+        .map_err(lock_err)?
+        .iter()
+        .find(|e| e.sub == entry.sub && e.server == new_server)
+        .map(|e| e.key.clone())
+        .ok_or("Ключ сохранился, но не нашёлся в списке — откройте главную заново.")?;
+
+    // Выбор и «Недавние» в трее идут за ключом, даже если он сменился.
+    let was_selected = {
+        let mut choice = state.choice.lock().map_err(lock_err)?;
+        let was_selected = choice.server.as_deref() == Some(key.as_str());
+        if new_key != key {
+            if was_selected {
+                choice.server = Some(new_key.clone());
+            }
+            for k in &mut choice.recent {
+                if *k == key {
+                    k.clone_from(&new_key);
+                }
+            }
+            crate::save_choice(&app, &choice)?;
+        }
+        was_selected
+    };
+    if new_key != key {
+        let _ = app.emit(watchdog::CHOICE_EVENT, ());
+    }
+    if changed_link
+        && was_selected
+        && matches!(
+            query_status().await,
+            Ok(Some(ServiceStatus::Connected { .. }))
+        )
+    {
+        state.user_acted();
+        let result = crate::connect_current(&app, true).await;
+        crate::tray::refresh(&app).await;
+        result?;
+    } else {
+        crate::tray::invalidate(&app);
+    }
+    notify(&app);
+    Ok(new_key)
+}
+
+/// Строка-ссылка сервера `target` в теле группы «Добавлено вручную».
+fn find_line(body: &str, target: &kvt_core::Server) -> Option<String> {
+    body.split(kvt_core::parser::CHUNK_SEPARATOR)
+        .find_map(|chunk| {
+            normalize_pasted(chunk)
+                .lines()
+                .find(|l| {
+                    matches!(
+                        kvt_core::parser::parse_uri(l),
+                        Ok(kvt_core::parser::Entry::Server(s)) if *s == *target
+                    )
+                })
+                .map(str::to_owned)
+        })
 }
 
 /// Обновляет одну подписку по ссылке. Ошибка не трогает сохранённую версию.

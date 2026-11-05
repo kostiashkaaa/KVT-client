@@ -353,6 +353,22 @@ export interface SubscriptionItem {
   expire: number | null;
   /** Unix-время последнего обновления. */
   updatedAt: number;
+  /** Ключи группы «Добавлено вручную» (у подписок по ссылке пусто). */
+  keys: ManualKey[];
+}
+
+/** Ключ, добавленный вручную. Самой ссылки (с UUID или паролем) окно не получает —
+ *  её можно только заменить новой. */
+export interface ManualKey {
+  key: string;
+  /** Название целиком, как в ссылке (с флагами-эмодзи) — для правки. */
+  name: string;
+  /** Название без флагов — для списка (Windows рисует флаги-эмодзи буквами). */
+  title: string;
+  flag: string | null;
+  protocol: string;
+  address: string;
+  port: number;
 }
 
 export async function listSubscriptions(): Promise<SubscriptionItem[]> {
@@ -366,9 +382,34 @@ export async function listSubscriptions(): Promise<SubscriptionItem[]> {
       totalBytes: g.meta.totalBytes,
       expire: g.meta.expire,
       updatedAt: g.updatedAt,
+      keys: g.byUrl
+        ? []
+        : g.servers.map((s) => ({
+            key: s.key,
+            name: s.name,
+            title: s.name,
+            flag: s.flag,
+            protocol: s.protocol,
+            address: s.address,
+            port: s.port,
+          })),
     }));
   }
   return invoke<SubscriptionItem[]>("list_subscriptions");
+}
+
+/** Меняет ключ из группы «Добавлено вручную»: название и, если указана, ссылку.
+ *  Возвращает ключ сервера после правки (меняется вместе с адресом или портом). */
+export async function editServer(key: string, name: string, link: string | null): Promise<string> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 400));
+    const s = previewGroups.flatMap((g) => g.servers).find((x) => x.key === key);
+    if (!s) throw new Error("Этого сервера уже нет в списке.");
+    if (link && !link.includes("://")) throw new Error("В ссылке не нашлось сервера — проверьте, что она скопирована целиком.");
+    if (name.trim()) s.name = name.trim();
+    return key;
+  }
+  return invoke<string>("edit_server", { key, name, link });
 }
 
 /** Удаляет один ключ из группы «Добавлено вручную» (последний — вместе с группой). */

@@ -184,23 +184,69 @@ pub fn normalize_pasted(body: &str) -> String {
 /// точные повторы). `None` — строки этого сервера в теле нет (например, он из
 /// нераспознанного куска). Пустые куски выбрасываются.
 pub fn remove_server(body: &str, target: &Server) -> Option<String> {
-    let mut removed = false;
+    edit_server_lines(body, target, None)
+}
+
+/// Заменяет в теле группы «Добавлено вручную» строку сервера `target` на `line`
+/// (точные повторы убираются). `None` — строки этого сервера в теле нет.
+pub fn replace_server(body: &str, target: &Server, line: &str) -> Option<String> {
+    edit_server_lines(body, target, Some(line))
+}
+
+fn edit_server_lines(body: &str, target: &Server, replacement: Option<&str>) -> Option<String> {
+    let mut found = false;
     let chunks: Vec<String> = body
         .split(CHUNK_SEPARATOR)
         .map(|chunk| {
             normalize_pasted(chunk)
                 .lines()
-                .filter(|line| {
-                    let hit = matches!(parse_uri(line), Ok(Entry::Server(s)) if *s == *target);
-                    removed |= hit;
-                    !hit
+                .filter_map(|line| {
+                    if !matches!(parse_uri(line), Ok(Entry::Server(s)) if *s == *target) {
+                        return Some(line.to_owned());
+                    }
+                    // Первое вхождение заменяется, повторы выбрасываются.
+                    let first = !found;
+                    found = true;
+                    replacement.filter(|_| first).map(str::to_owned)
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
         })
         .filter(|chunk| !chunk.trim().is_empty())
         .collect();
-    removed.then(|| chunks.join(&format!("\n{CHUNK_SEPARATOR}\n")))
+    found.then(|| chunks.join(&format!("\n{CHUNK_SEPARATOR}\n")))
+}
+
+/// Самое длинное название сервера, которое можно задать вручную.
+pub const MAX_NAME_CHARS: usize = 120;
+
+/// Ссылка на сервер с другим названием (фрагмент `#…`). Остальное не меняется.
+pub fn with_name(line: &str, name: &str) -> Result<String, ParseError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(ParseError::MissingField("название"));
+    }
+    if name.chars().count() > MAX_NAME_CHARS || name.chars().any(char::is_control) {
+        return Err(ParseError::InvalidField {
+            field: "название",
+            reason: "слишком длинное или с непечатаемыми символами",
+        });
+    }
+    const SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    let base = line.trim().split('#').next().unwrap_or_default();
+    let renamed = format!(
+        "{base}#{}",
+        percent_encoding::utf8_percent_encode(name, SET)
+    );
+    // Проверка: ссылка по-прежнему разбирается, и название то, что задали.
+    match parse_uri(&renamed)? {
+        Entry::Server(s) if s.name == name => Ok(renamed),
+        _ => Err(ParseError::InvalidUrl),
+    }
 }
 
 fn add_entry(
@@ -324,6 +370,49 @@ mod tests {
         // Одинаковый сервер в двух вставках — один.
         let twice = format!("{VLESS_REALITY}\n{CHUNK_SEPARATOR}\n{b64}");
         assert_eq!(parse_subscription_body(&twice).servers.len(), 1);
+    }
+
+    #[test]
+    fn rename_keeps_everything_but_the_name() {
+        let renamed = with_name(VLESS_REALITY, "🇳🇱 Дом #2").unwrap();
+        let Entry::Server(old) = parse_uri(VLESS_REALITY).unwrap() else {
+            panic!()
+        };
+        let Entry::Server(new) = parse_uri(&renamed).unwrap() else {
+            panic!()
+        };
+        assert_eq!(new.name, "🇳🇱 Дом #2");
+        let mut same = *new.clone();
+        same.name = old.name.clone();
+        assert_eq!(same, *old);
+
+        let ss = "ss://YWVzLTI1Ni1nY206cGFzcw@198.51.100.7:8388#Old";
+        let Entry::Server(s) = parse_uri(&with_name(ss, "Новый").unwrap()).unwrap() else {
+            panic!()
+        };
+        assert_eq!(s.name, "Новый");
+
+        assert!(with_name(VLESS_REALITY, "  ").is_err());
+        assert!(with_name(VLESS_REALITY, "a\nb").is_err());
+        assert!(with_name(VLESS_REALITY, &"x".repeat(MAX_NAME_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn replace_server_swaps_one_line() {
+        let trojan = "trojan://pass@example.com:443?sni=example.com#T";
+        let body = format!("{VLESS_REALITY}\n{CHUNK_SEPARATOR}\n{trojan}\n{VLESS_REALITY}");
+        let Entry::Server(target) = parse_uri(VLESS_REALITY).unwrap() else {
+            panic!()
+        };
+        let other = "trojan://pass@other.example.com:443?sni=other.example.com#O";
+        let new = replace_server(&body, &target, other).unwrap();
+        let names: Vec<String> = parse_subscription_body(&new)
+            .servers
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["O", "T"]);
+        assert!(replace_server(&new, &target, other).is_none());
     }
 
     #[test]

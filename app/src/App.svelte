@@ -174,7 +174,17 @@
     // Выбранный сервер исчез (подписку удалили или провайдер убрал сервер). Если были
     // подключены к нему, Rust уже отключил VPN и сообщил об этом, — к первому
     // серверу другой подписки не переподключаемся.
-    if (!groups.some((g) => g.servers.some((s) => s.key === selected))) {
+    const exists = (key: string | null) => groups.some((g) => g.servers.some((s) => s.key === key));
+    if (!exists(selected)) {
+      // Ключ изменили (новая ссылка с другим адресом) — Rust уже перевёл выбор на
+      // новый ключ: берём его, а не первый сервер списка.
+      if (exists(snap.choice?.server ?? null)) {
+        const next = snap.choice?.server ?? null;
+        // Переподключение с новой ссылкой Rust делает сам — окно второй раз не нужно.
+        if (connectedWith && connectedWith.server === selected) connectedWith = { ...connectedWith, server: next };
+        selected = next;
+        return;
+      }
       connectedWith = null;
       status = await serviceStatus().catch(() => null);
       selected = firstKey();

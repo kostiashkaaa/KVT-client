@@ -800,6 +800,7 @@ fn main() {
             subs::list_subscriptions,
             subs::remove_subscription,
             subs::remove_server,
+            subs::edit_server,
             subs::refresh_subscription,
             quick_check,
             prober::full_check,

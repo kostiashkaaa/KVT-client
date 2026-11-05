@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { slide } from "svelte/transition";
   import Banner from "./Banner.svelte";
+  import Flag from "./Flag.svelte";
   import Icon from "./Icon.svelte";
   import Migration from "./Migration.svelte";
   import {
@@ -7,6 +9,9 @@
     onSubscriptionsChanged,
     refreshSubscription,
     removeSubscription,
+    removeServer,
+    editServer,
+    type ManualKey,
     type SubscriptionItem,
   } from "./api";
 
@@ -36,6 +41,48 @@
     }
     await reload();
   }
+
+  // ── Ключи, добавленные вручную: каждый правится и удаляется отдельно ──
+
+  /** Ключ, который сейчас редактируется. */
+  let editing = $state<string | null>(null);
+  let editName = $state("");
+  let editLink = $state("");
+  let saving = $state(false);
+  let editError = $state<string | null>(null);
+  /** Ключ, удаление которого ждёт подтверждения. */
+  let confirmKey = $state<string | null>(null);
+
+  function startEdit(k: ManualKey) {
+    editing = k.key;
+    editName = k.name;
+    editLink = "";
+    editError = null;
+    confirmKey = null;
+  }
+
+  async function saveEdit(key: string) {
+    saving = true;
+    editError = null;
+    try {
+      await editServer(key, editName, editLink.trim() || null);
+      editing = null;
+      await reload();
+    } catch (e) {
+      // Ошибка — у формы, а не над всей страницей: форма остаётся открытой.
+      editError = e instanceof Error ? e.message : String(e);
+    } finally {
+      saving = false;
+    }
+  }
+
+  const protocols: Record<string, string> = {
+    vless: "VLESS",
+    trojan: "Trojan",
+    shadowsocks: "Shadowsocks",
+    hysteria2: "Hysteria2",
+  };
+  const protocolTitle = (p: string) => protocols[p] ?? p.toUpperCase();
 
   async function refresh(id: string) {
     refreshing = id;
@@ -75,7 +122,7 @@
 </script>
 
 <div class="top">
-  <p class="muted">Серверы всех подписок — в одном списке на главной. Здесь — обновление и удаление.</p>
+  <p class="muted">Серверы всех подписок — в одном списке на главной. Здесь — обновление, удаление и правка ключей, добавленных вручную.</p>
   <button class="btn btn-primary" onclick={onadd}><Icon name="plus" size={16} />Добавить</button>
 </div>
 
@@ -92,6 +139,7 @@
   <ul class="list">
     {#each items as s (s.id)}
       <li class="card">
+        <div class="head">
         <div class="main">
           <h2 class="title">{s.title}</h2>
           <p class="caption">{details(s)}</p>
@@ -124,10 +172,85 @@
               </button>
             {/if}
             <button class="btn subtle" onclick={() => (confirmRemove = s.id)} aria-label={`Удалить ${s.title}`}>
-              Удалить
+              {s.byUrl ? "Удалить" : "Удалить все"}
             </button>
           {/if}
         </div>
+        </div>
+
+        {#if s.keys.length > 0}
+          <ul class="keys">
+            {#each s.keys as k (k.key)}
+              <li class="key">
+                <div class="key-row">
+                  <Flag code={k.flag} />
+                  <div class="key-text">
+                    <span class="key-name">{k.title}</span>
+                    <span class="caption">{protocolTitle(k.protocol)} · {k.address}:{k.port}</span>
+                  </div>
+                  <div class="actions">
+                    {#if confirmKey === k.key}
+                      <span class="caption appear">Удалить ключ?</span>
+                      <button
+                        class="btn danger"
+                        onclick={() => act(() => removeServer(k.key)).then(() => (confirmKey = null))}
+                      >
+                        Удалить
+                      </button>
+                      <button class="btn" onclick={() => (confirmKey = null)}>Отмена</button>
+                    {:else if editing !== k.key}
+                      <button class="btn" onclick={() => startEdit(k)} aria-label={`Изменить ${k.name}`}>Изменить</button>
+                      <button
+                        class="btn subtle"
+                        onclick={() => ((confirmKey = k.key), (editing = null))}
+                        aria-label={`Удалить ${k.name}`}
+                      >
+                        Удалить
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+
+                {#if editing === k.key}
+                  <form
+                    class="editor"
+                    transition:slide={{ duration: 150 }}
+                    onsubmit={(e) => {
+                      e.preventDefault();
+                      void saveEdit(k.key);
+                    }}
+                  >
+                    <label for="name-{k.key}">Название</label>
+                    <input id="name-{k.key}" bind:value={editName} maxlength="120" autocomplete="off" />
+                    <label for="link-{k.key}">Новая ссылка</label>
+                    <textarea
+                      id="link-{k.key}"
+                      bind:value={editLink}
+                      rows="2"
+                      spellcheck="false"
+                      placeholder="vless://… — оставьте пустым, чтобы ключ остался прежним"
+                    ></textarea>
+                    <p class="caption">
+                      Текущая ссылка не показывается: в ней пароль или UUID сервера. Если название пустое, возьмётся
+                      из новой ссылки.
+                    </p>
+                    {#if editError}
+                      <p class="error-text appear">{editError}</p>
+                    {/if}
+                    <div class="editor-actions">
+                      <button type="submit" class="btn btn-primary" class:busy={saving} disabled={saving}>
+                        Сохранить
+                      </button>
+                      <button type="button" class="btn" disabled={saving} onclick={() => (editing = null)}>
+                        Отмена
+                      </button>
+                    </div>
+                  </form>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </li>
     {/each}
   </ul>
@@ -149,12 +272,113 @@
     list-style: none;
   }
 
-  li {
+  .list > li {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5);
+  }
+
+  .head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-4);
-    padding: var(--space-4) var(--space-5);
+  }
+
+  /* Ключи ручной группы — строками под заголовком карточки. */
+  .keys {
+    display: flex;
+    flex-direction: column;
+    margin: 0 calc(-1 * var(--space-2));
+    padding: 0;
+    list-style: none;
+  }
+
+  .key {
+    padding: var(--space-2);
+    border-top: 1px solid var(--stroke);
+  }
+
+  .key-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-height: 32px;
+  }
+
+  .key-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .key-name {
+    overflow: hidden;
+    font-family: var(--font), "Segoe UI Emoji";
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .key-text .caption {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .editor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    max-width: 560px;
+    padding: var(--space-3) 0 var(--space-2) calc(20px + var(--space-3));
+  }
+
+  .editor label {
+    font-size: 12px;
+    color: var(--text-2);
+  }
+
+  .editor input,
+  .editor textarea {
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--stroke);
+    border-bottom-color: var(--text-3);
+    border-radius: var(--radius-s);
+    background: var(--surface);
+    user-select: text;
+    transition: border-color var(--dur-fast) var(--ease);
+  }
+
+  .editor input {
+    height: 32px;
+    font-family: var(--font), "Segoe UI Emoji";
+  }
+
+  .editor textarea {
+    font: 12px/18px var(--mono);
+    resize: vertical;
+  }
+
+  /* Как в Windows 11: снизу акцентная линия, высота поля не меняется. */
+  .editor input:focus,
+  .editor textarea:focus {
+    outline: none;
+    border-bottom-color: var(--accent);
+    box-shadow: inset 0 -1px 0 var(--accent);
+  }
+
+  .editor-actions {
+    display: flex;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
+  }
+
+  .error-text {
+    margin: 0;
+    color: var(--danger);
   }
 
   .main {
