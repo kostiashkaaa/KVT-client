@@ -1,0 +1,169 @@
+<div align="center">
+
+<img src="app/app-icon.svg" width="96" height="96" alt="KVT">
+
+# KVT
+
+**An open-source VPN client for Windows: subscriptions, censorship bypass and zapret in one window.**
+
+[![Latest release](https://img.shields.io/github/v/release/kostiashkaaa/KVT-client?include_prereleases&label=release)](https://github.com/kostiashkaaa/KVT-client/releases)
+[![Downloads](https://img.shields.io/github/downloads/kostiashkaaa/KVT-client/total)](https://github.com/kostiashkaaa/KVT-client/releases)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
+
+[Русский](README.md) · **English**
+
+### [⬇ Download for Windows](https://github.com/kostiashkaaa/KVT-client/releases/latest)
+
+</div>
+
+---
+
+> The app itself is in Russian for now. An English interface is planned.
+
+KVT is built for users in Russia: sites that work normally go direct, blocked ones go
+through the VPN, and YouTube and Discord can bypass throttling without any VPN server
+at all.
+
+## Features
+
+- **Subscriptions and keys in one list.** Paste a subscription URL or `vless://`,
+  `trojan://`, `ss://`, `hy2://` keys. Servers show up grouped, with country flags,
+  search and a ping check. Subscriptions refresh on their own.
+- **Split routing out of the box.** Russian sites go direct, blocked ones go through
+  the VPN, based on the [itdoginfo](https://github.com/itdoginfo/allow-domains) and
+  [runetfreedom](https://github.com/runetfreedom/russia-v2ray-rules-dat) lists.
+- **YouTube and Discord without a VPN server.** Built-in
+  [zapret](https://github.com/Flowseal/zapret-discord-youtube) gets around DPI
+  throttling, either next to the VPN (Hybrid mode) or instead of it (Zapret mode).
+  KVT picks a working strategy for your network.
+- **Kill switch.** If the VPN drops, the internet stays closed until you say otherwise,
+  so nothing leaks outside the tunnel.
+- **Automatic server switching.** Once a minute KVT checks that traffic is flowing and
+  moves to the next working server in the subscription if it isn't.
+- **"Why isn't it working?"** A step-by-step check of the network, DNS, subscription and
+  server that ends in a plain answer and a button to fix it.
+- **Runs from the tray.** Change the server, mode or kill switch from the tray menu.
+  Connection time and traffic are shown on the home screen and in the tray.
+- **Moving from another client.** Subscriptions and keys from v2rayN, Hiddify and
+  NekoRay/Throne carry over in a couple of clicks.
+
+Protocols: VLESS (Reality, XTLS Vision; TCP, WebSocket, gRPC, HTTPUpgrade, XHTTP),
+Trojan, Shadowsocks, Hysteria2. Cores: [Xray](https://github.com/XTLS/Xray-core) and
+[sing-box](https://github.com/SagerNet/sing-box); KVT chooses the right one per server.
+
+## Install
+
+1. Download `KVT-x.y.z-setup.exe` from
+   [Releases](https://github.com/kostiashkaaa/KVT-client/releases/latest).
+2. Run it and approve the administrator prompt. You only see it once: KVT installs into
+   `C:\Program Files\KVT` together with its background service.
+3. On first launch KVT walks you through three steps: add a subscription, pick a mode,
+   connect.
+
+Requires 64-bit Windows 10 (22H2) or 11. For a machine without internet access, use
+`KVT-x.y.z-offline-setup.exe`, which bundles WebView2.
+
+<details>
+<summary><b>Windows says "Windows protected your PC"</b></summary>
+
+KVT doesn't have a paid code signing certificate yet, so SmartScreen warns about an
+unknown publisher. Click "More info" and then "Run anyway".
+
+To make sure the file wasn't tampered with:
+
+- compare the SHA-256 from the release notes with `Get-FileHash KVT-x.y.z-setup.exe`
+  in PowerShell;
+- or check the build attestation. The installers are built by GitHub Actions from this
+  repository's source, which you can verify with
+  `gh attestation verify KVT-x.y.z-setup.exe --repo kostiashkaaa/KVT-client`.
+
+</details>
+
+<details>
+<summary><b>My antivirus flags WinDivert or winws</b></summary>
+
+Those are zapret components. The WinDivert driver intercepts packets to get around
+YouTube and Discord throttling, which is how every DPI bypass works, and some antivirus
+products label it "potentially unwanted". KVT takes these files from the official
+Flowseal release and checks their SHA-256 before every start.
+
+If you use Hybrid or Zapret mode, add `C:\Program Files\KVT\zapret` to your antivirus
+exclusions. In VPN mode zapret doesn't run.
+
+</details>
+
+## Updating and uninstalling
+
+KVT never downloads or installs anything by itself. Get new versions from
+[Releases](https://github.com/kostiashkaaa/KVT-client/releases); there's a link in
+Settings → About.
+
+- **`KVT-x.y.z-update.exe`** updates an installed KVT and weighs a few megabytes. The
+  VPN disconnects for a few seconds; settings and subscriptions stay.
+- **`KVT-x.y.z-setup.exe`** run over an existing install also works as an update.
+
+To uninstall, go to Settings → Apps → KVT. The service, the WinDivert driver and
+`C:\ProgramData\KVT` are removed; tick "Delete app data" to remove your settings and
+subscriptions too. Your internet connection keeps working afterwards.
+
+## Modes
+
+| Mode | Through the VPN | Through zapret | When to use |
+|---|---|---|---|
+| **VPN** | Blocked sites | none | Default |
+| **Hybrid** | Blocked sites except YouTube and Discord | YouTube and Discord | Less load on the server, faster video |
+| **Zapret** | none | YouTube and Discord | You have no VPN server |
+
+Russian sites go direct in every mode. Whether everything else goes through the VPN or
+only blocked sites do is set in the Routing section.
+
+## FAQ
+
+**It connected, but sites don't open.** Press "Why isn't it working?" on the home
+screen. KVT checks the network, DNS and server and tells you what to do. Another server
+or Hybrid mode often helps.
+
+**Where do I get a subscription?** From your VPN provider: an `https://…` link or
+`vless://`, `trojan://`, `ss://`, `hy2://` keys. KVT doesn't sell or advertise keys.
+
+**Coming from v2rayN, Hiddify or NekoRay?** Subscriptions → "Import from another
+client". For Happ, copy the subscription URL by hand: Happ stores it encrypted.
+
+**I closed the window. Is the VPN off?** No, KVT keeps running in the tray. To quit
+completely, choose Exit in the tray menu.
+
+**What does KVT send over the network?** Only what it needs: subscriptions, server
+checks and routing lists. Every request shows up in the Log section. There's no
+telemetry.
+
+**Found a bug?** Open an [issue](https://github.com/kostiashkaaa/KVT-client/issues) and
+attach a diagnostics archive from Diagnostics → "Save diagnostics". Keys and server
+addresses are stripped, and KVT shows you every file before saving.
+
+## Security and privacy
+
+- **Your keys stay on your machine.** Subscription URLs and keys are encrypted with
+  Windows DPAPI, so only your user account can read them. They never reach the UI,
+  logs or diagnostics.
+- **Separate privileges.** The window runs as a normal user. Anything that needs admin
+  rights (TUN, routes, the kill switch) is done by the service, and the service only
+  accepts commands from the `kvt.exe` in its own install folder.
+- **No open ports.** In TUN mode KVT runs no local proxy that another program could use
+  to find out your server's address.
+- **Gentle on the network.** Checks and updates are rate-limited, with no request bursts
+  that Russian DPI systems react to.
+- **No telemetry, no ads.**
+
+If you find a vulnerability, please report it privately as described in
+[SECURITY.md](SECURITY.md).
+
+## Contributing
+
+KVT is written in Rust (Tauri 2) and Svelte 5. Build and run instructions are in
+[CONTRIBUTING.md](CONTRIBUTING.md) (in Russian).
+
+## License
+
+KVT is licensed under the [GNU GPL v3](LICENSE) or later. Third-party components and
+their licenses are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

@@ -2,27 +2,40 @@
 # ровно из тега, ядра и zapret — по зафиксированным SHA-256. Аттестация происхождения
 # позволяет любому проверить, что установщик собран из этого коммита:
 #
-#   gh attestation verify KVT-x.y.z-setup.exe --repo <владелец>/<репозиторий>
+#   gh attestation verify KVT-x.y.z-setup.exe --repo kostiashkaaa/KVT-client
 #
-# Релиз создаётся черновиком с SHA-256 файлов в описании; публикует его разработчик
-# после проверки на чистых машинах (чек-лист 5.8).
+# Запуск — тегом `vX.Y.Z` или вручную (Actions → Release → Run workflow) для уже
+# существующего тега. Релиз публикуется сразу на странице Releases с описанием из
+# раздела `## X.Y.Z` в CHANGELOG.md; если релиз с этим тегом уже есть (например,
+# черновик), он обновляется и публикуется, файлы заменяются.
 
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег, например v0.9.0"
+        required: true
 
 permissions:
   contents: write
   id-token: write
   attestations: write
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
@@ -32,8 +45,8 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          if ("v$version" -ne "${{ github.ref_name }}") {
-            throw "Тег ${{ github.ref_name }}, а в tauri.conf.json — $version"
+          if ("v$version" -ne $env:TAG) {
+            throw "Тег $env:TAG, а в tauri.conf.json — $version"
           }
 
       - name: Тесты
@@ -53,30 +66,76 @@ jobs:
         with:
           subject-path: target/release/dist/*.exe
 
-      - name: Черновик релиза
+      - name: Описание релиза
+        shell: pwsh
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          # Свежий CHANGELOG — с main: у тега, поставленного раньше, раздела могло не быть.
+          # Вывод git читается как UTF-8, иначе кириллица придёт в кодировке консоли.
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+          $changelog = git show origin/main:CHANGELOG.md 2>$null
+          if (-not $changelog) { $changelog = Get-Content CHANGELOG.md -Encoding utf8 -ErrorAction SilentlyContinue }
+          $section = @()
+          $inside = $false
+          foreach ($line in $changelog) {
+            if ($line -match '^## ') {
+              if ($inside) { break }
+              $inside = $line -match "^## $([regex]::Escape($version))\b"
+              continue
+            }
+            if ($inside) { $section += $line }
+          }
+          $news = ($section -join "`n").Trim()
+          if (-not $news) { $news = "KVT $version." }
+          $sums = (Get-Content target/release/dist/SHA256SUMS.txt) -join "`n"
+          $tick = [char]96
+          $fence = "$tick$tick$tick"
+          $repo = "${{ github.repository }}"
+          $body = @(
+            $news,
+            '',
+            '## Какой файл скачать',
+            '',
+            "| Файл | Кому |",
+            "|---|---|",
+            "| **KVT-$version-setup.exe** | Первая установка. Поверх установленного KVT тоже обновляет. |",
+            "| **KVT-$version-update.exe** | KVT уже установлен: обновление в несколько мегабайт, настройки и подписки сохранятся. |",
+            "| **KVT-$version-offline-setup.exe** | Компьютер без интернета: WebView2 уже внутри. |",
+            '',
+            'Нужна 64-битная Windows 10 (22H2) или 11.',
+            '',
+            '**«Система Windows защитила ваш компьютер»** — у KVT пока нет платного сертификата подписи. Нажмите «Подробнее» → «Выполнить в любом случае».',
+            '',
+            '## Проверка подлинности',
+            '',
+            'SHA-256 (сравните с `Get-FileHash <файл>` в PowerShell):',
+            '',
+            $fence,
+            $sums,
+            $fence,
+            '',
+            "Установщики собраны GitHub Actions из исходников этого репозитория: ``gh attestation verify <файл> --repo $repo``."
+          ) -join "`n"
+          Set-Content -Path release-notes.md -Value $body -Encoding UTF8
+          # GitHub завершает шаг кодом последней внешней команды — неудачный git show
+          # выше не ошибка, описание собрано из запасного источника.
+          $global:LASTEXITCODE = 0
+
+      - name: Публикация на странице Releases
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $sums = Get-Content target/release/dist/SHA256SUMS.txt -Raw
-          $notes = @"
-          Какой файл скачать:
-          - **KVT-*-update.exe** — если KVT уже установлен: обновление в несколько мегабайт,
-            настройки и подписки сохранятся. Если версия слишком старая, он сам предложит
-            полную установку.
-          - **KVT-*-setup.exe** — первая установка (WebView2 докачается, если его нет).
-            Поверх установленного KVT тоже обновляет.
-          - **KVT-*-offline-setup.exe** — для компьютера без интернета (WebView2 внутри).
-
-          Windows может показать «Система Windows защитила ваш компьютер»: у KVT пока нет
-          сертификата подписи. Нажмите «Подробнее» → «Выполнить в любом случае».
-
-          SHA-256:
-          ``````
-          $sums
-          ``````
-          Происхождение: ``gh attestation verify <файл> --repo ${{ github.repository }}``
-          "@
+          $version = $env:TAG.TrimStart('v')
+          $title = if ($version.StartsWith('0.')) { "KVT $version (бета)" } else { "KVT $version" }
           # PowerShell не раскрывает * для внешних программ — список файлов явно.
           $files = (Get-ChildItem target/release/dist -File).FullName
-          gh release create "${{ github.ref_name }}" --draft --title "KVT ${{ github.ref_name }}" --notes $notes @files
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG @files --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'не удалось загрузить файлы' }
+            gh release edit $env:TAG --draft=false --latest --title $title --notes-file release-notes.md
+          } else {
+            gh release create $env:TAG --latest --title $title --notes-file release-notes.md @files
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'не удалось опубликовать релиз' }

@@ -1,11 +1,37 @@
+# Сборка
 /target
-node_modules/
 /app/dist
 /app/src-tauri/gen
+/app/src-tauri/target
 /app/.svelte-kit
+node_modules/
+
+# Ядра, Wintun и комплект zapret скачиваются скриптами (scripts/fetch-*.ps1)
+# по зафиксированным SHA-256 и в репозиторий не кладутся.
+/app/src-tauri/binaries/
+
+# Готовые установщики и архивы
+*.exe
+*.msi
+*.zip
+SHA256SUMS.txt
+
+# Личные заметки и планы разработки
+/docs/
+
+# Редакторы и инструменты разработчика
+/.vscode/
+/.idea/
+/.claude/
+*.code-workspace
+*.swp
+*~
+
+# Журналы, временные файлы, система
 *.log
+*.tmp
+.env
+.env.*
 .DS_Store
 Thumbs.db
-
-# бинарники ядер кладутся при сборке установщика, в репозиторий не коммитятся
-/app/src-tauri/binaries/
+desktop.ini
