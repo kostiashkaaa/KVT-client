@@ -7,9 +7,11 @@
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::os::windows::process::CommandExt as _;
 use std::ptr::null_mut;
+use std::sync::Mutex;
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GetAdaptersAddresses, GetIpForwardTable2, GetIpNetTable2,
     GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
@@ -290,6 +292,32 @@ pub fn current_named() -> Option<Network> {
     current_with(true)
 }
 
+/// MAC шлюза, который видели последним, — по адаптеру и адресу шлюза.
+type MacKey = (String, Ipv4Addr);
+static KNOWN_MACS: Mutex<Option<HashMap<MacKey, [u8; 6]>>> = Mutex::new(None);
+
+/// MAC шлюза с памятью. Пока весь трафик идёт в туннель, компьютер почти не говорит
+/// с роутером напрямую, и его запись в таблице ARP устаревает и пропадает. Без памяти
+/// отпечаток сети в этот момент менялся бы (MAC → адрес шлюза), а когда запись
+/// возвращалась — менялся обратно. Профили сетей принимали каждое такое мигание за
+/// смену сети, и в «Гибриде» KVT переподключался раз в пару минут. Новый MAC при
+/// том же шлюзе (другой роутер) по-прежнему меняет отпечаток.
+fn stable_mac(
+    known: &mut HashMap<MacKey, [u8; 6]>,
+    guid: &str,
+    gateway: Ipv4Addr,
+    seen: Option<[u8; 6]>,
+) -> Option<[u8; 6]> {
+    let key = (guid.to_owned(), gateway);
+    match seen {
+        Some(mac) => {
+            known.insert(key, mac);
+            Some(mac)
+        }
+        None => known.get(&key).copied(),
+    }
+}
+
 fn current_with(named: bool) -> Option<Network> {
     let all = adapters();
     let a = pick(&all)?;
@@ -299,8 +327,18 @@ fn current_with(named: bool) -> Option<Network> {
         .then(wifi_name)
         .flatten()
         .unwrap_or_else(|| a.name.clone());
+    let seen = gateway_mac(a.luid, gateway);
+    let mac = {
+        let mut guard = KNOWN_MACS.lock().unwrap_or_else(|e| e.into_inner());
+        stable_mac(
+            guard.get_or_insert_with(HashMap::new),
+            &a.guid,
+            gateway,
+            seen,
+        )
+    };
     Some(Network {
-        key: fingerprint(kind, gateway, gateway_mac(a.luid, gateway), &a.guid),
+        key: fingerprint(kind, gateway, mac, &a.guid),
         label,
         kind,
         dns: a.dns.clone(),
@@ -324,6 +362,28 @@ mod tests {
             gateway: gateway.then_some(Ipv4Addr::new(192, 168, 1, 1)),
             dns: vec![],
         }
+    }
+
+    #[test]
+    fn network_key_survives_arp_entry_expiring() {
+        let gw = Ipv4Addr::new(192, 168, 1, 1);
+        let router = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let mut known = HashMap::new();
+        let key = |known: &mut HashMap<MacKey, [u8; 6]>, seen| {
+            let mac = stable_mac(known, "{eth}", gw, seen);
+            fingerprint(NetKind::Ethernet, gw, mac, "{eth}")
+        };
+        let with_mac = key(&mut known, Some(router));
+        // Туннель поднят, запись ARP пропала — сеть та же.
+        assert_eq!(key(&mut known, None), with_mac);
+        assert_eq!(key(&mut known, Some(router)), with_mac);
+        // Другой роутер с тем же адресом — другая сеть.
+        assert_ne!(key(&mut known, Some([1, 2, 3, 4, 5, 6])), with_mac);
+        // Шлюз ни разу не видели — как раньше, по адресу и адаптеру.
+        assert_eq!(
+            stable_mac(&mut known, "{wifi}", Ipv4Addr::new(10, 0, 0, 1), None),
+            None
+        );
     }
 
     #[test]

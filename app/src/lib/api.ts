@@ -1332,7 +1332,7 @@ export interface About {
 export async function aboutInfo(): Promise<About> {
   if (!inTauri) {
     return {
-      version: "0.9.1",
+      version: "0.9.2",
       cores: { xray: "26.10.31", "sing-box": "1.14.4", wintun: "0.14.1" },
       sourceUrl: "https://github.com/kostiashkaaa/KVT-client",
       licenses: true,
@@ -1360,13 +1360,13 @@ export interface UpdateStatus {
 /** Что известно о новой версии — без запроса в сеть. */
 export async function updateStatus(): Promise<UpdateStatus> {
   // В предпросмотре — как будто вышла новая версия: видно плашку и точку у «Настроек».
-  if (!inTauri) return { current: "0.9.1", latest: "0.9.2", available: true, checkedAt: Date.now(), error: null };
+  if (!inTauri) return { current: "0.9.2", latest: "0.9.3", available: true, checkedAt: Date.now(), error: null };
   return invoke<UpdateStatus>("update_status");
 }
 
 /** Спросить у GitHub сейчас (не чаще раза в минуту). */
 export async function updateCheck(): Promise<UpdateStatus> {
-  if (!inTauri) return { current: "0.9.1", latest: "0.9.2", available: true, checkedAt: Date.now(), error: null };
+  if (!inTauri) return { current: "0.9.2", latest: "0.9.3", available: true, checkedAt: Date.now(), error: null };
   return invoke<UpdateStatus>("update_check");
 }
 

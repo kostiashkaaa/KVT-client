@@ -140,6 +140,14 @@ async fn on_join(app: &AppHandle, retry: bool) -> bool {
         state.user_acted();
     }
     if plan.connect || reconnect {
+        if reconnect {
+            tracing::info!(
+                hybrid = old_mode == "hybrid",
+                mode_changed,
+                other_strategy,
+                "сеть сменилась — переподключение"
+            );
+        }
         let _ = connect_current(app, true).await;
     } else if plan.disconnect {
         let _ = disconnect_service().await;
