@@ -8,7 +8,7 @@
 //! одного пути зависеть нельзя.
 
 use kvt_core::captive;
-use kvt_core::ipc::Captive;
+use kvt_core::ipc::{Captive, PingTarget, Response, MAX_PING_TARGETS};
 use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
 use kvt_core::rulesync::Http;
 use std::net::{IpAddr, Ipv4Addr};
@@ -129,6 +129,35 @@ fn describe(e: reqwest::Error) -> String {
         "соединение оборвалось во время загрузки".into()
     } else {
         "ошибка сети".into()
+    }
+}
+
+/// TCP-пинг серверов напрямую через физический адаптер: окно при подключённом
+/// VPN пингует через TUN, и тот принимает соединение сам — за 0 мс.
+pub async fn ping(targets: Vec<Option<PingTarget>>) -> Response {
+    if targets.len() > MAX_PING_TARGETS {
+        return Response::Error {
+            message: "Слишком много серверов для пинга за раз".into(),
+        };
+    }
+    let Some(local) = crate::wfp::physical_ipv4() else {
+        return Response::Error {
+            message: "Не найден сетевой адаптер для пинга мимо VPN".into(),
+        };
+    };
+    let targets: Vec<Option<(String, u16)>> = targets
+        .into_iter()
+        .map(|t| t.map(|t| (t.host, t.port)))
+        .collect();
+    Response::Ping {
+        results: kvt_core::tester::ping_all(
+            &targets,
+            Some(local),
+            Origin::Service,
+            Duration::from_secs(3),
+            8,
+        )
+        .await,
     }
 }
 

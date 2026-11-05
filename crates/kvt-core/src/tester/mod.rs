@@ -13,9 +13,10 @@ use crate::governor::{Decision, NetGovernor};
 use crate::model::{Protocol, Server};
 use crate::netlog::{self, Origin, Purpose, Route};
 use crate::probe::{classify, ProbeObservation, Verdict};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::future::Future;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -172,7 +173,7 @@ pub fn log_probe(sni: &str, verdict: Verdict, observation: &ProbeObservation) {
 }
 
 /// Результат быстрой проверки одного сервера.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum QuickResult {
     Reachable {
@@ -190,19 +191,39 @@ pub async fn quick_check(
     timeout: Duration,
     parallel: usize,
 ) -> Vec<QuickResult> {
+    let targets: Vec<Option<(String, u16)>> = servers
+        .iter()
+        .map(|s| {
+            // UDP-протоколы (Hysteria2) TCP-пингом не проверить.
+            (!matches!(s.protocol, Protocol::Hysteria2 { .. })).then(|| (s.address.clone(), s.port))
+        })
+        .collect();
+    ping_all(&targets, None, Origin::App, timeout, parallel).await
+}
+
+/// TCP-пинг списка адресов (`None` — не проверять). `local` — адрес источника:
+/// сокет, привязанный к адресу физического адаптера, идёт мимо TUN (так служба
+/// пингует, когда VPN подключён, — иначе соединение принял бы сам TUN за 0 мс).
+pub async fn ping_all(
+    targets: &[Option<(String, u16)>],
+    local: Option<Ipv4Addr>,
+    origin: Origin,
+    timeout: Duration,
+    parallel: usize,
+) -> Vec<QuickResult> {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(parallel.max(1)));
     let mut set = JoinSet::new();
-    for (i, s) in servers.iter().enumerate() {
-        if matches!(s.protocol, Protocol::Hysteria2 { .. }) {
+    for (i, t) in targets.iter().enumerate() {
+        let Some((host, port)) = t.clone() else {
             continue;
-        }
-        let (host, port, sem) = (s.address.clone(), s.port, Arc::clone(&semaphore));
+        };
+        let sem = Arc::clone(&semaphore);
         set.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            (i, tcp_ping(&host, port, timeout).await)
+            (i, ping_logged(&host, port, local, origin, timeout).await)
         });
     }
-    let mut out = vec![QuickResult::NotApplicable; servers.len()];
+    let mut out = vec![QuickResult::NotApplicable; targets.len()];
     while let Some(Ok((i, r))) = set.join_next().await {
         out[i] = r;
     }
@@ -211,17 +232,20 @@ pub async fn quick_check(
 
 // TODO(этап 3): резолвить имена серверов через выбранный DoH, а не системный DNS.
 pub async fn tcp_ping(host: &str, port: u16, timeout: Duration) -> QuickResult {
-    let result = tcp_ping_inner(host, port, timeout).await;
+    ping_logged(host, port, None, Origin::App, timeout).await
+}
+
+async fn ping_logged(
+    host: &str,
+    port: u16,
+    local: Option<Ipv4Addr>,
+    origin: Origin,
+    timeout: Duration,
+) -> QuickResult {
+    let result = tcp_ping_inner(host, port, local, timeout).await;
     let target = format!("{host}:{port}");
-    let event = |outcome| {
-        netlog::Event::new(
-            Origin::App,
-            Purpose::ServerPing,
-            &target,
-            Route::Direct,
-            outcome,
-        )
-    };
+    let event =
+        |outcome| netlog::Event::new(origin, Purpose::ServerPing, &target, Route::Direct, outcome);
     netlog::record(match &result {
         QuickResult::Reachable { latency_ms } => {
             event(netlog::Outcome::Ok).ms(Duration::from_millis(*latency_ms))
@@ -233,16 +257,36 @@ pub async fn tcp_ping(host: &str, port: u16, timeout: Duration) -> QuickResult {
     result
 }
 
-async fn tcp_ping_inner(host: &str, port: u16, timeout: Duration) -> QuickResult {
+async fn tcp_ping_inner(
+    host: &str,
+    port: u16,
+    local: Option<Ipv4Addr>,
+    timeout: Duration,
+) -> QuickResult {
     let addrs = match tokio::time::timeout(timeout, tokio::net::lookup_host((host, port))).await {
         Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
         _ => return QuickResult::DnsFailed,
     };
-    let Some(addr) = addrs.first() else {
+    // С адресом источника IPv4 годится только IPv4-адрес сервера.
+    let addr = match local {
+        Some(_) => addrs.iter().find(|a| a.is_ipv4()),
+        None => addrs.first(),
+    };
+    let Some(&addr) = addr else {
         return QuickResult::DnsFailed;
     };
     let start = Instant::now();
-    match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await {
+    let connect = async {
+        match local {
+            Some(ip) => {
+                let socket = tokio::net::TcpSocket::new_v4()?;
+                socket.bind(SocketAddr::from((ip, 0)))?;
+                socket.connect(addr).await
+            }
+            None => tokio::net::TcpStream::connect(addr).await,
+        }
+    };
+    match tokio::time::timeout(timeout, connect).await {
         Ok(Ok(_stream)) => QuickResult::Reachable {
             latency_ms: start.elapsed().as_millis() as u64,
         },
@@ -476,6 +520,24 @@ mod tests {
             tcp_ping("127.0.0.1", port, Duration::from_secs(2)).await,
             QuickResult::Reachable { .. }
         ));
+    }
+
+    /// Так пингует служба при подключённом VPN: сокет привязан к адресу источника.
+    #[tokio::test]
+    async fn ping_all_from_local_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+        let out = ping_all(
+            &[Some(("127.0.0.1".into(), port)), None],
+            Some(Ipv4Addr::LOCALHOST),
+            Origin::Service,
+            Duration::from_secs(2),
+            4,
+        )
+        .await;
+        assert!(matches!(out[0], QuickResult::Reachable { .. }), "{out:?}");
+        assert_eq!(out[1], QuickResult::NotApplicable);
     }
 
     #[tokio::test]

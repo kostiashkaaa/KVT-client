@@ -4,7 +4,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-export type Verdict = "ok" | "suspicious" | "avoid";
 
 export interface ServerSummary {
   /** Постоянный ключ сервера: выбор и проверки привязаны к нему, а не к номеру. */
@@ -20,7 +19,6 @@ export interface ServerSummary {
   security: string;
   sni: string | null;
   core: "xray" | "sing-box";
-  fingerprintAdvice: Verdict | null;
 }
 
 export interface SubscriptionInfo {
@@ -260,7 +258,6 @@ function previewServer(name: string, i: number, group: string): ServerSummary {
     security: "reality",
     sni: "www.microsoft.com",
     core: "xray",
-    fingerprintAdvice: i % 5 === 1 ? "suspicious" : "ok",
   };
 }
 

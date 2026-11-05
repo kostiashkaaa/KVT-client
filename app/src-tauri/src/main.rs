@@ -34,8 +34,8 @@ mod zapret;
 use kvt_core::compile::DnsPlan;
 use kvt_core::core_select::{select_core, CoreKind};
 use kvt_core::governor::{NetGovernor, NetPolicy};
-use kvt_core::ipc::{ConnectPlan, Request, Response, ServiceStatus, Session};
-use kvt_core::model::{FingerprintAdvice, Security, Server, Transport};
+use kvt_core::ipc::{self, ConnectPlan, Request, Response, ServiceStatus, Session};
+use kvt_core::model::{Protocol, Security, Server, Transport};
 use kvt_core::routing::presets::{self, RoutingSettings};
 use kvt_core::subscription::SubscriptionMeta;
 use kvt_core::tester::{self, Outcome, QuickResult};
@@ -258,7 +258,6 @@ pub(crate) struct ServerSummary {
     security: &'static str,
     sni: Option<String>,
     core: CoreKind,
-    fingerprint_advice: Option<FingerprintAdvice>,
 }
 
 impl ServerSummary {
@@ -271,10 +270,10 @@ impl ServerSummary {
             Transport::Xhttp { .. } => "xhttp",
             Transport::Quic => "quic",
         };
-        let (security, fingerprint) = match &s.security {
-            Security::None => ("none", None),
-            Security::Tls(t) => ("tls", t.fingerprint),
-            Security::Reality(r) => ("reality", Some(r.fingerprint)),
+        let security = match &s.security {
+            Security::None => "none",
+            Security::Tls(_) => "tls",
+            Security::Reality(_) => "reality",
         };
         let (flag, name) = kvt_core::flag::split_flag(&s.name);
         Self {
@@ -288,7 +287,6 @@ impl ServerSummary {
             security,
             sni: s.visible_sni().map(str::to_owned),
             core: select_core(s).core,
-            fingerprint_advice: fingerprint.map(|f| f.advice()),
         }
     }
 }
@@ -390,7 +388,32 @@ async fn quick_check(
     state: State<'_, AppState>,
 ) -> Result<HashMap<String, QuickResult>, String> {
     let (keys, servers) = servers_of(&state, group.as_deref())?;
-    let results = tester::quick_check(&servers, Duration::from_secs(3), 8).await;
+    // С VPN соединение из окна принял бы сам TUN (за 0 мс) — пингует служба,
+    // напрямую через физический адаптер.
+    let results = if matches!(
+        query_status().await,
+        Ok(Some(
+            ServiceStatus::Connected { .. } | ServiceStatus::Connecting
+        ))
+    ) {
+        let targets = servers
+            .iter()
+            .map(|s| {
+                (!matches!(s.protocol, Protocol::Hysteria2 { .. })).then(|| ipc::PingTarget {
+                    host: s.address.clone(),
+                    port: s.port,
+                })
+            })
+            .collect();
+        match service_client::call(Request::Ping { targets }).await {
+            Ok(Response::Ping { results }) if results.len() == servers.len() => results,
+            Ok(Response::Error { message }) => return Err(message),
+            Ok(_) => return Err(crate::errors::UNEXPECTED.into()),
+            Err(e) => return Err(e),
+        }
+    } else {
+        tester::quick_check(&servers, Duration::from_secs(3), 8).await
+    };
     Ok(keys.into_iter().zip(results).collect())
 }
 

@@ -136,6 +136,7 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
         Request::CaptiveCheck => Response::Captive {
             state: crate::net::captive_check().await,
         },
+        Request::Ping { targets } => crate::net::ping(targets).await,
         Request::Disconnect => {
             state.supervisor.stop().await;
             state.status = ServiceStatus::Disconnected;

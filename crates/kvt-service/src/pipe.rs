@@ -76,6 +76,9 @@ async fn handle_client(mut pipe: NamedPipeServer, state: Arc<Mutex<State>>) -> a
         pipe.read_exact(&mut body).await?;
 
         let response = match ipc::decode::<Request>(&body) {
+            // Пинг идёт секунды и состояния не трогает: не держим блокировку,
+            // чтобы окно тем временем получало статус.
+            Ok(Request::Ping { targets }) => crate::net::ping(targets).await,
             Ok(request) => handler::handle(&mut *state.lock().await, request).await,
             Err(_) => Response::Error {
                 message: "неизвестная команда".into(),

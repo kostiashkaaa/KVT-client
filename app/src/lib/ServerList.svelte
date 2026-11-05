@@ -253,19 +253,6 @@
                 <span class="radio" aria-hidden="true"></span>
                 <Flag code={s.flag} />
                 <span class="name">{s.name}</span>
-                <!-- Ячейка есть всегда, чтобы колонки сетки не съезжали. -->
-                <span class="warn">
-                  {#if s.fingerprintAdvice && s.fingerprintAdvice !== "ok"}
-                    <span
-                      class="warn-icon"
-                      role="img"
-                      aria-label="Подозрительный отпечаток TLS"
-                      title="Отпечаток TLS этого сервера чаще попадает под подозрение у ТСПУ. Попросите провайдера сменить fp на firefox или edge."
-                    >
-                      <Icon name="warning" size={16} />
-                    </span>
-                  {/if}
-                </span>
                 <span class="tag">{label(s)}</span>
                 <!-- Новый итог проверки проявляется, а не подменяет прежний скачком. -->
                 {#key l.text}
@@ -451,7 +438,7 @@
 
   .row {
     display: grid;
-    grid-template-columns: 16px 20px 1fr auto auto 72px;
+    grid-template-columns: 16px 20px 1fr auto 72px;
     align-items: center;
     gap: var(--space-3);
     width: 100%;
@@ -498,13 +485,6 @@
     font-family: var(--font), "Segoe UI Emoji";
     white-space: nowrap;
     text-overflow: ellipsis;
-  }
-
-  .warn,
-  .warn-icon {
-    display: inline-flex;
-    min-width: 16px;
-    color: var(--warn);
   }
 
   .tag {
@@ -555,7 +535,7 @@
     }
 
     .row {
-      grid-template-columns: 16px 20px 1fr auto 64px;
+      grid-template-columns: 16px 20px 1fr 64px;
     }
   }
 </style>

@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
+/// Сколько адресов можно пингнуть одной командой `Ping`.
+pub const MAX_PING_TARGETS: usize = 1024;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +50,17 @@ pub enum Request {
     /// Просит ли сеть войти (отель, кафе): проверка напрямую через физический
     /// адаптер, мимо туннеля и kill switch.
     CaptiveCheck,
+    /// TCP-пинг серверов напрямую через физический адаптер — когда VPN подключён,
+    /// пинг из окна принял бы сам TUN. `None` — не проверять (UDP-протоколы).
+    Ping {
+        targets: Vec<Option<PingTarget>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PingTarget {
+    pub host: String,
+    pub port: u16,
 }
 
 /// Итог проверки сети на страницу входа.
@@ -178,6 +191,10 @@ pub enum Response {
     },
     Captive {
         state: Captive,
+    },
+    /// Результаты в порядке `targets`.
+    Ping {
+        results: Vec<crate::tester::QuickResult>,
     },
 }
 
