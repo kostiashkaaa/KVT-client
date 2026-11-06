@@ -99,7 +99,7 @@
       case "dns_failed":
         return { text: "DNS", tone: "bad", hint: "Не удалось найти адрес сервера" };
       case "not_applicable":
-        return { text: "UDP", tone: "muted", hint: "Hysteria2 работает по UDP — проверяется только при подключении" };
+        return { text: "UDP", tone: "muted", hint: "Hysteria2 и TUIC работают по UDP — проверяются только при подключении" };
       default:
         return { text: "—", tone: "muted", hint: "" };
     }

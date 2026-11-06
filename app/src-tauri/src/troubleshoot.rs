@@ -10,7 +10,6 @@ use crate::health::{self, Trace};
 use crate::prober::CoreProber;
 use crate::{display_name, query_status, watchdog, AppState};
 use kvt_core::ipc::ServiceStatus;
-use kvt_core::model::Protocol;
 use kvt_core::probe::{classify, Verdict};
 use kvt_core::tester::{sni_key, tcp_ping, Outcome, Prober, QuickResult};
 use serde::Serialize;
@@ -521,7 +520,7 @@ async fn gather(state: &AppState) -> Facts {
     f.server = Some(display_name(server));
 
     let connected = matches!(f.service, Some(ServiceStatus::Connected { .. }));
-    if !matches!(server.protocol, Protocol::Hysteria2 { .. }) {
+    if !server.protocol.is_quic() {
         f.server_tcp = Some(tcp_ping(&server.address, server.port, Duration::from_secs(4)).await);
     }
     let server_down = matches!(

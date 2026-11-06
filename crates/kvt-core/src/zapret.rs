@@ -440,17 +440,64 @@ pub struct RenderContext<'a> {
 }
 
 /// Готовые аргументы winws.
+///
+/// Наши исключения добавляются в профили, где их нет: `ipset-exclude-user.txt` (адреса
+/// VPN-серверов) — в каждый, `list-exclude-user.txt` (SNI серверов, «Никогда не
+/// трогать», прокси Telegram) — в профили, которые и так выбираются по имени хоста.
+/// У Flowseal они есть не везде: например, в ALT9 профиль `--hostlist=list-google.txt`
+/// с `hostfakesplit` идёт без исключений — и рукопожатие с VPN-сервером, SNI которого
+/// совпал с доменом из списка, попадало под стратегию.
 pub fn render(strategy: &Strategy, ctx: &RenderContext<'_>) -> Vec<String> {
-    let mut out = Vec::with_capacity(strategy.args.len() + 1);
+    let mut out = Vec::with_capacity(strategy.args.len() + 16);
     if let Some(index) = ctx.interface {
         out.push(format!("--wf-iface={index}"));
     }
-    out.extend(strategy.args.iter().map(|a| {
-        a.replace(BIN, ctx.bin)
-            .replace(LISTS, ctx.lists)
-            .replace(GAME_TCP, ctx.game.tcp())
-            .replace(GAME_UDP, ctx.game.udp())
-    }));
+    let args: Vec<String> = strategy
+        .args
+        .iter()
+        .map(|a| {
+            a.replace(BIN, ctx.bin)
+                .replace(LISTS, ctx.lists)
+                .replace(GAME_TCP, ctx.game.tcp())
+                .replace(GAME_UDP, ctx.game.udp())
+        })
+        .collect();
+    let hostlist_exclude = format!("--hostlist-exclude={}list-exclude-user.txt", ctx.lists);
+    let ipset_exclude = format!("--ipset-exclude={}ipset-exclude-user.txt", ctx.lists);
+    // Профиль — от первого фильтра до `--new`; `--wf-*` перед ним — общие параметры.
+    let mut profile: Vec<String> = Vec::new();
+    let close = |profile: &mut Vec<String>, out: &mut Vec<String>| {
+        if profile.iter().any(|a| a.starts_with("--filter-")) {
+            // По адресу — везде: имя хоста для этого не нужно.
+            if !profile.contains(&ipset_exclude) {
+                profile.push(ipset_exclude.clone());
+            }
+            // По имени — только туда, где профиль и так выбирается по имени хоста.
+            // Непустой хостлист (даже исключающий) делает профиль недоступным для
+            // трафика без имени хоста: голос Discord по UDP, игровой фильтр по IP
+            // перестали бы обрабатываться.
+            let by_name = profile.iter().any(|a| {
+                a.starts_with("--hostlist=")
+                    || a.starts_with("--hostlist-domains=")
+                    || a.starts_with("--hostlist-exclude")
+            });
+            if by_name && !profile.contains(&hostlist_exclude) {
+                profile.push(hostlist_exclude.clone());
+            }
+        }
+        out.append(profile);
+    };
+    for a in args {
+        if a == "--new" {
+            close(&mut profile, &mut out);
+            out.push(a);
+        } else if a.starts_with("--wf-") && profile.is_empty() {
+            out.push(a);
+        } else {
+            profile.push(a);
+        }
+    }
+    close(&mut profile, &mut out);
     out
 }
 
@@ -581,6 +628,47 @@ start "zapret: %~n0" /min "%BIN%winws.exe" --wf-tcp=80,443,2053,%GameFilterTCP% 
             },
         );
         assert!(all[0].ends_with("1024-65535"));
+    }
+
+    /// Исключения KVT — в каждом профиле, даже где у Flowseal их нет.
+    #[test]
+    fn our_exclusions_reach_every_profile() {
+        let s = parse_bat("general (ALT4)", GENERAL).unwrap();
+        let args = render(
+            &s,
+            &RenderContext {
+                bin: "b\\",
+                lists: "l\\",
+                game: GameFilter::Off,
+                interface: Some(7),
+            },
+        );
+        let profiles: Vec<&[String]> = args.split(|a| a == "--new").collect();
+        assert_eq!(
+            profiles.len(),
+            s.args.iter().filter(|a| *a == "--new").count() + 1
+        );
+        for p in &profiles {
+            let hostlist = p
+                .iter()
+                .filter(|a| *a == r"--hostlist-exclude=l\list-exclude-user.txt")
+                .count();
+            let ipset = p
+                .iter()
+                .filter(|a| *a == r"--ipset-exclude=l\ipset-exclude-user.txt")
+                .count();
+            let by_name = p.iter().any(|a| a.starts_with("--hostlist="));
+            assert_eq!(ipset, 1, "{p:?}");
+            // Профили без имени хоста (игровой фильтр по IP, catch-all) не должны
+            // получить хостлист — иначе winws перестанет их выбирать.
+            assert_eq!(hostlist, usize::from(by_name), "{p:?}");
+        }
+        assert!(profiles
+            .iter()
+            .any(|p| p.iter().any(|a| a.starts_with("--ipset="))
+                && !p.iter().any(|a| a.starts_with("--hostlist"))));
+        // Общие параметры остаются в начале, до первого профиля.
+        assert!(args[0].starts_with("--wf-iface") && args[1].starts_with("--wf-tcp"));
     }
 
     #[test]

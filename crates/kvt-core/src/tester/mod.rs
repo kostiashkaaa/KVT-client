@@ -10,7 +10,7 @@
 mod emulator;
 
 use crate::governor::{Decision, NetGovernor};
-use crate::model::{Protocol, Server};
+use crate::model::Server;
 use crate::netlog::{self, Origin, Purpose, Route};
 use crate::probe::{classify, ProbeObservation, Verdict};
 use serde::{Deserialize, Serialize};
@@ -195,7 +195,7 @@ pub async fn quick_check(
         .iter()
         .map(|s| {
             // UDP-протоколы (Hysteria2) TCP-пингом не проверить.
-            (!matches!(s.protocol, Protocol::Hysteria2 { .. })).then(|| (s.address.clone(), s.port))
+            (!s.protocol.is_quic()).then(|| (s.address.clone(), s.port))
         })
         .collect();
     ping_all(&targets, None, Origin::App, timeout, parallel).await

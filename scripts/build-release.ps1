@@ -40,11 +40,12 @@ Invoke-Checked 'служба (release)' { cargo build --release --locked -p kvt-
 Invoke-Sign (Join-Path $release 'kvt-service.exe')
 
 if (-not $SkipFetch) {
-    foreach ($dir in 'cores', 'zapret') {
+    foreach ($dir in 'cores', 'zapret', 'tgproxy') {
         Remove-Item -Recurse -Force (Join-Path $release $dir) -ErrorAction SilentlyContinue
     }
     Invoke-Checked 'ядра и Wintun' { powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'fetch-cores.ps1') -Dest (Join-Path $release 'cores') }
     Invoke-Checked 'комплект zapret' { powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'fetch-zapret.ps1') -Dest (Join-Path $release 'zapret') }
+    Invoke-Checked 'прокси для Telegram' { powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'fetch-tgproxy.ps1') -Dest (Join-Path $release 'tgproxy') }
 }
 
 # Тексты лицензий — в одной папке рядом с kvt.exe («О программе» → «Тексты лицензий»).
@@ -59,6 +60,7 @@ if (Test-Path $coreLicenses) {
     Remove-Item -Recurse -Force $coreLicenses
 }
 Copy-Item (Join-Path $release 'zapret\LICENSE.txt') (Join-Path $licenses 'zapret-discord-youtube-LICENSE.txt')
+Copy-Item (Join-Path $release 'tgproxy\LICENSE.txt') (Join-Path $licenses 'tg-ws-proxy-rs-LICENSE.txt')
 
 Push-Location $app
 try {
@@ -104,7 +106,7 @@ finally {
     Pop-Location
 }
 
-# Обновление: kvt.exe и служба всегда, ядра и zapret — если изменились с minVersion.
+# Обновление: kvt.exe и служба всегда, ядра, zapret и прокси Telegram — если изменились с minVersion.
 $baseline = Get-Content (Join-Path $PSScriptRoot 'update-baseline.json') -Raw | ConvertFrom-Json
 $cores = Get-Content (Join-Path $release 'cores\versions.json') -Raw | ConvertFrom-Json
 $coresChanged = $false
@@ -113,6 +115,9 @@ foreach ($name in 'xray', 'sing-box', 'wintun') {
 }
 $zapretVersion = (Get-Content (Join-Path $release 'zapret\VERSION') -Raw).Trim()
 $zapretChanged = $zapretVersion -ne $baseline.components.zapret
+$tgproxyVersion = (Get-Content (Join-Path $release 'tgproxy\VERSION') -Raw).Trim()
+# В установках до 0.9.3 прокси нет вовсе — поле в baseline пустое, и он входит в обновление.
+$tgproxyChanged = $tgproxyVersion -ne $baseline.components.tgproxy
 $makensis = Join-Path $env:LOCALAPPDATA 'tauri\NSIS\makensis.exe'
 $update = Join-Path $dist "KVT-$version-update.exe"
 $defines = @(
@@ -125,9 +130,11 @@ $defines = @(
 )
 if ($coresChanged) { $defines += '/DWITH_CORES' }
 if ($zapretChanged) { $defines += '/DWITH_ZAPRET' }
+if ($tgproxyChanged) { $defines += '/DWITH_TGPROXY' }
 $coresNote = if ($coresChanged) { 'входят' } else { 'не изменились' }
 $zapretNote = if ($zapretChanged) { 'входит' } else { 'не изменился' }
-Write-Host "обновление от $($baseline.minVersion): ядра $coresNote, zapret $zapretNote"
+$tgproxyNote = if ($tgproxyChanged) { 'входит' } else { 'не изменился' }
+Write-Host "обновление от $($baseline.minVersion): ядра $coresNote, zapret $zapretNote, прокси Telegram $tgproxyNote"
 Invoke-Checked 'обновление' { & $makensis /V2 /INPUTCHARSET UTF8 @defines (Join-Path $app 'src-tauri\windows\update.nsi') }
 Invoke-Sign $update
 

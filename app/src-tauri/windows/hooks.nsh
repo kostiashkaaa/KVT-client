@@ -48,9 +48,10 @@
     ${EndIf}
     ; Имя отправителя уведомлений (KVT регистрирует его при запуске).
     DeleteRegKey HKCU "Software\Classes\AppUserModelId\dev.kvt.client"
-    ; Остатки каталогов ядер и zapret, если в них что-то появилось после установки.
+    ; Остатки каталогов ядер, zapret и прокси Telegram, если в них что-то появилось после установки.
     RMDir /r "$INSTDIR\cores"
     RMDir /r "$INSTDIR\zapret"
+    RMDir /r "$INSTDIR\tgproxy"
     RMDir /r "$INSTDIR\licenses"
     RMDir "$INSTDIR"
   ${EndIf}

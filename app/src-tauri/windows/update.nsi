@@ -3,7 +3,8 @@
 ; Собирает scripts\build-release.ps1 тем же makensis, что и полный установщик:
 ;   /DVERSION=0.2.0 /DMIN_VERSION=0.1.0 /DSRC=<target\release> /DOUTFILE=<путь>
 ;   /DPLUGINS=<каталог nsis_tauri_utils.dll> /DICON=<icon.ico>
-;   /DWITH_CORES и /DWITH_ZAPRET — если ядра или комплект zapret изменились с MIN_VERSION.
+;   /DWITH_CORES, /DWITH_ZAPRET и /DWITH_TGPROXY — если ядра, комплект zapret или
+;   прокси для Telegram изменились с MIN_VERSION (в установках до 0.9.3 прокси нет).
 ;
 ; Что делает: находит KVT по реестру установщика; если его нет или версия старше
 ; MIN_VERSION — предлагает полную установку и ничего не меняет. Иначе закрывает
@@ -132,6 +133,9 @@ Section "Обновление"
   !ifdef WITH_ZAPRET
     !insertmacro Backup "zapret"
   !endif
+  !ifdef WITH_TGPROXY
+    !insertmacro Backup "tgproxy"
+  !endif
 
   DetailPrint "Новые файлы…"
   ClearErrors
@@ -143,6 +147,9 @@ Section "Обновление"
   !endif
   !ifdef WITH_ZAPRET
     File /r "${SRC}\zapret"
+  !endif
+  !ifdef WITH_TGPROXY
+    File /r "${SRC}\tgproxy"
   !endif
   StrCpy $2 0
   ${IfNot} ${Errors}
@@ -166,6 +173,9 @@ Section "Обновление"
     !endif
     !ifdef WITH_ZAPRET
       !insertmacro Restore "zapret"
+    !endif
+    !ifdef WITH_TGPROXY
+      !insertmacro Restore "tgproxy"
     !endif
     nsExec::ExecToLog '"$INSTDIR\kvt-service.exe" install'
     Pop $1

@@ -24,7 +24,7 @@ const KEEP: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'.')
     .remove(b'~');
 
-const SUPPORTED: [&str; 4] = ["vless", "trojan", "shadowsocks", "hysteria"];
+const SUPPORTED: [&str; 5] = ["vless", "vmess", "trojan", "shadowsocks", "hysteria"];
 
 /// `None` — это не конфиги Xray (не JSON или ни в одном нет `outbounds`).
 /// Иначе по записи на каждый конфиг с `outbounds`, в порядке подписки.
@@ -68,7 +68,7 @@ fn config_uri(config: &Value) -> Result<String, ParseError> {
         .find(|o| str_at(o, "tag") == Some("proxy"))
         .or_else(|| outbounds.iter().find(supported))
         .ok_or(ParseError::Unsupported(
-            "в конфиге нет подключения VLESS, Trojan, Shadowsocks или Hysteria2",
+            "в конфиге нет подключения VLESS, VMess, Trojan, Shadowsocks или Hysteria2",
         ))?;
     let name = str_at(config, "remarks").unwrap_or_default();
     outbound_uri(outbound, name)
@@ -92,6 +92,20 @@ fn outbound_uri(o: &Value, name: &str) -> Result<String, ParseError> {
                 q.append_pair("encryption", enc);
             }
             ("vless", encode(id), server)
+        }
+        Some("vmess") => {
+            let server = &settings["vnext"][0];
+            let user = &server["users"][0];
+            let id = required(user, "id")?;
+            if user["alterId"].as_u64().is_some_and(|a| a > 0) {
+                return Err(ParseError::Unsupported(
+                    "VMess с alterId (устаревший вариант)",
+                ));
+            }
+            if let Some(cipher) = str_at(user, "security") {
+                q.append_pair("encryption", cipher);
+            }
+            ("vmess", encode(id), server)
         }
         Some("trojan") => {
             let server = &settings["servers"][0];
@@ -371,6 +385,20 @@ mod tests {
     }
 
     #[test]
+    fn vmess_config_becomes_server() {
+        let body = r#"[{"remarks":"VM","outbounds":[{"tag":"proxy","protocol":"vmess",
+            "settings":{"vnext":[{"address":"vm.example.com","port":443,"users":[{"id":"b831381d-6324-4d53-ad4f-8cda48b30811","alterId":0,"security":"auto"}]}]},
+            "streamSettings":{"network":"ws","security":"tls","wsSettings":{"path":"/vm"},"tlsSettings":{"serverName":"vm.example.com"}}}]}]"#;
+        let s = servers(body);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].name, "VM");
+        assert!(
+            matches!(&s[0].protocol, crate::model::Protocol::Vmess { cipher, .. } if cipher == "auto")
+        );
+        assert!(matches!(&s[0].security, Security::Tls(_)));
+    }
+
+    #[test]
     fn whole_body_goes_through_subscription_parser() {
         let c = super::super::parse_subscription_body(&sample());
         assert_eq!(c.servers.len(), 4);
@@ -444,7 +472,7 @@ mod tests {
 
     #[test]
     fn config_without_supported_outbound_is_an_error() {
-        let r = parse(r#"[{"remarks":"x","outbounds":[{"protocol":"vmess"}]}]"#).unwrap();
+        let r = parse(r#"[{"remarks":"x","outbounds":[{"protocol":"wireguard"}]}]"#).unwrap();
         assert!(matches!(r.as_slice(), [Err(ParseError::Unsupported(_))]));
     }
 }

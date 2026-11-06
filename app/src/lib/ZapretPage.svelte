@@ -6,6 +6,9 @@
     onNetworkChanged,
     strategyFor,
     strategyTitle,
+    tgProxyLink,
+    tgProxyOpen,
+    tgProxyStatus,
     zapretAutoselectCancel,
     zapretConflicts,
     zapretInfo,
@@ -17,6 +20,8 @@
     type FlowsealRelease,
     type GameFilter,
     type MaintenanceReport,
+    type TelegramRoute,
+    type TgProxyStatus,
     type Mode,
     type ServiceStatus,
     type ZapretCheck,
@@ -227,6 +232,37 @@
     }
   }
 
+  // ── Telegram ──
+  let tg = $state<TgProxyStatus | null>(null);
+  let tgMessage = $state<string | null>(null);
+  // Прокси запускается вместе с zapret — состояние перечитывается, пока открыта вкладка.
+  $effect(() => {
+    const load = () => void tgProxyStatus().then((s) => (tg = s)).catch(() => {});
+    load();
+    const timer = setInterval(load, 3000);
+    return () => clearInterval(timer);
+  });
+
+  async function connectTelegram() {
+    tgMessage = null;
+    try {
+      await tgProxyOpen();
+      tgMessage = "В Telegram откроется окно «Подключить прокси» — нажмите «Подключиться».";
+    } catch (e) {
+      tgMessage = message(e);
+    }
+  }
+
+  async function copyTelegramLink() {
+    tgMessage = null;
+    try {
+      await navigator.clipboard.writeText(await tgProxyLink());
+      tgMessage = "Ссылка скопирована. Отправьте её себе в «Избранное» в Telegram и нажмите на неё.";
+    } catch (e) {
+      tgMessage = message(e);
+    }
+  }
+
   const driverText = { missing: "не установлен (установится при запуске)", stopped: "установлен", running: "работает" };
   const gameFilters: { id: GameFilter; label: string }[] = [
     { id: "off", label: "Выключен" },
@@ -419,6 +455,75 @@
         {/each}
       </ul>
     {/if}
+  {/if}
+</section>
+
+<!-- Telegram -->
+<section class="card block">
+  <div class="row">
+    <div>
+      <h2>Telegram</h2>
+      <p class="caption">
+        Telegram Desktop ходит через прокси на этом компьютере в любом режиме — один раз подключили, и больше его не
+        перенастраивать. В «Zapret» прокси обходится без VPN-сервера. Работают сообщения, фото и видео; звонки
+        через прокси не идут.
+      </p>
+    </div>
+    <label class="switch">
+      <input type="checkbox" role="switch" checked={zapret.telegram} onchange={(e) => (zapret = { ...zapret, telegram: e.currentTarget.checked })} />
+      <span aria-hidden="true"></span><span class="sr">Прокси для Telegram</span>
+    </label>
+  </div>
+  {#if zapret.telegram}
+    <div class="state">
+      <span class="dot" class:on={tg?.running}></span>
+      <div>
+        {#if tg?.running}
+          <strong>Прокси работает</strong>
+          <p class="caption">Подключите Telegram один раз — дальше он сам будет ходить через прокси.</p>
+        {:else if tg?.error}
+          <strong>Прокси не запустился</strong>
+          <p class="caption">{tg.error}</p>
+        {:else if status?.state === "connected" || status?.state === "zapret"}
+          <strong>Прокси запускается…</strong>
+        {:else}
+          <strong>Прокси выключен</strong>
+          <p class="caption">Запустится, когда KVT подключится — в любом режиме.</p>
+        {/if}
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <span>Путь Telegram в «Гибриде»</span>
+        <p class="caption">
+          {#if zapret.telegramRoute === "direct"}
+            Всегда мимо VPN, как в режиме «Zapret»: меньше нагрузки на сервер. Если прямой путь к Telegram закрыт,
+            прокси уйдёт на запасной через Cloudflare.
+          {:else}
+            Сначала через VPN. Если через сервер Telegram не отвечает, прокси сам переключится на запасной путь через
+            Cloudflare мимо VPN — без переподключения. Медленный, но работающий VPN запасной путь не включает.
+          {/if}
+          В режиме «VPN» прокси всегда ходит через VPN, в «Zapret» — без него.
+        </p>
+      </div>
+      <select
+        aria-label="Путь Telegram в «Гибриде»"
+        value={zapret.telegramRoute}
+        onchange={(e) => (zapret = { ...zapret, telegramRoute: e.currentTarget.value as TelegramRoute })}
+      >
+        <option value="direct">Мимо VPN</option>
+        <option value="vpn_first">Сначала VPN</option>
+      </select>
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" disabled={!tg?.running} onclick={connectTelegram}>Подключить Telegram</button>
+      <button class="btn" onclick={copyTelegramLink}>Скопировать ссылку</button>
+    </div>
+    {#if tgMessage}<p class="caption">{tgMessage}</p>{/if}
+    <p class="caption">
+      Только Telegram Desktop на этом компьютере. Прокси работает, пока запущен KVT (в том числе в трее): если закрыть
+      KVT или выключить прокси, Telegram с этой настройкой не подключится — выключите прокси в настройках Telegram.
+    </p>
   {/if}
 </section>
 

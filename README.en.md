@@ -28,7 +28,7 @@ at all.
 ## Features
 
 - **Subscriptions and keys in one list.** Paste a subscription URL or `vless://`,
-  `trojan://`, `ss://`, `hy2://` keys. Servers show up grouped, with country flags,
+  `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`, `anytls://` keys. Servers show up grouped, with country flags,
   search and a ping check. Subscriptions refresh on their own.
 - **Split routing out of the box.** Russian sites go direct, blocked ones go through
   the VPN, based on the [itdoginfo](https://github.com/itdoginfo/allow-domains) and
@@ -37,6 +37,10 @@ at all.
   [zapret](https://github.com/Flowseal/zapret-discord-youtube) gets around DPI
   throttling, either next to the VPN (Hybrid mode) or instead of it (Zapret mode).
   KVT picks a working strategy for your network.
+- **Telegram without a VPN server.** A proxy for Telegram Desktop
+  ([tg-ws-proxy](https://github.com/valnesfjord/tg-ws-proxy-rs)) runs alongside zapret:
+  press "Connect Telegram" on the Zapret tab once, and messages, photos and videos go
+  through without the VPN.
 - **Kill switch.** If the VPN drops, the internet stays closed until you say otherwise,
   so nothing leaks outside the tunnel.
 - **Automatic server switching.** Once a minute KVT checks that traffic is flowing and
@@ -49,7 +53,7 @@ at all.
   NekoRay/Throne carry over in a couple of clicks.
 
 Protocols: VLESS (Reality, XTLS Vision; TCP, WebSocket, gRPC, HTTPUpgrade, XHTTP),
-Trojan, Shadowsocks, Hysteria2. Cores: [Xray](https://github.com/XTLS/Xray-core) and
+VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS. Cores: [Xray](https://github.com/XTLS/Xray-core) and
 [sing-box](https://github.com/SagerNet/sing-box); KVT chooses the right one per server.
 
 ## Install
@@ -126,8 +130,8 @@ subscriptions too. Your internet connection keeps working afterwards.
 | Mode | Through the VPN | Through zapret | When to use |
 |---|---|---|---|
 | **VPN** | Blocked sites | none | Default |
-| **Hybrid** | Blocked sites except YouTube and Discord | YouTube and Discord | Less load on the server, faster video |
-| **Zapret** | none | YouTube and Discord | You have no VPN server |
+| **Hybrid** | Blocked sites except YouTube and Discord | YouTube and Discord; Telegram via the proxy | Less load on the server, faster video |
+| **Zapret** | none | YouTube and Discord; Telegram via the proxy | You have no VPN server |
 
 Russian sites go direct in every mode. Whether everything else goes through the VPN or
 only blocked sites do is set in the Routing section.
@@ -139,7 +143,8 @@ screen. KVT checks the network, DNS and server and tells you what to do. Another
 or Hybrid mode often helps.
 
 **Where do I get a subscription?** From your VPN provider: an `https://…` link or
-`vless://`, `trojan://`, `ss://`, `hy2://` keys. KVT doesn't sell or advertise keys.
+`vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`, `anytls://` keys.
+KVT doesn't sell or advertise keys.
 
 **Coming from v2rayN, Hiddify or NekoRay?** Subscriptions → "Import from another
 client". For Happ, copy the subscription URL by hand: Happ stores it encrypted.

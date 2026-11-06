@@ -36,8 +36,8 @@
 
   const modes: { id: Mode; title: string; text: string }[] = [
     { id: "vpn", title: "VPN", text: "Заблокированное — через VPN-сервер, российские сайты — напрямую." },
-    { id: "hybrid", title: "Гибрид", text: "YouTube и Discord — через zapret без VPN, остальное заблокированное — через VPN." },
-    { id: "zapret", title: "Zapret", text: "Без VPN-сервера: только обход замедления YouTube и Discord." },
+    { id: "hybrid", title: "Гибрид", text: "YouTube и Discord — через zapret без VPN, Telegram Desktop — через прокси, остальное заблокированное — через VPN." },
+    { id: "zapret", title: "Zapret", text: "Без VPN-сервера: обход замедления YouTube и Discord, Telegram Desktop — через прокси." },
   ];
 </script>
 
@@ -57,7 +57,7 @@
   {#if step === 1}
     <h2 id="onboarding-title">Добавьте подписку или ключ</h2>
     <p class="muted">
-      Ссылку на подписку (https://…) или ключ (vless://, trojan://, hy2://…) даёт ваш VPN-провайдер. Пользуетесь
+      Ссылку на подписку (https://…) или ключ (vless://, vmess://, trojan://, hy2://…) даёт ваш VPN-провайдер. Пользуетесь
       v2rayN, Hiddify или NekoRay — KVT перенесёт подписки из них.
     </p>
     <div class="actions">

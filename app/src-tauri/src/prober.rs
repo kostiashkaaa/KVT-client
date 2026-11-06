@@ -10,7 +10,6 @@ use crate::{query_status, AppState};
 use kvt_core::compile::{compile_probe, ProbeInbound};
 use kvt_core::core_select::{select_core, CoreKind};
 use kvt_core::ipc::ServiceStatus;
-use kvt_core::model::Protocol;
 use kvt_core::probe::ProbeObservation;
 use kvt_core::tester::{self, tcp_ping, Outcome, Prober, QuickResult};
 use kvt_core::Server;
@@ -185,7 +184,7 @@ impl Prober for CoreProber {
             ..Default::default()
         };
         // Сначала дешёвая проверка TCP (без TLS); Hysteria2 работает по UDP — её не проверить так.
-        if !matches!(server.protocol, Protocol::Hysteria2 { .. }) {
+        if !server.protocol.is_quic() {
             match tcp_ping(&server.address, server.port, Duration::from_secs(4)).await {
                 QuickResult::DnsFailed => {
                     obs.dns_resolved = false;
@@ -317,7 +316,7 @@ mod tests {
             name: "local".into(),
             address: "127.0.0.1".into(),
             port,
-            protocol: Protocol::Shadowsocks {
+            protocol: kvt_core::model::Protocol::Shadowsocks {
                 method: "aes-128-gcm".into(),
                 password: Secret::new("kvt-test"),
             },

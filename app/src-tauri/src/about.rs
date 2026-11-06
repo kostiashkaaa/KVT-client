@@ -68,7 +68,7 @@ pub fn open_link(target: String) -> Result<(), String> {
     shell_open(&what)
 }
 
-fn shell_open(what: &str) -> Result<(), String> {
+pub(crate) fn shell_open(what: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();

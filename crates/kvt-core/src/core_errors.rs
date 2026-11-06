@@ -182,6 +182,22 @@ mod tests {
         assert!(classify(CoreKind::Xray, "Xray 25.1.1 started").is_none());
     }
 
+    /// Обрыв соединения через туннель — частое и обычно безобидное событие (закрыли
+    /// вкладку, перезапустили программу). Переподключать VPN из-за него нельзя:
+    /// второе срабатывание останавливало подключение, и kill switch закрывал интернет.
+    #[test]
+    fn connection_resets_never_touch_the_connection() {
+        for line in [
+            "2026/11/06 20:15:39 [Warning] [1] app/proxyman/outbound: failed to process outbound traffic > proxy/vless/outbound: connection ends > wsarecv: Удаленный хост принудительно разорвал существующее подключение.",
+            "[Warning] failed to transfer response payload > readfrom tcp: wsarecv: An established connection was aborted by the software in your host machine.",
+            "ERROR connection: read: connection reset by peer",
+        ] {
+            for core in [CoreKind::Xray, CoreKind::SingBox] {
+                assert_eq!(classify(core, line).unwrap().action, Action::Log, "{line}");
+            }
+        }
+    }
+
     #[test]
     fn action_after_count_within_window() {
         let rule = Rule {

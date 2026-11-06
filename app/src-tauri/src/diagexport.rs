@@ -85,6 +85,7 @@ async fn collect(state: &AppState) -> Vec<DiagFile> {
          - kvt.log — журнал приложения;\r\n\
          - service.log — журнал службы;\r\n\
          - core.log — последние строки VPN-ядра;\r\n\
+         - tgproxy.log — журнал прокси для Telegram (без секрета);\r\n\
          - netlog.json — журнал сетевых запросов KVT (только хосты).\r\n",
         version = env!("CARGO_PKG_VERSION"),
         time = timestamp(now),
@@ -138,6 +139,7 @@ async fn collect(state: &AppState) -> Vec<DiagFile> {
         file("kvt.log", crate::applog::tail()),
         file("service.log", service_log),
         file("core.log", core_log),
+        file("tgproxy.log", crate::tgproxy::log_tail()),
         file(
             "netlog.json",
             journal

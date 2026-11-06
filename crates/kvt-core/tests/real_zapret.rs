@@ -30,6 +30,22 @@ fn every_flowseal_strategy_is_accepted() {
             },
         );
         assert!(args.iter().all(|a| !a.contains('%')), "{id}: {args:?}");
+        // KVT добавляет свои исключения, но не меняет, к какому трафику применяется
+        // профиль: хостлист только там, где профиль и так выбирается по имени хоста
+        // (иначе голос Discord и игровой фильтр перестали бы работать).
+        let original: Vec<&[String]> = s.args.split(|a| a == "--new").collect();
+        let rendered: Vec<&[String]> = args.split(|a| a == "--new").collect();
+        assert_eq!(original.len(), rendered.len(), "{id}");
+        for (o, r) in original.iter().zip(&rendered) {
+            let has_hostlist = |p: &[String]| p.iter().any(|a| a.starts_with("--hostlist"));
+            assert_eq!(has_hostlist(o), has_hostlist(r), "{id}: {r:?}");
+            if r.iter().any(|a| a.starts_with("--filter-")) {
+                assert!(
+                    r.iter().any(|a| a.ends_with("ipset-exclude-user.txt")),
+                    "{id}: {r:?}"
+                );
+            }
+        }
         parsed.push(s);
     }
     assert_eq!(parsed.len(), zapret::PREFERRED_ORDER.len());

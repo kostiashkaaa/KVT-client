@@ -5,6 +5,7 @@
       "../../target/release/kvt-service.exe": "kvt-service.exe",
       "../../target/release/cores/": "cores/",
       "../../target/release/zapret/": "zapret/",
+      "../../target/release/tgproxy/": "tgproxy/",
       "../../target/release/licenses/": "licenses/"
     }
   }

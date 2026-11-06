@@ -26,7 +26,10 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
         dns_servers.push(json!(format!("https://{reserve}/dns-query")));
     }
     let config = json!({
-        "log": { "loglevel": "warning" },
+        // Журнал доступа («accepted …» на каждое соединение) выключен: в журнале ядра
+        // остаётся 200 строк, и он вытеснял настоящие ошибки — в экспорте диагностики их
+        // не было видно.
+        "log": { "loglevel": "warning", "access": "none" },
         "dns": {
             "servers": dns_servers,
             "queryStrategy": "UseIPv4"
@@ -148,10 +151,28 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
                 "address": s.address, "port": s.port, "method": method, "password": password.expose()
             }] }),
         ),
+        Protocol::Vmess { id, cipher } => (
+            "vmess",
+            json!({ "vnext": [{ "address": s.address, "port": s.port, "users": [{
+                "id": id.expose(), "security": cipher
+            }] }] }),
+        ),
         Protocol::Hysteria2 { .. } => {
             return Err(CompileError::Unsupported {
                 core: CORE,
                 feature: "Hysteria2 (используйте sing-box)",
+            })
+        }
+        Protocol::Tuic { .. } => {
+            return Err(CompileError::Unsupported {
+                core: CORE,
+                feature: "TUIC (используйте sing-box)",
+            })
+        }
+        Protocol::AnyTls { .. } => {
+            return Err(CompileError::Unsupported {
+                core: CORE,
+                feature: "AnyTLS (используйте sing-box)",
             })
         }
     };

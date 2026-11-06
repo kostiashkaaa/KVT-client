@@ -89,10 +89,12 @@ pub fn current_network(state: State<'_, AppState>) -> NetworkView {
 }
 
 /// Действия профиля при входе в сеть. `retry` — повтор, потому что служба в прошлый
-/// раз ещё не отвечала. Возвращает `false`, если профиль просит включить VPN, а
+/// раз ещё не отвечала. `switched` — компьютер перешёл из одной известной сети в
+/// другую; запуск KVT и короткое «сети нет» (пока поднимается адаптер VPN) сменой не
+/// считаются. Возвращает `false`, если профиль просит включить VPN, а
 /// служба ещё не запустилась (после загрузки Windows она стартует с задержкой) —
 /// тогда цикл повторит попытку.
-async fn on_join(app: &AppHandle, retry: bool) -> bool {
+async fn on_join(app: &AppHandle, retry: bool, switched: bool) -> bool {
     let state = app.state::<AppState>();
     let status = query_status().await.ok().flatten();
     // Работает VPN или только zapret — профилю есть что включать и выключать.
@@ -130,8 +132,11 @@ async fn on_join(app: &AppHandle, retry: bool) -> bool {
     // В гибриде winws привязан к интерфейсу прежней сети, в режиме Zapret у новой
     // сети может быть своя подобранная стратегия, а другой режим требует перезапуска.
     let other_strategy = matches!(&status, Some(ServiceStatus::Zapret { strategy: running }) if *running != strategy);
-    let reconnect =
-        active && !plan.disconnect && (old_mode == "hybrid" || mode_changed || other_strategy);
+    // Гибрид и стратегия zapret — только при настоящей смене сети: иначе каждый запуск
+    // KVT в «Гибриде» переподключал VPN.
+    let reconnect = active
+        && !plan.disconnect
+        && (mode_changed || (switched && (old_mode == "hybrid" || other_strategy)));
     if plan.connect && status.is_none() {
         // Режим уже применён, подключение — когда служба ответит.
         return false;
@@ -165,6 +170,8 @@ const JOIN_RETRIES: u32 = 30;
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last_key: Option<String> = None;
+        // Последняя сеть, которая была на самом деле (без промежутков «сети нет»).
+        let mut last_known: Option<String> = None;
         let mut first = true;
         // Осталось повторов и счётчик действий пользователя, когда повтор назначили.
         let mut pending: Option<(u32, u64)> = None;
@@ -191,7 +198,14 @@ pub fn spawn(app: AppHandle) {
                 }
                 let _ = app.emit(EVENT, view(&state));
                 pending = None;
-                if network.is_some() && !on_join(&app, false).await {
+                let switched = matches!(
+                    (&last_known, &last_key),
+                    (Some(old), Some(new)) if old != new
+                );
+                if last_key.is_some() {
+                    last_known.clone_from(&last_key);
+                }
+                if network.is_some() && !on_join(&app, false, switched).await {
                     pending = Some((JOIN_RETRIES, state.epoch()));
                 }
             } else if let Some((left, epoch)) = pending {
@@ -199,7 +213,7 @@ pub fn spawn(app: AppHandle) {
                 pending = if state.epoch() != epoch || left == 0 {
                     // Пользователь сам подключился или отключился — профиль не вмешивается.
                     None
-                } else if on_join(&app, true).await {
+                } else if on_join(&app, true, false).await {
                     None
                 } else {
                     Some((left - 1, epoch))

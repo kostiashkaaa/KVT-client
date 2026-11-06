@@ -72,6 +72,10 @@ pub struct ZapretChoice {
     pub auto_check: bool,
     /// Если стратегия перестала работать — подобрать новую (в режиме «Zapret»).
     pub auto_pick: bool,
+    /// Прокси для Telegram Desktop: работает, пока KVT подключён в любом режиме.
+    pub telegram: bool,
+    /// Путь прокси в «Гибриде»: сначала через VPN или всегда мимо него.
+    pub telegram_route: kvt_core::tgproxy::Route,
 }
 
 impl Default for ZapretChoice {
@@ -86,6 +90,8 @@ impl Default for ZapretChoice {
             ipset: false,
             auto_check: true,
             auto_pick: true,
+            telegram: true,
+            telegram_route: kvt_core::tgproxy::Route::default(),
         }
     }
 }
@@ -113,7 +119,18 @@ impl ZapretChoice {
             game_filter: self.game_filter,
             tcp_timestamps: self.tcp_timestamps,
             domains: clean(&self.user_domains),
-            exclude_domains: clean(&self.exclude_domains),
+            exclude_domains: {
+                let mut list = clean(&self.exclude_domains);
+                // winws не трогает соединения прокси Telegram: подделка пакетов их рвёт.
+                if self.telegram {
+                    for d in crate::tgproxy::zapret_exclusions() {
+                        if !list.contains(&d) {
+                            list.push(d);
+                        }
+                    }
+                }
+                list
+            },
             ipset: self.ipset,
         }
     }
@@ -1116,11 +1133,30 @@ mod tests {
         let c = ZapretChoice {
             user_domains: vec![" *.Twitch.TV ".into(), "x.com\n--debug".into(), "".into()],
             exclude_domains: vec!["bank.ru".into(), "a b".into()],
+            telegram: false,
             ..Default::default()
         };
         let p = c.plan(None);
         assert_eq!(p.domains, ["twitch.tv"]);
         assert_eq!(p.exclude_domains, ["bank.ru"]);
+    }
+
+    /// С прокси Telegram winws не трогает его соединения.
+    #[test]
+    fn telegram_proxy_is_excluded_from_zapret() {
+        let c = ZapretChoice {
+            exclude_domains: vec!["bank.ru".into()],
+            ..Default::default()
+        };
+        assert!(c.telegram);
+        let p = c.plan(None);
+        assert_eq!(p.exclude_domains[0], "bank.ru");
+        assert!(p.exclude_domains.contains(&"web.telegram.org".to_owned()));
+        assert!(p.exclude_domains.iter().any(|d| d.ends_with(".co.uk")));
+        assert!(p
+            .exclude_domains
+            .iter()
+            .all(|d| kvt_core::zapret::valid_domain(d)));
     }
 
     fn check(passed: u32) -> Check {

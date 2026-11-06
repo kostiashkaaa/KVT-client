@@ -77,7 +77,8 @@
     <div>
       <h2>Zapret</h2>
       <p class="caption">
-        Обход DPI для YouTube и Discord — zapret Flowseal{#if check.last}
+        Обход DPI для YouTube и Discord — zapret Flowseal{#if zapret.telegram}; Telegram Desktop — через
+          прокси (подключить — в настройках zapret){/if}{#if check.last}
           · последняя проверка: {check.last.check.passed} из {check.last.check.max}{/if}
       </p>
     </div>

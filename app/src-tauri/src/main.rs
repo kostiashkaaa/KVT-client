@@ -25,6 +25,7 @@ mod service_client;
 mod settings;
 mod store;
 mod subs;
+mod tgproxy;
 mod tray;
 mod troubleshoot;
 mod tunnel;
@@ -37,7 +38,7 @@ use kvt_core::compile::DnsPlan;
 use kvt_core::core_select::{select_core, CoreKind};
 use kvt_core::governor::{NetGovernor, NetPolicy};
 use kvt_core::ipc::{self, ConnectPlan, Request, Response, ServiceStatus, Session};
-use kvt_core::model::{Protocol, Security, Server};
+use kvt_core::model::{Security, Server};
 use kvt_core::routing::presets::{self, RoutingSettings};
 use kvt_core::subscription::SubscriptionMeta;
 use kvt_core::tester::{self, Outcome, QuickResult};
@@ -389,6 +390,7 @@ fn set_choice(
     save_choice(&app, &choice)?;
     *state.choice.lock().map_err(crate::errors::state)? = choice;
     tray::invalidate(&app);
+    tgproxy::kick(&app);
     Ok(())
 }
 
@@ -443,7 +445,7 @@ pub(crate) async fn ping_servers(servers: &[Server]) -> Result<Vec<QuickResult>,
     let targets = servers
         .iter()
         .map(|s| {
-            (!matches!(s.protocol, Protocol::Hysteria2 { .. })).then(|| ipc::PingTarget {
+            (!s.protocol.is_quic()).then(|| ipc::PingTarget {
                 host: s.address.clone(),
                 port: s.port,
             })
@@ -516,12 +518,23 @@ pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
     if mode == "hybrid" {
         routing.extend(presets::zapret_youtube_discord());
     }
+    // Прокси Telegram: путь его соединений, пока работает VPN.
+    if choice.zapret.telegram {
+        routing.extend(tgproxy::route_rules(
+            mode == "hybrid",
+            choice.zapret.telegram_route,
+        ));
+    }
     routing.validate().map_err(|e| {
         errors::logged(
             "Настройки маршрутизации противоречат друг другу — проверьте раздел «Маршрутизация».",
             e,
         )
     })?;
+    let sni = server
+        .visible_sni()
+        .map(str::to_ascii_lowercase)
+        .filter(|d| kvt_core::zapret::valid_domain(d) && d.parse::<std::net::IpAddr>().is_err());
     let plan = ConnectPlan {
         core: select_core(&server).core,
         server,
@@ -534,7 +547,18 @@ pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
             )
         })?,
         // Гибрид: winws рядом с ядром, домены zapret служба берёт из RoutingPlan.
-        zapret: (mode == "hybrid").then(|| choice.zapret.plan(network.as_deref())),
+        // SNI сервера winws не трогает: адрес сервера служба исключает сама, но если он
+        // задан именем и разрешился иначе, чем у ядра, рукопожатие VPN всё равно попало
+        // бы под стратегию, когда SNI совпадает с доменом из списков zapret.
+        zapret: (mode == "hybrid").then(|| {
+            let mut z = choice.zapret.plan(network.as_deref());
+            if let Some(sni) = sni.clone() {
+                if !z.exclude_domains.contains(&sni) {
+                    z.exclude_domains.push(sni);
+                }
+            }
+            z
+        }),
     };
     Ok(Plan::Vpn(Box::new(plan)))
 }
@@ -817,6 +841,9 @@ fn main() {
             troubleshoot::troubleshoot,
             netprofile::current_network,
             zapret::zapret_strategies,
+            tgproxy::tg_proxy_status,
+            tgproxy::tg_proxy_open,
+            tgproxy::tg_proxy_link,
             zapret::zapret_conflicts,
             zapret::zapret_stop_conflicts,
             zapret::zapret_autoselect,

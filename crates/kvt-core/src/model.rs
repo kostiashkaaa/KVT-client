@@ -47,6 +47,23 @@ pub enum Protocol {
         password: Secret,
         obfs: Option<Hysteria2Obfs>,
     },
+    /// VMess (только AEAD, `alterId` = 0). `cipher` — `auto`, `aes-128-gcm`,
+    /// `chacha20-poly1305`, `none` или `zero`.
+    Vmess {
+        id: Secret,
+        cipher: String,
+    },
+    /// TUIC v5 поверх QUIC — только sing-box.
+    Tuic {
+        uuid: Secret,
+        password: Secret,
+        congestion: Option<String>,
+        udp_relay_mode: Option<String>,
+    },
+    /// AnyTLS — только sing-box.
+    AnyTls {
+        password: Secret,
+    },
 }
 
 impl Protocol {
@@ -56,7 +73,15 @@ impl Protocol {
             Protocol::Trojan { .. } => "trojan",
             Protocol::Shadowsocks { .. } => "shadowsocks",
             Protocol::Hysteria2 { .. } => "hysteria2",
+            Protocol::Vmess { .. } => "vmess",
+            Protocol::Tuic { .. } => "tuic",
+            Protocol::AnyTls { .. } => "anytls",
         }
+    }
+
+    /// Работает поверх QUIC (UDP): TCP-пинг к такому серверу ничего не говорит.
+    pub fn is_quic(&self) -> bool {
+        matches!(self, Protocol::Hysteria2 { .. } | Protocol::Tuic { .. })
     }
 }
 

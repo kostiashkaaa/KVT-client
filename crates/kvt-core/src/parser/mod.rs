@@ -1,11 +1,14 @@
 //! Разбор ссылок и тел подписок. Вход недоверенный: никаких паник, лимиты на
 //! размер, ошибки не содержат секретов из исходной строки.
 
+mod anytls;
 mod hysteria2;
 mod shadowsocks;
 mod stream;
 mod trojan;
+mod tuic;
 mod vless;
+mod vmess;
 mod xray_json;
 
 use crate::model::Server;
@@ -80,7 +83,9 @@ pub fn parse_uri(input: &str) -> Result<Entry, ParseError> {
         "trojan" => trojan::parse(input)?,
         "ss" => shadowsocks::parse(input)?,
         "hysteria2" | "hy2" => hysteria2::parse(input)?,
-        "vmess" => return Err(ParseError::Unsupported("VMess пока не поддерживается")),
+        "vmess" => vmess::parse(input)?,
+        "tuic" => tuic::parse(input)?,
+        "anytls" => anytls::parse(input)?,
         other => {
             let shown: String = other.chars().take(16).collect();
             return Err(ParseError::UnknownScheme(shown));

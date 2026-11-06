@@ -81,6 +81,9 @@
     trojan: "Trojan",
     shadowsocks: "Shadowsocks",
     hysteria2: "Hysteria2",
+    vmess: "VMess",
+    tuic: "TUIC",
+    anytls: "AnyTLS",
   };
   const protocolTitle = (p: string) => protocols[p] ?? p.toUpperCase();
 

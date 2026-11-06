@@ -130,6 +130,69 @@ pub fn next_update_delay(interval: Duration, unit: f64) -> Duration {
     interval.mul_f64(factor).max(MIN_UPDATE_INTERVAL)
 }
 
+/// Клиенты, чьи ссылки «добавить подписку» KVT разворачивает в исходный адрес.
+const APP_SCHEMES: &[&str] = &[
+    "happ",
+    "incy",
+    "v2raytun",
+    "hiddify",
+    "v2rayng",
+    "v2box",
+    "streisand",
+    "clash",
+    "sing-box",
+];
+
+/// Ссылка вида `happ://add/https://…`, `incy://import/…`, `v2raytun://import/…`,
+/// `hiddify://import/…` или `…://install-config?url=…` → исходный адрес подписки.
+/// `Ok(None)` — это не ссылка клиента (обычный адрес или ключи), `Err` — ссылка
+/// клиента, из которой адрес не достать (например, зашифрованная `happ://crypt…`).
+pub fn unwrap_app_link(raw: &str) -> Result<Option<String>, &'static str> {
+    let raw = raw.trim();
+    let Some((scheme, rest)) = raw.split_once("://") else {
+        return Ok(None);
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if !APP_SCHEMES.contains(&scheme.as_str()) {
+        return Ok(None);
+    }
+    if rest.to_ascii_lowercase().starts_with("crypt") {
+        return Err("Это зашифрованная ссылка Happ — её может прочитать только Happ. Попросите у провайдера обычную ссылку на подписку (https://…).");
+    }
+    let decode = |s: &str| {
+        percent_encoding::percent_decode_str(s)
+            .decode_utf8_lossy()
+            .into_owned()
+    };
+    // `…?url=<адрес>` (install-config, import-remote-profile) — адрес в параметре.
+    let from_query = rest.split_once('?').and_then(|(_, q)| {
+        q.split('&')
+            .filter_map(|kv| kv.split_once('='))
+            .find(|(k, _)| k.eq_ignore_ascii_case("url"))
+            .map(|(_, v)| decode(v.split('#').next().unwrap_or(v)))
+    });
+    // `add/<адрес>`, `import/<адрес>` — адрес целиком после действия.
+    let from_path = || {
+        let lower = rest.to_ascii_lowercase();
+        ["add/", "import/", "install-sub/", "subscription/"]
+            .iter()
+            .find(|p| lower.starts_with(*p))
+            .map(|p| rest[p.len()..].to_owned())
+            .map(|r| if r.contains("://") { r } else { decode(&r) })
+    };
+    let url = from_query
+        .or_else(from_path)
+        .map(|u| u.trim().to_owned())
+        .filter(|u| {
+            u.to_ascii_lowercase().starts_with("https://")
+                || u.to_ascii_lowercase().starts_with("http://")
+        });
+    match url {
+        Some(u) => Ok(Some(u)),
+        None => Err("Не удалось достать адрес подписки из ссылки приложения. Скопируйте обычную ссылку (https://…) в личном кабинете провайдера."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +240,31 @@ mod tests {
         assert!(close(next_update_delay(base, 0.0), 30_600)); // 8,5 ч
         assert!(close(next_update_delay(base, 1.0), 41_400)); // 11,5 ч
         assert_eq!(next_update_delay(Duration::ZERO, 0.5), MIN_UPDATE_INTERVAL);
+    }
+
+    #[test]
+    fn app_links_unwrap_to_subscription_url() {
+        let url = "https://sub.example.com/abc?x=1";
+        for link in [
+            format!("happ://add/{url}"),
+            format!("incy://import/{url}"),
+            format!("INCY://add/{url}"),
+            format!("v2raytun://import/{url}"),
+            format!("hiddify://import/{url}#Имя"),
+            "clash://install-config?url=https%3A%2F%2Fsub.example.com%2Fabc%3Fx%3D1".to_owned(),
+            "sing-box://import-remote-profile?url=https%3A%2F%2Fsub.example.com%2Fabc%3Fx%3D1#n"
+                .to_owned(),
+        ] {
+            let got = unwrap_app_link(&link).unwrap().unwrap();
+            assert!(got.starts_with(url), "{link} -> {got}");
+        }
+    }
+
+    #[test]
+    fn other_input_is_left_alone_or_explained() {
+        assert_eq!(unwrap_app_link("https://sub.example.com/x"), Ok(None));
+        assert_eq!(unwrap_app_link("vless://id@h:1"), Ok(None));
+        assert!(unwrap_app_link("happ://crypt3/AbCd").is_err());
+        assert!(unwrap_app_link("happ://add/not-a-url").is_err());
     }
 }

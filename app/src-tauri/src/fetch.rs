@@ -15,6 +15,9 @@ pub struct Fetched {
 }
 
 pub fn validate_url(raw: &str) -> Result<Url, String> {
+    // Ссылки «добавить в Happ / INCY / v2RayTun …» — в исходный адрес подписки.
+    let unwrapped = kvt_core::subscription::unwrap_app_link(raw).map_err(str::to_owned)?;
+    let raw = unwrapped.as_deref().unwrap_or(raw);
     let url = Url::parse(raw.trim()).map_err(|_| "Ссылка на подписку повреждена".to_string())?;
     if url.scheme() != "https" {
         return Err("Подписка загружается только по https".into());
@@ -81,12 +84,14 @@ pub async fn fetch(url: &Url) -> Result<Fetched, String> {
 /// списке ссылок (у провайдера из беты — все серверы Hysteria2); v2rayN 6 и Hiddify —
 /// обычный список ссылок. Своё имя в строке остаётся — провайдер видит, кто пришёл.
 /// Пробуем по очереди, пока в ответе не найдутся серверы.
-fn user_agents() -> [String; 4] {
+fn user_agents() -> [String; 5] {
     let kvt = concat!("KVT/", env!("CARGO_PKG_VERSION"));
     [
         format!("v2rayNG/1.10.5 {kvt}"),
         format!("v2rayN/6.60 {kvt}"),
         format!("Hiddify/2.5.7 {kvt}"),
+        // Часть провайдеров отдаёт серверы только «своему» клиенту Happ.
+        format!("Happ/3.6.1 {kvt}"),
         kvt.to_owned(),
     ]
 }

@@ -31,7 +31,7 @@
   <div class="icon" aria-hidden="true"><Icon name="shield" size={32} /></div>
   <h2 id="add-title">{oncancel ? "Добавить подписку или ключ" : "Добавьте подписку"}</h2>
   <p class="muted">
-    Вставьте ссылку на подписку (https://…), ссылки на серверы (vless://, trojan://, ss://, hy2://) или
+    Вставьте ссылку на подписку (https://…), ссылки на серверы (vless://, vmess://, trojan://, ss://, hy2://, tuic://, anytls://) или
     содержимое подписки.
   </p>
 

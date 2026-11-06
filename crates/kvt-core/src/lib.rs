@@ -26,6 +26,7 @@ pub mod rulesync;
 pub mod secret;
 pub mod subscription;
 pub mod tester;
+pub mod tgproxy;
 pub mod zapret;
 
 pub use model::Server;

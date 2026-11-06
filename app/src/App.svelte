@@ -452,6 +452,11 @@
   const active = $derived(status?.state === "connected" || status?.state === "zapret");
   /** Настройки zapret, с которыми запущена служба (стратегия, фильтр). */
   const zapretKey = () => JSON.stringify($state.snapshot(zapret));
+  /** В режиме «VPN» из настроек zapret на подключение влияет только прокси Telegram. */
+  const telegramOf = (key: string) => {
+    const z = JSON.parse(key) as ZapretChoice;
+    return `${z.telegram}:${z.telegramRoute}`;
+  };
   /** С каким сервером, режимом и настройками zapret сейчас подключены. */
   let connectedWith = $state<{ server: string | null; mode: Mode; zapret: string } | null>(null);
 
@@ -489,7 +494,10 @@
   // Другой сервер, режим или стратегия zapret при подключении — переподключаемся сразу, как в Happ.
   $effect(() => {
     if (!restored || busy || !active || !connectedWith) return;
-    const zapretChanged = mode !== "vpn" && zapretKey() !== connectedWith.zapret;
+    const zapretChanged =
+      mode !== "vpn"
+        ? zapretKey() !== connectedWith.zapret
+        : telegramOf(zapretKey()) !== telegramOf(connectedWith.zapret);
     const serverChanged = mode !== "zapret" && selected !== connectedWith.server;
     if (!serverChanged && !zapretChanged && mode === connectedWith.mode) return;
     if (selected === null && mode !== "zapret") return;
@@ -555,7 +563,7 @@
         </div>
       {/if}
 
-      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {mismatch} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} onwhy={askWhy} />
+      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {mismatch} telegram={zapret.telegram} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} onwhy={askWhy} />
 
 
       {#if mode !== "vpn"}

@@ -13,14 +13,16 @@ KVT распространяется по лицензии GNU GPL версии 
 | zapret-discord-youtube (Flowseal) | Стратегии и списки для winws | MIT | https://github.com/Flowseal/zapret-discord-youtube |
 | WinDivert | Драйвер перехвата пакетов для winws | LGPL-3.0 (или GPL-2.0) | https://github.com/basil00/WinDivert |
 | Cygwin (cygwin1.dll) | Библиотека, нужная winws | LGPL-3.0 | https://cygwin.com |
+| tg-ws-proxy-rs (valnesfjord) | Прокси для Telegram Desktop в режимах «Zapret» и «Гибрид»; порт программы tg-ws-proxy (Flowseal, MIT) | MIT | https://github.com/valnesfjord/tg-ws-proxy-rs |
 | flag-icons | Флаги стран в списке серверов | MIT | https://github.com/lipis/flag-icons |
 | Tauri | Окно приложения и трей | MIT / Apache-2.0 | https://github.com/tauri-apps/tauri |
 | Svelte | Интерфейс | MIT | https://github.com/sveltejs/svelte |
 | Списки itdoginfo (podkop) | Маршрутизация: что открывать через VPN | по условиям репозитория | https://github.com/itdoginfo/allow-domains |
 | Списки runetfreedom | Маршрутизация: полный реестр блокировок | по условиям репозитория | https://github.com/runetfreedom/russia-v2ray-rules-dat |
 
-Ядра, Wintun и zapret KVT берёт из официальных релизов по зафиксированным SHA-256
-(`scripts/fetch-cores.ps1`, `scripts/fetch-zapret.ps1`) и не изменяет. Списки
+Ядра, Wintun, zapret и прокси для Telegram KVT берёт из официальных релизов по
+зафиксированным SHA-256 (`scripts/fetch-cores.ps1`, `scripts/fetch-zapret.ps1`,
+`scripts/fetch-tgproxy.ps1`) и не изменяет. Списки
 маршрутизации служба загружает сама и в установщик они не входят.
 
 Библиотеки Rust и JavaScript, из которых собраны `kvt.exe` и `kvt-service.exe`, —

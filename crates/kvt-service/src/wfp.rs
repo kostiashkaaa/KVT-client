@@ -202,8 +202,9 @@ unsafe impl Sync for KillSwitch {}
 
 impl KillSwitch {
     /// Включает kill switch. `apps` — процессы, которым разрешён выход в сеть
-    /// мимо TUN; `tun_luid` — интерфейс туннеля.
-    pub fn enable(apps: &[&Path], tun_luid: Option<u64>) -> io::Result<Self> {
+    /// мимо TUN; `tun_luid` — интерфейс туннеля. `kernel` — пропускать соединения,
+    /// которые Windows приписывает ядру системы (нужно рядом с winws, см. `add_rules`).
+    pub fn enable(apps: &[&Path], tun_luid: Option<u64>, kernel: bool) -> io::Result<Self> {
         let name = wide("KVT kill switch");
         let session = FWPM_SESSION0 {
             flags: FWPM_SESSION_FLAG_DYNAMIC,
@@ -224,7 +225,7 @@ impl KillSwitch {
 
         // SAFETY: движок открыт.
         check(unsafe { FwpmTransactionBegin0(ks.engine, 0) }, "транзакция")?;
-        if let Err(e) = ks.add_rules(apps, tun_luid) {
+        if let Err(e) = ks.add_rules(apps, tun_luid, kernel) {
             // SAFETY: транзакция начата выше.
             unsafe { FwpmTransactionAbort0(ks.engine) };
             return Err(e);
@@ -234,7 +235,7 @@ impl KillSwitch {
         Ok(ks)
     }
 
-    fn add_rules(&self, apps: &[&Path], tun_luid: Option<u64>) -> io::Result<()> {
+    fn add_rules(&self, apps: &[&Path], tun_luid: Option<u64>, kernel: bool) -> io::Result<()> {
         let sublayer = random_guid();
         let name = wide("KVT kill switch");
         let sub = FWPM_SUBLAYER0 {
@@ -266,6 +267,29 @@ impl KillSwitch {
             c.conditionValue.r#type = FWP_UINT32;
             c.conditionValue.Anonymous.uint32 = FWP_CONDITION_FLAG_IS_LOOPBACK;
             self.add(layer, sublayer, &mut [c], FWP_ACTION_PERMIT, PERMIT_WEIGHT)?;
+
+            // «Гибрид»: winws перехватывает пакеты на физическом интерфейсе и отправляет
+            // их заново, а Windows проверяет такое соединение как соединение ядра
+            // системы (приложение «System», pid 4) — не Xray и не службы. Журнал WFP
+            // (2026-11-06): все отброшенные пакеты — «System», ALE_AUTH_CONNECT, наш
+            // фильтр блокировки; к VPN-серверу, Telegram, Cloudflare. Без этого
+            // разрешения kill switch глушил в «Гибриде» весь трафик мимо туннеля.
+            // Цена: пока работает «Гибрид», соединения ядра Windows мимо туннеля тоже
+            // не блокируются (обычные программы по-прежнему блокируются).
+            if kernel {
+                let mut system: Vec<u8> = "System\0"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
+                let mut blob = FWP_BYTE_BLOB {
+                    size: system.len() as u32,
+                    data: system.as_mut_ptr(),
+                };
+                let mut c = condition(FWPM_CONDITION_ALE_APP_ID, FWP_MATCH_EQUAL);
+                c.conditionValue.r#type = FWP_BYTE_BLOB_TYPE;
+                c.conditionValue.Anonymous.byteBlob = &mut blob;
+                self.add(layer, sublayer, &mut [c], FWP_ACTION_PERMIT, PERMIT_WEIGHT)?;
+            }
 
             for app in &app_ids {
                 let mut c = condition(FWPM_CONDITION_ALE_APP_ID, FWP_MATCH_EQUAL);
@@ -391,7 +415,7 @@ mod tests {
         if crate::win::is_elevated() {
             return;
         }
-        let err = KillSwitch::enable(&[], None)
+        let err = KillSwitch::enable(&[], None, false)
             .err()
             .expect("без прав kill switch не включается");
         assert!(err.to_string().contains("WFP"), "{err}");
@@ -407,7 +431,7 @@ mod tests {
         let target = "1.1.1.1:443".parse().unwrap();
         let connect = || TcpStream::connect_timeout(&target, Duration::from_secs(3)).is_ok();
         assert!(connect(), "нет интернета — тест не имеет смысла");
-        let ks = KillSwitch::enable(&[], None).expect("kill switch");
+        let ks = KillSwitch::enable(&[], None, false).expect("kill switch");
         assert!(!connect(), "kill switch пропустил соединение");
         drop(ks);
         assert!(connect(), "после выключения соединение должно работать");

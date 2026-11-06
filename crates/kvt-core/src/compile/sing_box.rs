@@ -174,6 +174,32 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
                 );
             }
         }
+        Protocol::Vmess { id, cipher } => {
+            o.insert("type".into(), "vmess".into());
+            o.insert("uuid".into(), id.expose().into());
+            o.insert("security".into(), cipher.clone().into());
+            o.insert("alter_id".into(), 0.into());
+        }
+        Protocol::Tuic {
+            uuid,
+            password,
+            congestion,
+            udp_relay_mode,
+        } => {
+            o.insert("type".into(), "tuic".into());
+            o.insert("uuid".into(), uuid.expose().into());
+            o.insert("password".into(), password.expose().into());
+            if let Some(c) = congestion {
+                o.insert("congestion_control".into(), c.clone().into());
+            }
+            if let Some(m) = udp_relay_mode {
+                o.insert("udp_relay_mode".into(), m.clone().into());
+            }
+        }
+        Protocol::AnyTls { password } => {
+            o.insert("type".into(), "anytls".into());
+            o.insert("password".into(), password.expose().into());
+        }
     }
 
     if let Some(transport) = transport(&s.transport)? {

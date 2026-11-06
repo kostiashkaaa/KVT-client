@@ -37,8 +37,11 @@ pub fn select_core(server: &Server) -> CoreChoice {
     }
     let core = match server.protocol {
         // REALITY и Vision — родная территория Xray.
-        Protocol::Vless { .. } | Protocol::Trojan { .. } => CoreKind::Xray,
-        Protocol::Hysteria2 { .. } | Protocol::Shadowsocks { .. } => CoreKind::SingBox,
+        Protocol::Vless { .. } | Protocol::Trojan { .. } | Protocol::Vmess { .. } => CoreKind::Xray,
+        Protocol::Hysteria2 { .. }
+        | Protocol::Shadowsocks { .. }
+        | Protocol::Tuic { .. }
+        | Protocol::AnyTls { .. } => CoreKind::SingBox,
     };
     CoreChoice {
         core,

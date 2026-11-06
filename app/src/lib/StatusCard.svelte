@@ -19,6 +19,7 @@
     tunnelOk,
     serviceDown = false,
     mismatch = false,
+    telegram = false,
     onconnect,
     ondisconnect,
     onwhy,
@@ -37,6 +38,8 @@
     serviceDown?: boolean;
     /** Служба другой версии (прерванное обновление): кнопка ведёт на страницу загрузки. */
     mismatch?: boolean;
+    /** Прокси для Telegram включён: в «Гибриде» и «Zapret» Telegram идёт через него. */
+    telegram?: boolean;
     onconnect: () => void;
     ondisconnect: () => void;
     onwhy: () => void;
@@ -117,11 +120,23 @@
 
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
-  const modes: { id: Mode; label: string; hint: string }[] = [
+  const modes: { id: Mode; label: string; hint: string }[] = $derived([
     { id: "vpn", label: "VPN", hint: "Весь заблокированный трафик через VPN" },
-    { id: "hybrid", label: "Гибрид", hint: "YouTube и Discord через zapret, остальное через VPN" },
-    { id: "zapret", label: "Zapret", hint: "Без VPN: только обход DPI для YouTube и Discord" },
-  ];
+    {
+      id: "hybrid",
+      label: "Гибрид",
+      hint: telegram
+        ? "YouTube и Discord через zapret, остальное через VPN; Telegram — через прокси"
+        : "YouTube и Discord через zapret, остальное через VPN",
+    },
+    {
+      id: "zapret",
+      label: "Zapret",
+      hint: telegram
+        ? "Без VPN: YouTube и Discord через zapret, Telegram Desktop через прокси"
+        : "Без VPN: только обход DPI для YouTube и Discord",
+    },
+  ]);
   const modeIndex = $derived(Math.max(0, modes.findIndex((m) => m.id === mode)));
 </script>
 

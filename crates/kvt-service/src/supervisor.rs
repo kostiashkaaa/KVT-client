@@ -318,8 +318,11 @@ impl Supervisor {
         }
         let luid = luid.ok_or("интерфейс TUN не появился")?;
         let service = std::env::current_exe().map_err(|e| e.to_string())?;
-        let ks = KillSwitch::enable(&[spec.exe.as_path(), service.as_path()], Some(luid))
-            .map_err(|e| e.to_string())?;
+        // «Гибрид»: пакеты, которые winws отправляет заново, Windows приписывает ядру
+        // системы — kill switch должен их пропускать (см. `wfp::KillSwitch::add_rules`).
+        let hybrid = self.zapret.is_some();
+        let apps = [spec.exe.as_path(), service.as_path()];
+        let ks = KillSwitch::enable(&apps, Some(luid), hybrid).map_err(|e| e.to_string())?;
         tracing::info!("kill switch включён");
         self.kill_switch = Some(ks);
         Ok(())

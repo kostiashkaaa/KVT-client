@@ -3,6 +3,7 @@
   "minVersion": "0.1.0",
   "components": {
     "cores": { "xray": "26.10.31", "sing-box": "1.14.4", "wintun": "0.14.1" },
-    "zapret": "1.10.4"
+    "zapret": "1.10.4",
+    "tgproxy": ""
   }
 }

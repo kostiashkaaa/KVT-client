@@ -59,9 +59,12 @@ const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 /** Окно работает в приложении, а не в превью браузера (`npm run dev`). */
 export const inApp = inTauri;
 
-/** Одна https-ссылка — это адрес подписки; всё остальное — содержимое (ссылки на серверы). */
+/** Одна https-ссылка — это адрес подписки; всё остальное — содержимое (ссылки на серверы).
+ * Ссылки «добавить в приложение» (happ://add/…, incy://, v2raytun://import/…) — тоже адрес:
+ * KVT развернёт их в исходный https. */
 export function isSubscriptionUrl(input: string): boolean {
-  return /^https?:\/\/\S+$/i.test(input.trim());
+  const s = input.trim();
+  return /^https?:\/\/\S+$/i.test(s) || /^(happ|incy|v2raytun|hiddify|v2rayng|v2box|streisand|clash|sing-box):\/\/\S+$/i.test(s);
 }
 
 export async function addSubscription(input: string): Promise<Added> {
@@ -719,7 +722,13 @@ export interface ZapretChoice {
   autoCheck: boolean;
   /** Если стратегия перестала работать — подобрать новую (режим «Zapret»). */
   autoPick: boolean;
+  /** Прокси для Telegram Desktop: работает, пока KVT подключён, в любом режиме. */
+  telegram: boolean;
+  /** Путь прокси в «Гибриде»: сначала через VPN или всегда мимо него. */
+  telegramRoute: TelegramRoute;
 }
+
+export type TelegramRoute = "vpn_first" | "direct";
 
 export const defaultZapret = (): ZapretChoice => ({
   strategy: null,
@@ -731,6 +740,8 @@ export const defaultZapret = (): ZapretChoice => ({
   ipset: false,
   autoCheck: true,
   autoPick: true,
+  telegram: true,
+  telegramRoute: "direct",
 });
 
 /** Стратегия для сети: подобранная для неё, иначе выбранная, иначе основная. */
@@ -917,6 +928,33 @@ const previewCheck = (passed: number): ZapretCheck => ({
   max: 13,
   latencyMs: 4700,
 });
+
+// ── Прокси для Telegram Desktop ──
+
+export interface TgProxyStatus {
+  /** Прокси сейчас работает. */
+  running: boolean;
+  /** Почему не запустился, если пытались. */
+  error: string | null;
+  port: number;
+}
+
+export async function tgProxyStatus(): Promise<TgProxyStatus> {
+  if (!inTauri) return { running: true, error: null, port: 1443 };
+  return invoke<TgProxyStatus>("tg_proxy_status");
+}
+
+/** Открывает в Telegram Desktop окно «Подключить прокси». */
+export async function tgProxyOpen(): Promise<void> {
+  if (!inTauri) return;
+  await invoke("tg_proxy_open");
+}
+
+/** Ссылка `tg://proxy` для ручного подключения. */
+export async function tgProxyLink(): Promise<string> {
+  if (!inTauri) return "tg://proxy?server=127.0.0.1&port=1443&secret=dd00000000000000000000000000000000";
+  return invoke<string>("tg_proxy_link");
+}
 
 export async function zapretInfo(): Promise<ZapretInfo> {
   if (!inTauri) {
@@ -1332,7 +1370,7 @@ export interface About {
 export async function aboutInfo(): Promise<About> {
   if (!inTauri) {
     return {
-      version: "0.9.2",
+      version: "0.9.3",
       cores: { xray: "26.10.31", "sing-box": "1.14.4", wintun: "0.14.1" },
       sourceUrl: "https://github.com/kostiashkaaa/KVT-client",
       licenses: true,
@@ -1360,13 +1398,13 @@ export interface UpdateStatus {
 /** Что известно о новой версии — без запроса в сеть. */
 export async function updateStatus(): Promise<UpdateStatus> {
   // В предпросмотре — как будто вышла новая версия: видно плашку и точку у «Настроек».
-  if (!inTauri) return { current: "0.9.2", latest: "0.9.3", available: true, checkedAt: Date.now(), error: null };
+  if (!inTauri) return { current: "0.9.3", latest: "0.9.4", available: true, checkedAt: Date.now(), error: null };
   return invoke<UpdateStatus>("update_status");
 }
 
 /** Спросить у GitHub сейчас (не чаще раза в минуту). */
 export async function updateCheck(): Promise<UpdateStatus> {
-  if (!inTauri) return { current: "0.9.2", latest: "0.9.3", available: true, checkedAt: Date.now(), error: null };
+  if (!inTauri) return { current: "0.9.3", latest: "0.9.4", available: true, checkedAt: Date.now(), error: null };
   return invoke<UpdateStatus>("update_check");
 }
 

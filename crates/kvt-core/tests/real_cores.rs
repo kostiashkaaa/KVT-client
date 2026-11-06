@@ -41,6 +41,10 @@ const SAMPLES: &[(&str, CoreKind)] = &[
     ("trojan://secret@tr.example.com:443?sni=tr.example.com&type=httpupgrade&path=%2Fu#trojan", CoreKind::SingBox),
     ("ss://2022-blake3-aes-128-gcm:MTIzNDU2Nzg5MDEyMzQ1Ng%3D%3D@198.51.100.7:8388#ss", CoreKind::SingBox),
     ("hy2://secret@hy.example.com:8443?obfs=salamander&obfs-password=x&sni=hy.example.com#hy2", CoreKind::SingBox),
+    ("vmess://eyJ2IjoiMiIsInBzIjoidm1lc3MiLCJhZGQiOiJ2bS5leGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6ImI4MzEzODFkLTYzMjQtNGQ1My1hZDRmLThjZGE0OGIzMDgxMSIsImFpZCI6IjAiLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJwYXRoIjoiL3ZtIiwiaG9zdCI6InZtLmV4YW1wbGUuY29tIiwidGxzIjoidGxzIiwic25pIjoidm0uZXhhbXBsZS5jb20ifQ==", CoreKind::Xray),
+    ("vmess://eyJ2IjoiMiIsInBzIjoidm1lc3MiLCJhZGQiOiJ2bS5leGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6ImI4MzEzODFkLTYzMjQtNGQ1My1hZDRmLThjZGE0OGIzMDgxMSIsImFpZCI6IjAiLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJwYXRoIjoiL3ZtIiwiaG9zdCI6InZtLmV4YW1wbGUuY29tIiwidGxzIjoidGxzIiwic25pIjoidm0uZXhhbXBsZS5jb20ifQ==", CoreKind::SingBox),
+    ("tuic://b831381d-6324-4d53-ad4f-8cda48b30811:pass@tu.example.com:443?congestion_control=bbr&udp_relay_mode=native&sni=tu.example.com#tuic", CoreKind::SingBox),
+    ("anytls://secret@at.example.com:443?sni=at.example.com&fp=firefox#anytls", CoreKind::SingBox),
 ];
 
 #[test]

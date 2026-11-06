@@ -208,6 +208,14 @@ pub async fn refresh(app: &AppHandle) {
         return;
     };
     let status = query_status().await.ok().flatten();
+    // Прокси Telegram следует за режимом: zapret работает — работает и он.
+    {
+        let app = app.clone();
+        let status = status.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::tgproxy::sync(&app, status.as_ref()).await;
+        });
+    }
     if status.is_some()
         && tray
             .strategies
