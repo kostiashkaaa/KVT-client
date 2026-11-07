@@ -95,6 +95,29 @@ pub struct CompileInput<'a> {
     pub dns: &'a DnsPlan,
     /// Каталог с наборами правил. Задаёт служба (ProgramData\KVT\rules), а не пользователь.
     pub rule_set_dir: &'a str,
+    /// IPv6 включён в Windows. Если нет, у адаптера TUN нет IPv6-интерфейса, и ядро
+    /// не может задать ему IPv6-адрес и маршрут `::/0`: Xray и sing-box падают при
+    /// старте с «Element not found». См. [`ipv6_enabled`].
+    pub ipv6: bool,
+}
+
+/// Адреса адаптера TUN: IPv4 всегда, IPv6 — если он включён в системе.
+fn tun_addresses(ipv6: bool) -> Vec<&'static str> {
+    let mut out = vec!["172.19.0.1/30"];
+    if ipv6 {
+        out.push("fdfe:dcba:9876::1/126");
+    }
+    out
+}
+
+/// Включён ли IPv6 на обычных (не туннельных) адаптерах — к ним относится и Wintun.
+/// `disabled_components` — значение `DisabledComponents` из
+/// `HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters` (`None` — значения нет).
+/// Бит 0x10 отключает IPv6 на всех адаптерах, кроме loopback и туннельных; так его
+/// выключают «оптимизаторы» и инструкции «отключите IPv6» (обычно значение 0xFF).
+#[must_use]
+pub fn ipv6_enabled(disabled_components: Option<u32>) -> bool {
+    disabled_components.map_or(true, |v| v & 0x10 == 0)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -226,10 +249,51 @@ mod tests {
             routing: &plan,
             dns: &dns,
             rule_set_dir: "C:/ProgramData/KVT/rules",
+            ipv6: true,
         };
         for core in [CoreKind::Xray, CoreKind::SingBox] {
             let out = compile(core, &input).unwrap();
             assert_no_listeners(&out.config);
+        }
+    }
+
+    /// IPv6 отключён в Windows: у TUN нет IPv6-интерфейса, и ядро не стартует
+    /// («failed to start proxy > Element not found»), если просить у него IPv6.
+    #[test]
+    fn without_ipv6_tun_is_ipv4_only() {
+        assert!(ipv6_enabled(None));
+        assert!(ipv6_enabled(Some(0)));
+        assert!(ipv6_enabled(Some(0x20))); // «предпочитать IPv4» — IPv6 работает
+        assert!(!ipv6_enabled(Some(0xFF)));
+        assert!(!ipv6_enabled(Some(0x10)));
+        assert!(!ipv6_enabled(Some(0x32))); // у пользователя с «Element not found»
+
+        let s = server(REALITY);
+        let plan = hybrid_plan(&s);
+        let dns = DnsPlan::default();
+        for ipv6 in [true, false] {
+            let input = CompileInput {
+                server: &s,
+                routing: &plan,
+                dns: &dns,
+                rule_set_dir: "r",
+                ipv6,
+            };
+            let xray = compile(CoreKind::Xray, &input).unwrap().config;
+            let sing = compile(CoreKind::SingBox, &input).unwrap().config;
+            let tun = [
+                &xray["inbounds"][0]["settings"]["gateway"],
+                &xray["inbounds"][0]["settings"]["autoSystemRoutingTable"],
+                &sing["inbounds"][0]["address"],
+            ];
+            for value in tun {
+                let has_v6 = value
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v.as_str().unwrap().contains(':'));
+                assert_eq!(has_v6, ipv6, "{value}");
+            }
         }
     }
 
@@ -248,6 +312,7 @@ mod tests {
             routing: &plan,
             dns: &dns,
             rule_set_dir: "r",
+            ipv6: true,
         };
         assert!(matches!(
             compile(CoreKind::Xray, &input),
@@ -287,6 +352,7 @@ mod tests {
             routing: &plan,
             dns: &injected,
             rule_set_dir: "r",
+            ipv6: true,
         };
         assert!(matches!(
             compile(CoreKind::Xray, &input),

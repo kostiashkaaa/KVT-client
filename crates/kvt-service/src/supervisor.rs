@@ -115,7 +115,13 @@ pub struct Supervisor {
     last_plan: Option<ConnectPlan>,
     /// По ошибке ядра уже переподключались (делается один раз на подключение).
     reconnected: bool,
+    /// Ядро не смогло настроить IPv6 у адаптера: до перезапуска службы TUN
+    /// собирается только с IPv4, чтобы следующие подключения не ждали 15 попыток.
+    ipv6_failed: bool,
 }
+
+/// Код правила из `presets/core-errors.json`: ядро не может задать адаптеру IPv6.
+const TUN_IPV6: &str = "tun_ipv6";
 
 impl Supervisor {
     pub fn new(paths: Paths) -> Self {
@@ -128,6 +134,7 @@ impl Supervisor {
             issues: Issues::default(),
             last_plan: None,
             reconnected: false,
+            ipv6_failed: false,
         }
     }
 
@@ -226,6 +233,15 @@ impl Supervisor {
         }
 
         let rules = self.paths.rules.to_string_lossy().replace('\\', "/");
+        let disabled = crate::win::ipv6_disabled_components();
+        let ipv6 = kvt_core::compile::ipv6_enabled(disabled) && !self.ipv6_failed;
+        if !ipv6 {
+            tracing::info!(
+                disabled_components = ?disabled,
+                failed = self.ipv6_failed,
+                "IPv6 у адаптера недоступен: TUN только с IPv4"
+            );
+        }
         let compiled = compile(
             plan.core,
             &CompileInput {
@@ -233,6 +249,7 @@ impl Supervisor {
                 routing: &plan.routing,
                 dns: &plan.dns,
                 rule_set_dir: &rules,
+                ipv6,
             },
         )
         .map_err(|e| e.to_string())?;
@@ -275,6 +292,20 @@ impl Supervisor {
         self.running.as_ref()?;
         match issue.action {
             core_errors::Action::Log => None,
+            // Windows не дала задать адаптеру IPv6 (IPv6 выключен способом, которого не
+            // видно в реестре). Без переподключения ядро сдалось бы через 15 попыток.
+            // Не тратит общий повтор: следующий старт может упереться в «адаптер занят».
+            core_errors::Action::Reconnect if issue.code == TUN_IPV6 && !self.ipv6_failed => {
+                self.ipv6_failed = true;
+                let plan = self.last_plan.clone()?;
+                tracing::warn!(
+                    "Windows не дала настроить IPv6 у адаптера — переподключение только с IPv4"
+                );
+                match self.connect(&plan).await {
+                    Ok(()) => None,
+                    Err(e) => Some(format!("{} {e}", issue.text)),
+                }
+            }
             core_errors::Action::Reconnect if !self.reconnected => {
                 self.reconnected = true;
                 let plan = self.last_plan.clone()?;

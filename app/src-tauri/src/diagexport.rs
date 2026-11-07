@@ -34,24 +34,35 @@ fn file(name: &str, text: String) -> DiagFile {
 /// Сгенерированный конфиг ядра для текущего выбора — так, как его соберёт служба.
 fn config(state: &AppState) -> Value {
     match crate::build_plan(state) {
-        Ok(Plan::Vpn(plan)) => match compile(
-            plan.core,
-            &CompileInput {
-                server: &plan.server,
-                routing: &plan.routing,
-                dns: &plan.dns,
-                rule_set_dir: "C:/ProgramData/KVT/rules",
-            },
-        ) {
-            Ok(c) => json!({
-                "core": c.core,
-                "killSwitch": plan.kill_switch,
-                "zapret": plan.zapret,
-                "warnings": c.warnings,
-                "config": redact::json(&c.config),
-            }),
-            Err(e) => json!({ "error": e.to_string() }),
-        },
+        Ok(Plan::Vpn(plan)) => {
+            // Как в службе: при отключённом IPv6 TUN собирается только с IPv4.
+            let disabled = crate::winreg::get_machine_dword(
+                r"SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters",
+                "DisabledComponents",
+            );
+            let ipv6 = kvt_core::compile::ipv6_enabled(disabled);
+            match compile(
+                plan.core,
+                &CompileInput {
+                    server: &plan.server,
+                    routing: &plan.routing,
+                    dns: &plan.dns,
+                    rule_set_dir: "C:/ProgramData/KVT/rules",
+                    ipv6,
+                },
+            ) {
+                Ok(c) => json!({
+                    "core": c.core,
+                    "ipv6": ipv6,
+                    "ipv6DisabledComponents": disabled,
+                    "killSwitch": plan.kill_switch,
+                    "zapret": plan.zapret,
+                    "warnings": c.warnings,
+                    "config": redact::json(&c.config),
+                }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
         Ok(Plan::Zapret(plan)) => json!({ "mode": "zapret", "plan": plan }),
         Err(e) => json!({ "error": e }),
     }

@@ -40,10 +40,10 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
             "settings": {
                 "name": TUN_INTERFACE,
                 "mtu": 1500,
-                "gateway": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+                "gateway": super::tun_addresses(input.ipv6),
                 // DNS интерфейса: запросы системы уходят в TUN и перехватываются правилом порта 53.
                 "dns": [input.dns.remote_doh],
-                "autoSystemRoutingTable": ["0.0.0.0/0", "::/0"],
+                "autoSystemRoutingTable": if input.ipv6 { vec!["0.0.0.0/0", "::/0"] } else { vec!["0.0.0.0/0"] },
                 // Трафик самого Xray к серверу идёт через физический интерфейс — без петли.
                 "autoOutboundsInterface": "auto"
             },
@@ -308,6 +308,7 @@ mod tests {
             routing: &plan,
             dns: &dns,
             rule_set_dir: "r",
+            ipv6: true,
         })
         .unwrap()
     }
@@ -379,6 +380,7 @@ mod tests {
             routing: &routing,
             dns: &dns,
             rule_set_dir: "rules",
+            ipv6: true,
         })
         .unwrap();
         let servers = c.config["dns"]["servers"].as_array().unwrap();
@@ -409,7 +411,8 @@ mod tests {
                 server: &s,
                 routing: &plan,
                 dns: &dns,
-                rule_set_dir: "r"
+                rule_set_dir: "r",
+                ipv6: true,
             }),
             Err(CompileError::Unsupported { .. })
         ));

@@ -207,6 +207,32 @@ pub fn adapter_octets(alias: &str) -> Option<(u64, u64)> {
     Some((row.InOctets, row.OutOctets))
 }
 
+/// Значение `DisabledComponents` (DWORD) из параметров IPv6; `None` — его нет.
+/// Смысл значения — в [`kvt_core::compile::ipv6_enabled`].
+pub fn ipv6_disabled_components() -> Option<u32> {
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD,
+    };
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(Some(0)).collect() };
+    let key = wide(r"SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters");
+    let name = wide("DisabledComponents");
+    let mut value: u32 = 0;
+    let mut len = std::mem::size_of::<u32>() as u32;
+    // SAFETY: строки заканчиваются нулём; RRF_RT_REG_DWORD пишет ровно 4 байта в value.
+    let code = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut value as *mut u32).cast(),
+            &mut len,
+        )
+    };
+    (code == 0).then_some(value)
+}
+
 /// Job Object с флагом «убить все процессы при закрытии». Ядро помещается в него,
 /// поэтому если служба упадёт или будет остановлена, ядро не останется сиротой.
 pub struct Job(HANDLE);

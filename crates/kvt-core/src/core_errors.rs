@@ -180,6 +180,23 @@ mod tests {
             Action::Log
         );
         assert!(classify(CoreKind::Xray, "Xray 25.1.1 started").is_none());
+        // Windows не дала настроить адаптер (у пользователя был отключён IPv6).
+        // Попытки Xray — повод переподключиться без IPv6, а не остановиться.
+        let line = "2026/11/07 16:43:49.087028 [Error] proxy/tun: Interface configuration failed, retrying attempt 1/15 > proxy/tun: unable to set routes > Element not found.";
+        let rule = classify(CoreKind::Xray, line).unwrap();
+        assert_eq!(rule.code, "tun_ipv6");
+        assert_eq!(rule.action, Action::Reconnect);
+        let line =
+            "Failed to start: app/proxyman/inbound: failed to start proxy > Element not found.";
+        assert_eq!(
+            classify(CoreKind::Xray, line).unwrap().code,
+            "tun_not_configured"
+        );
+        let line = "FATAL start service: start inbound/tun[tun-in]: configure tun interface: Element not found.";
+        assert_eq!(
+            classify(CoreKind::SingBox, line).unwrap().code,
+            "tun_not_configured"
+        );
     }
 
     /// Обрыв соединения через туннель — частое и обычно безобидное событие (закрыли

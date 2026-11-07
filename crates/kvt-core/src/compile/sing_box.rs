@@ -30,7 +30,7 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
             "type": "tun",
             "tag": TAG_TUN,
             "interface_name": TUN_INTERFACE,
-            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+            "address": super::tun_addresses(input.ipv6),
             "mtu": 1500,
             "auto_route": true,
             // Без strict_route Windows отправляет DNS-запросы во все интерфейсы сразу.
@@ -303,6 +303,7 @@ mod tests {
             routing: &plan,
             dns: &dns,
             rule_set_dir: "C:\\ProgramData\\KVT\\rules\\",
+            ipv6: true,
         })
         .unwrap()
     }
@@ -376,7 +377,8 @@ mod tests {
                 server: &s,
                 routing: &plan,
                 dns: &dns,
-                rule_set_dir: "r"
+                rule_set_dir: "r",
+                ipv6: true,
             })
             .unwrap_err(),
             CompileError::Unsupported {

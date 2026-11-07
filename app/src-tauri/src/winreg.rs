@@ -1,5 +1,6 @@
 //! Строковые значения в `HKEY_CURRENT_USER`: имя для уведомлений и автозапуск.
-//! Только ветка текущего пользователя — прав администратора не нужно.
+//! Пишем только в ветку текущего пользователя — прав администратора не нужно;
+//! из `HKEY_LOCAL_MACHINE` только читаем (настройка IPv6 для диагностики).
 
 #![allow(unsafe_code)]
 
@@ -80,6 +81,28 @@ pub fn get_string(key: &str, name: &str) -> Option<String> {
     }
     let chars = (len as usize / 2).saturating_sub(1).min(buf.len());
     Some(String::from_utf16_lossy(&buf[..chars]))
+}
+
+/// Читает DWORD из `HKEY_LOCAL_MACHINE` (только чтение, прав администратора не нужно);
+/// `None` — ключа или значения нет.
+pub fn get_machine_dword(key: &str, name: &str) -> Option<u32> {
+    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD};
+    let (key, name) = (wide(key), wide(name));
+    let mut value: u32 = 0;
+    let mut len = std::mem::size_of::<u32>() as u32;
+    // SAFETY: строки заканчиваются нулём; RRF_RT_REG_DWORD пишет ровно 4 байта в value.
+    let code = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut value as *mut u32).cast(),
+            &mut len,
+        )
+    };
+    (code == 0).then_some(value)
 }
 
 /// Удаляет значение; отсутствие — не ошибка.
