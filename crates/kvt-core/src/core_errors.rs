@@ -192,11 +192,39 @@ mod tests {
             classify(CoreKind::Xray, line).unwrap().code,
             "tun_not_configured"
         );
+        // sing-box сразу выходит с этой строкой — служба переподключит без IPv6.
         let line = "FATAL start service: start inbound/tun[tun-in]: configure tun interface: Element not found.";
-        assert_eq!(
-            classify(CoreKind::SingBox, line).unwrap().code,
-            "tun_not_configured"
-        );
+        assert_eq!(classify(CoreKind::SingBox, line).unwrap().code, "tun_ipv6");
+        // Оставшееся устройство Wintun у обоих ядер — переподключение.
+        for (core, line) in [
+            (CoreKind::Xray, "Failed to start: app/proxyman/inbound: failed to start proxy > Cannot create a file when that file already exists."),
+            (CoreKind::SingBox, "FATAL start service: start inbound/tun[tun-in]: create adapter: Cannot create a file when that file already exists."),
+        ] {
+            let rule = classify(core, line).unwrap();
+            assert_eq!((rule.code.as_str(), rule.action), ("tun_busy", Action::Reconnect), "{line}");
+        }
+    }
+
+    /// Обычный запуск Xray с Wintun. «Элемент не найден» здесь — адаптера KVT ещё нет,
+    /// и он создаётся; правило на эту подстроку останавливало каждое подключение
+    /// (тестовая 0.9.4, 2026-11-07). Язык строки — язык Windows.
+    #[test]
+    fn normal_startup_lines_are_not_errors() {
+        for line in [
+            "Xray 26.10.31 (Xray, Penetrates Everything.) a4a3dff (go1.27.3 windows/amd64)",
+            "A unified platform for anti-censorship.",
+            "2026/11/07 16:43:48.730741 [Info] infra/conf/serial: Reading config: &{Name:C:\\ProgramData\\KVT\\run\\xray.json Format:json}",
+            "2026/11/07 16:43:48.816662 Failed to find matching adapter name: Элемент не найден. (Code 0x00000490)",
+            "2026/11/07 16:43:48.816662 Failed to find matching adapter name: Element not found. (Code 0x00000490)",
+            "2026/11/07 16:43:48.888187 Using existing driver 0.14",
+            "2026/11/07 16:43:48.900737 Creating adapter",
+            "2026/11/07 16:43:49.135330 from DNS accepted udp:77.88.8.8:53 [xray.system -> direct]",
+        ] {
+            assert!(
+                classify(CoreKind::Xray, line).map_or(true, |r| r.action == Action::Log),
+                "{line}"
+            );
+        }
     }
 
     /// Обрыв соединения через туннель — частое и обычно безобидное событие (закрыли

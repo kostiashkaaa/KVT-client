@@ -11,7 +11,7 @@ use kvt_core::captive;
 use kvt_core::ipc::{Captive, PingTarget, Response, MAX_PING_TARGETS};
 use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
 use kvt_core::rulesync::Http;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 pub struct NetClient {
@@ -161,10 +161,72 @@ pub async fn ping(targets: Vec<Option<PingTarget>>) -> Response {
     }
 }
 
+/// Ответил ли по HTTPS хоть один DoH-резолвер из каталога KVT. IP задан заранее,
+/// сертификат проверяется по имени — такой ответ не подделает ни страница входа,
+/// ни провайдер. HTTP провайдер подменить может: у пользователя с перехватом DNS
+/// запрос к `http://1.1.1.1` получал чужой ответ, KVT считал, что сеть просит
+/// войти, и автопереключение не меняло мёртвый сервер (2026-11-07).
+async fn https_reachable(local: Option<Ipv4Addr>) -> bool {
+    let endpoints: Vec<_> = kvt_core::dns::RESOLVERS
+        .iter()
+        .filter_map(|r| r.doh)
+        .collect();
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(5))
+        .local_address(local.map(IpAddr::V4));
+    for ep in &endpoints {
+        builder = builder.resolve(ep.host, SocketAddr::from((ep.ip, 443)));
+    }
+    let Ok(client) = builder.build() else {
+        return false;
+    };
+    let mut probes = tokio::task::JoinSet::new();
+    for ep in endpoints {
+        let client = client.clone();
+        probes.spawn(async move {
+            let start = Instant::now();
+            let ok = client
+                .get(format!("https://{}/", ep.host))
+                .send()
+                .await
+                .is_ok();
+            let outcome = if ok { Outcome::Ok } else { Outcome::Failed };
+            netlog::record(
+                netlog::Event::new(
+                    Origin::Service,
+                    Purpose::Captive,
+                    ep.host,
+                    Route::Direct,
+                    outcome,
+                )
+                .ms(start.elapsed()),
+            );
+            ok
+        });
+    }
+    // Первый же ответ решает; остальные запросы отменяются вместе с JoinSet.
+    while let Some(done) = probes.join_next().await {
+        if done.unwrap_or(false) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Просит ли сеть войти (отель, кафе). Запрос идёт напрямую через физический
 /// адаптер: TUN и kill switch его не задерживают (служба в списке разрешённых).
+/// Сначала HTTPS к известным серверам: если он проходит, страницы входа нет.
+/// Иначе — HTTP-запрос с заранее известным ответом, как у Windows.
 pub async fn captive_check() -> Captive {
     let local = crate::wfp::physical_ipv4();
+    if https_reachable(local).await {
+        tracing::info!(result = ?Captive::Online, "проверка страницы входа: HTTPS отвечает");
+        return Captive::Online;
+    }
     let Ok(client) = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -181,8 +243,24 @@ pub async fn captive_check() -> Captive {
         let answer = match client.get(*url).send().await {
             Ok(resp) => {
                 let status = resp.status().as_u16();
+                // Куда отправляет чужой ответ — только хост, без пути и параметров.
+                let location = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|u| reqwest::Url::parse(u).ok())
+                    .and_then(|u| u.host_str().map(str::to_owned));
                 let body = resp.text().await.unwrap_or_default();
-                Some(captive::classify(status, &body))
+                let state = captive::classify(status, &body);
+                if state == Captive::Portal {
+                    tracing::info!(
+                        status,
+                        ?location,
+                        bytes = body.len(),
+                        "проверка страницы входа: чужой ответ по HTTP"
+                    );
+                }
+                Some(state)
             }
             Err(_) => None,
         };
@@ -211,4 +289,17 @@ pub async fn captive_check() -> Captive {
     }
     tracing::info!(?result, "проверка страницы входа");
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ходит в интернет: `cargo test -p kvt-service -- --ignored https_probe`.
+    #[tokio::test]
+    #[ignore]
+    async fn https_probe_reaches_known_resolvers() {
+        assert!(https_reachable(None).await);
+        assert_eq!(captive_check().await, Captive::Online);
+    }
 }

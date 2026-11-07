@@ -118,6 +118,9 @@ pub struct Supervisor {
     /// Ядро не смогло настроить IPv6 у адаптера: до перезапуска службы TUN
     /// собирается только с IPv4, чтобы следующие подключения не ждали 15 попыток.
     ipv6_failed: bool,
+    /// Ядро завершилось с ошибкой, после которой положено переподключиться:
+    /// `exited` положил её в `issues`, `handle_issue` переподключит.
+    retry_after_exit: bool,
 }
 
 /// Код правила из `presets/core-errors.json`: ядро не может задать адаптеру IPv6.
@@ -135,6 +138,7 @@ impl Supervisor {
             last_plan: None,
             reconnected: false,
             ipv6_failed: false,
+            retry_after_exit: false,
         }
     }
 
@@ -178,6 +182,8 @@ impl Supervisor {
 
     async fn start_inner(&mut self, plan: &ConnectPlan) -> Result<(), String> {
         self.stop().await;
+        remove_stale_wintun_devices().await;
+        wait_adapter_removed().await;
         plan.routing.validate().map_err(|e| e.to_string())?;
         if !crate::win::is_elevated() {
             tracing::error!("служба без прав администратора — TUN не создать");
@@ -289,7 +295,11 @@ impl Supervisor {
     /// остановлено, текст — причина для пользователя.
     pub async fn handle_issue(&mut self) -> Option<String> {
         let issue = self.issues.lock().ok()?.take()?;
-        self.running.as_ref()?;
+        // Ядро уже не работает — действуем, только если это повтор после его выхода.
+        let after_exit = std::mem::take(&mut self.retry_after_exit);
+        if self.running.is_none() && !after_exit {
+            return None;
+        }
         match issue.action {
             core_errors::Action::Log => None,
             // Windows не дала задать адаптеру IPv6 (IPv6 выключен способом, которого не
@@ -338,16 +348,25 @@ impl Supervisor {
     }
 
     async fn enable_kill_switch(&mut self, spec: &CoreSpec) -> Result<(), String> {
-        // Интерфейс TUN появляется не мгновенно после старта ядра.
+        // Интерфейс TUN появляется не мгновенно после старта ядра: Wintun сам ждёт
+        // устройство до 15 с. Ждём дольше, но не дольше, чем живёт ядро.
         let mut luid = None;
-        for _ in 0..50 {
+        for _ in 0..200 {
             luid = wfp::interface_luid(TUN_INTERFACE);
             if luid.is_some() {
                 break;
             }
+            let exited = self
+                .running
+                .as_mut()
+                .map_or(true, |r| matches!(r.child.try_wait(), Ok(Some(_))));
+            if exited {
+                let last = self.recent_log(1).pop().unwrap_or_default();
+                return Err(format!("VPN-ядро остановилось, не создав адаптер: {last}"));
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let luid = luid.ok_or("интерфейс TUN не появился")?;
+        let luid = luid.ok_or("интерфейс TUN не появился за 20 с")?;
         let service = std::env::current_exe().map_err(|e| e.to_string())?;
         // «Гибрид»: пакеты, которые winws отправляет заново, Windows приписывает ядру
         // системы — kill switch должен их пропускать (см. `wfp::KillSwitch::add_rules`).
@@ -448,12 +467,29 @@ impl Supervisor {
                 let last = self.recent_log(1).pop().unwrap_or_default();
                 tracing::error!(%status, %last, "ядро завершилось само");
                 // Понятный текст, если последняя строка подходит под правило.
-                let known = self
+                let rule = self
                     .last_plan
                     .as_ref()
                     .and_then(|p| core_errors::classify(p.core, &last))
-                    .filter(|r| r.action != core_errors::Action::Log)
-                    .map(|r| r.text.clone());
+                    .filter(|r| r.action != core_errors::Action::Log);
+                // Ошибка, после которой положено переподключиться, а ядро завершилось
+                // раньше, чем её обработали (Wintun: «адаптер занят» — после остановки
+                // ядра от адаптера остаётся устройство, которое Wintun убирает при
+                // неудачной попытке, и следующая проходит). Переподключает handle_issue.
+                if let Some(rule) =
+                    rule.filter(|r| r.action == core_errors::Action::Reconnect && !self.reconnected)
+                {
+                    if let Ok(mut slot) = self.issues.lock() {
+                        *slot = Some(core_errors::Triggered {
+                            code: rule.code.clone(),
+                            text: rule.text.clone(),
+                            action: rule.action,
+                        });
+                        self.retry_after_exit = true;
+                        return None;
+                    }
+                }
+                let known = rule.map(|r| r.text.clone());
                 Some(known.unwrap_or_else(|| format!("VPN-ядро неожиданно остановилось: {last}")))
             }
             _ => None,
@@ -614,6 +650,51 @@ async fn collect<R: AsyncRead + Unpin>(reader: R, log: Log, watch: Option<(CoreK
                 l.pop_front();
             }
             l.push_back(line);
+        }
+    }
+}
+
+/// После уборки устройства Wintun интерфейс KVT исчезает не мгновенно — ждём до
+/// 3 с, чтобы новое ядро не застало прежний. Интерфейса нет — возврат сразу; не
+/// исчез (уборка не удалась) — запускаем всё равно: Xray откроет существующий
+/// адаптер, а если упрётся в «адаптер занят», переподключит `exited`.
+async fn wait_adapter_removed() {
+    const STEP: Duration = Duration::from_millis(100);
+    let mut waited = Duration::ZERO;
+    while wfp::interface_luid(TUN_INTERFACE).is_some() {
+        if waited >= Duration::from_secs(3) {
+            tracing::warn!("адаптер KVT не исчез за 3 с после остановки ядра");
+            return;
+        }
+        tokio::time::sleep(STEP).await;
+        waited += STEP;
+    }
+    if !waited.is_zero() {
+        tracing::info!(
+            ms = waited.as_millis() as u64,
+            "дождались удаления адаптера KVT"
+        );
+    }
+}
+
+/// Устройства Wintun, оставшиеся от прежнего запуска ядра (см.
+/// [`crate::win::remove_stale_wintun`]). Без этого на части компьютеров каждое
+/// подключение после «Отключить» 15 с ждало Wintun и падало с «адаптер занят».
+async fn remove_stale_wintun_devices() {
+    let results = tokio::task::spawn_blocking(|| {
+        crate::win::KVT_WINTUN_DEVICES
+            .iter()
+            .map(|id| (*id, crate::win::remove_stale_wintun(id)))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    for (device, result) in results {
+        match result {
+            Ok(true) => tracing::info!(device, "убрано оставшееся устройство Wintun"),
+            Ok(false) => {}
+            // Не мешает подключению: ядро попробует само, а при сбое KVT переподключится.
+            Err(e) => tracing::warn!(device, error = %e, "не удалось убрать устройство Wintun"),
         }
     }
 }

@@ -233,6 +233,89 @@ pub fn ipv6_disabled_components() -> Option<u32> {
     (code == 0).then_some(value)
 }
 
+/// Устройства Wintun адаптера KVT. GUID ядра выводят из имени адаптера
+/// (`compile::TUN_INTERFACE` = "KVT"), байты md5 читаются как GUID:
+/// Xray — md5("KVT"), sing-box (sing-tun) — md5("wintun" + "KVT").
+/// Пересчитать (PowerShell): `New-Object Guid (,[byte[]][Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("KVT")))`.
+pub const KVT_WINTUN_DEVICES: [&str; 2] = [
+    r"SWD\WINTUN\{E3B1C9E9-0F9E-2E8B-43A9-5F78C75937F9}",
+    r"SWD\WINTUN\{C1FBC9FB-8C1C-8D44-652C-5CBE24FBF960}",
+];
+
+/// Убирает оставшееся от прежнего запуска устройство Wintun с этим ID экземпляра.
+///
+/// Служба завершает ядро принудительно, и Wintun не успевает удалить своё устройство.
+/// Сам он убирает такие устройства в фоне при следующем открытии адаптера — но ядро
+/// тут же создаёт адаптер с тем же GUID, упирается в ещё не убранное устройство и
+/// через 15 с сдаётся («Cannot create a file when that file already exists»).
+/// Поэтому служба убирает устройство сама до запуска ядра, так же, как Wintun
+/// (`AdapterRemoveInstance`: DIF_REMOVE). Удаляется в любом состоянии: ядро KVT не
+/// работает, значит устройство осталось от него. Если ждать, пока Windows уберёт
+/// его сама, — не дожидаешься (на компьютере пользователя интерфейс жил дольше 3 с
+/// после каждой остановки). GUID тот же, поэтому новое устройство получит прежний
+/// интерфейс. Вызывать, только когда ядро KVT не работает. `Ok(true)` — удалено.
+pub fn remove_stale_wintun(instance_id: &str) -> io::Result<bool> {
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        SetupDiCallClassInstaller, SetupDiCreateDeviceInfoList, SetupDiDestroyDeviceInfoList,
+        SetupDiOpenDeviceInfoW, SetupDiSetClassInstallParamsW, DIF_REMOVE, DI_REMOVEDEVICE_GLOBAL,
+        GUID_DEVCLASS_NET, SP_CLASSINSTALL_HEADER, SP_DEVINFO_DATA, SP_REMOVEDEVICE_PARAMS,
+    };
+    use windows_sys::Win32::Foundation::ERROR_NO_SUCH_DEVINST;
+
+    struct DevInfo(isize);
+    impl Drop for DevInfo {
+        fn drop(&mut self) {
+            // SAFETY: набор создан SetupDiCreateDeviceInfoList и освобождается один раз.
+            unsafe { SetupDiDestroyDeviceInfoList(self.0) };
+        }
+    }
+
+    // SAFETY: класс — константа, окно не нужно.
+    let set = unsafe { SetupDiCreateDeviceInfoList(&GUID_DEVCLASS_NET, std::ptr::null_mut()) };
+    if set == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let set = DevInfo(set);
+    let id: Vec<u16> = instance_id.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: SP_DEVINFO_DATA — простые данные; cbSize задаётся ниже, как требует API.
+    let mut data: SP_DEVINFO_DATA = unsafe { std::mem::zeroed() };
+    data.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+    // SAFETY: строка заканчивается нулём, data — выходной параметр точного типа.
+    // Флаги 0: открывается и неподключённое устройство.
+    if unsafe { SetupDiOpenDeviceInfoW(set.0, id.as_ptr(), std::ptr::null_mut(), 0, &mut data) }
+        == 0
+    {
+        let err = io::Error::last_os_error();
+        #[allow(clippy::cast_possible_wrap)]
+        if err.raw_os_error() == Some(ERROR_NO_SUCH_DEVINST as i32) {
+            return Ok(false);
+        }
+        return Err(err);
+    }
+    let params = SP_REMOVEDEVICE_PARAMS {
+        ClassInstallHeader: SP_CLASSINSTALL_HEADER {
+            cbSize: std::mem::size_of::<SP_CLASSINSTALL_HEADER>() as u32,
+            InstallFunction: DIF_REMOVE,
+        },
+        Scope: DI_REMOVEDEVICE_GLOBAL,
+        HwProfile: 0,
+    };
+    // SAFETY: params живёт до конца вызовов, размер — точный размер структуры.
+    let ok = unsafe {
+        SetupDiSetClassInstallParamsW(
+            set.0,
+            &data,
+            &params.ClassInstallHeader,
+            std::mem::size_of::<SP_REMOVEDEVICE_PARAMS>() as u32,
+        ) != 0
+            && SetupDiCallClassInstaller(DIF_REMOVE, set.0, &data) != 0
+    };
+    if !ok {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(true)
+}
+
 /// Job Object с флагом «убить все процессы при закрытии». Ядро помещается в него,
 /// поэтому если служба упадёт или будет остановлена, ядро не останется сиротой.
 pub struct Job(HANDLE);
@@ -291,6 +374,25 @@ mod tests {
     #[test]
     fn descriptor_is_valid() {
         assert!(!pipe_descriptor().unwrap().is_null());
+    }
+
+    /// GUID устройств выведены из имени адаптера — при переименовании их надо пересчитать.
+    #[test]
+    fn wintun_devices_match_adapter_name() {
+        assert_eq!(kvt_core::compile::TUN_INTERFACE, "KVT");
+        for id in KVT_WINTUN_DEVICES {
+            assert!(
+                id.starts_with(r"SWD\WINTUN\{") && id.ends_with('}') && id.len() == 49,
+                "{id}"
+            );
+        }
+    }
+
+    /// Нет устройства — нечего убирать, и это не ошибка (права администратора не нужны).
+    #[test]
+    fn missing_wintun_device_is_not_an_error() {
+        let id = r"SWD\WINTUN\{00000000-0000-0000-0000-000000000000}";
+        assert!(!remove_stale_wintun(id).unwrap());
     }
 
     #[test]

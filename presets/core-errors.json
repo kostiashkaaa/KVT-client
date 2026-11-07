@@ -44,8 +44,7 @@
     },
     {
       "code": "tun_ipv6",
-      "cores": ["xray"],
-      "match": ["unable to set routes > element not found", "unable to set ips > element not found"],
+      "match": ["unable to set routes > element not found", "unable to set ips > element not found", "configure tun interface: element not found"],
       "text": "Windows не дала настроить сетевой адаптер KVT (IPv6).",
       "action": "reconnect",
       "count": 2,
@@ -53,7 +52,7 @@
     },
     {
       "code": "tun_not_configured",
-      "match": ["element not found", "элемент не найден"],
+      "match": ["failed to start proxy > element not found"],
       "text": "Windows не дала настроить сетевой адаптер KVT. Так бывает, если сетевые настройки меняла программа-«оптимизатор» или другой VPN-клиент. Перезагрузите компьютер и подключитесь снова; если не поможет — сохраните диагностику.",
       "action": "stop",
       "count": 1,
@@ -62,7 +61,7 @@
     {
       "code": "tun_busy",
       "match": ["cannot create a file when that file already exists", "failed to create adapter", "configure tun interface"],
-      "text": "Сетевой адаптер KVT не создался с первого раза — KVT переподключился.",
+      "text": "Сетевой адаптер KVT не создался — Windows ещё не убрала прежний. Подключитесь снова через несколько секунд.",
       "action": "reconnect",
       "count": 1,
       "window": 60
