@@ -73,19 +73,24 @@
 </script>
 
 <section class="card zapret">
+  <!-- Короткая строка: что сейчас работает и одна кнопка. Описание режима — в карточке
+       статуса выше, подробности и обслуживание — на вкладке Zapret. -->
   <div class="head">
-    <div>
+    <div class="title">
       <h2>Zapret</h2>
       <p class="caption">
-        Обход DPI для YouTube и Discord — zapret Flowseal{#if zapret.telegram}; Telegram Desktop — через
-          прокси (подключить — в настройках zapret){/if}{#if check.last}
-          · последняя проверка: {check.last.check.passed} из {check.last.check.max}{/if}
+        {#if pick.running}
+          Подбор стратегии…
+        {:else}
+          {pickedForNetwork ? "Подобрана для этой сети" : "Выбрана вручную"}{#if check.last}
+            · проверка: {check.last.check.passed} из {check.last.check.max}{/if}
+        {/if}
       </p>
     </div>
-    <div class="strategy">
-      <label for="zapret-strategy" class="caption">Стратегия</label>
+    <div class="controls">
       <select
         id="zapret-strategy"
+        aria-label="Стратегия zapret"
         value={current}
         disabled={pick.running || strategies.length === 0}
         onchange={(e) => choose(e.currentTarget.value)}
@@ -97,12 +102,44 @@
           <option value={s.id}>{s.title}{s.recommended ? "" : " (не рекомендуется)"}</option>
         {/each}
       </select>
+      {#if pick.running}
+        <button class="btn" onclick={() => void zapretAutoselectCancel()}>Остановить</button>
+      {:else}
+        <button
+          class="btn"
+          disabled={vpnConnected}
+          title={vpnConnected
+            ? "Отключите VPN: подбор проверяет сайты напрямую"
+            : "Перебирает стратегии и проверяет Discord и YouTube (TLS 1.2, TLS 1.3, загрузка больше 32 КБ). До трёх минут"}
+          onclick={startAutoselect}
+        >
+          Подобрать
+        </button>
+      {/if}
+      <button class="btn ghost square" title="Все настройки zapret" aria-label="Все настройки zapret" onclick={onopen}>
+        <Icon name="chevron" size={16} />
+      </button>
     </div>
   </div>
 
-  {#if pickedForNetwork && !pick.running}
-    <p class="caption">Подобрана автоматически для этой сети.</p>
+  {#if pick.running}
+    <div class="progress appear">
+      <div class="bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}>
+        <span style:width={`${share * 100}%`}></span>
+      </div>
+      <span class="caption">
+        {#if pick.progress}
+          {pick.progress.index === 0
+            ? "Проверка без zapret…"
+            : `Стратегия ${pick.progress.title} (${pick.progress.index} из ${pick.progress.total})`}
+          {#if pick.progress.score !== null}· {pick.progress.score} из {pick.progress.max}{/if}
+        {:else}
+          Подготовка…
+        {/if}
+      </span>
+    </div>
   {/if}
+
   {#if currentInfo?.needsTimestamps && !zapret.tcpTimestamps}
     <p class="note">
       Этой стратегии нужны TCP timestamps, а включать их запрещено в настройках — она может не сработать.
@@ -125,42 +162,6 @@
       <button class="btn" class:busy={stopping} disabled={stopping} onclick={stopConflicts}>Остановить</button>
     </div>
   {/if}
-
-  <div class="pick">
-    {#if pick.running}
-      <div class="progress">
-        <div class="bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}>
-          <span style:width={`${share * 100}%`}></span>
-        </div>
-        <span class="caption">
-          {#if pick.progress}
-            {pick.progress.index === 0
-              ? "Проверка без zapret…"
-              : `Стратегия ${pick.progress.title} (${pick.progress.index} из ${pick.progress.total})`}
-            {#if pick.progress.score !== null}· {pick.progress.score} из {pick.progress.max}{/if}
-          {:else}
-            Подготовка…
-          {/if}
-        </span>
-      </div>
-      <button class="btn" onclick={() => void zapretAutoselectCancel()}>Остановить подбор</button>
-    {:else}
-      <p class="caption hint">
-        Перебирает стратегии и проверяет Discord и YouTube: TLS 1.2, TLS 1.3 и загрузку больше 32 КБ. Занимает до
-        трёх минут.
-      </p>
-      <button
-        class="btn"
-        disabled={vpnConnected}
-        title={vpnConnected ? "Отключите VPN: подбор проверяет сайты напрямую" : undefined}
-        onclick={startAutoselect}
-      >
-        Подобрать автоматически
-      </button>
-    {/if}
-  </div>
-
-  <button class="link" onclick={onopen}>Все настройки, проверка и обслуживание zapret →</button>
 
   {#if pick.error}
     <p class="note">{pick.error}</p>
@@ -186,28 +187,55 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: var(--space-5);
+    padding: var(--space-4) var(--space-5);
   }
 
   .head {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: var(--space-4);
   }
 
-  .head p {
+  .title {
+    min-width: 0;
+  }
+
+  .title p {
     margin: 2px 0 0;
   }
 
-  .strategy {
+  .controls {
     display: flex;
+    flex: none;
     align-items: center;
     gap: var(--space-2);
   }
 
-  .strategy select {
-    min-width: 220px;
+  .controls select {
+    width: 200px;
+    height: 32px;
+  }
+
+  .btn.ghost {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-2);
+  }
+
+  .btn.ghost:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+
+  /* Стрелка «в раздел»: шеврон списка повёрнут вправо. */
+  .btn.square {
+    width: 32px;
+    padding: 0;
+  }
+
+  .btn.square :global(svg) {
+    transform: rotate(-90deg);
   }
 
   .caption,
@@ -249,27 +277,10 @@
     margin-left: auto;
   }
 
-  .pick {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-  }
-
-  .pick .btn {
-    flex: none;
-  }
-
-  .hint {
-    max-width: 480px;
-  }
-
   .progress {
     display: flex;
-    flex: 1;
     flex-direction: column;
     gap: var(--space-1);
-    min-width: 0;
   }
 
   .bar {
@@ -293,30 +304,33 @@
     background: var(--warn-subtle);
   }
 
-  .link {
-    align-self: flex-start;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--accent);
-    cursor: pointer;
-  }
-
-  .link:hover {
-    text-decoration: underline;
-    text-underline-offset: 2px;
-  }
-
   .result.good {
     border-left-color: var(--ok);
     background: var(--ok-subtle);
   }
 
-  @media (max-width: 720px) {
-    .head,
-    .pick {
+  /* Узкая колонка: выбор стратегии и кнопки — отдельной строкой под заголовком. */
+  @container (max-width: 560px) {
+    .head {
       flex-direction: column;
       align-items: stretch;
+    }
+
+    .controls select {
+      flex: 1;
+      width: auto;
+    }
+
+    /* Кнопка «Остановить» — под текстом, а не сбоку: текст не сжимается в столбик. */
+    .conflict {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .conflict .btn {
+      grid-column: 2;
+      justify-self: start;
+      margin-left: 0;
     }
   }
 </style>

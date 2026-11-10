@@ -2,6 +2,7 @@
   import { slide } from "svelte/transition";
   import Icon from "./Icon.svelte";
   import Flag, { country } from "./Flag.svelte";
+  import ServerName, { parts } from "./ServerName.svelte";
   import type { Group, Outcome, QuickResult, ServerSummary, SubscriptionInfo } from "./api";
 
   let {
@@ -114,7 +115,7 @@
 
   function label(s: ServerSummary): string {
     const parts = [s.protocol, s.transport, s.security].filter((p) => p && p !== "none" && p !== "tcp");
-    return parts.join(" · ");
+    return parts.join(" · ").toUpperCase();
   }
 
   const GB = 2 ** 30;
@@ -173,10 +174,11 @@
       .map((g) => ({ g, servers: q ? g.servers.filter((s) => matches(s, q)) : g.servers }))
       .filter(({ servers }) => !q || servers.length > 0);
   });
-  /** Поиск по названию, а ещё по стране выхода и входа — коду («ee») или названию («эстония»). */
+  /** Поиск по названию, а ещё по странам его флагов — коду («ee») или названию («эстония»). */
   function matches(s: ServerSummary, q: string): boolean {
     if (s.name.toLowerCase().includes(q)) return true;
-    return [s.flag, s.via].some((c) => c !== null && (c === q || country(c).toLowerCase().startsWith(q)));
+    const codes = [s.flag, ...parts(s.name).flatMap((p) => ("code" in p ? [p.code] : []))];
+    return codes.some((c) => c != null && (c === q || country(c).toLowerCase().startsWith(q)));
   }
   const found = $derived(visible.reduce((n, v) => n + v.servers.length, 0));
 
@@ -233,6 +235,9 @@
     </button>
   </header>
 
+  <!-- В двух колонках список прокручивается здесь, под неподвижной шапкой; в одной —
+       вместе со страницей (шапка прилипает к верху окна). -->
+  <div class="body">
   {#if searching && visible.length === 0}
     <p class="empty caption">Ничего не найдено</p>
   {/if}
@@ -304,14 +309,11 @@
                 class:selected={selected === s.key}
                 onclick={() => (selected = s.key)}
               >
-                <span class="radio" aria-hidden="true"></span>
-                <Flag code={s.flag} />
-                <span class="name"
-                  >{s.name}{#if s.via}<span class="via" title="Вход через {country(s.via)}"
-                      >· через {s.via.toUpperCase()}</span
-                    >{/if}</span
-                >
-                <span class="tag">{label(s)}</span>
+                <Flag code={s.flag} width={24} />
+                <span class="info">
+                  <span class="name"><ServerName name={s.name} /></span>
+                  <span class="sub">{label(s)}</span>
+                </span>
                 <!-- Новый итог проверки проявляется, а не подменяет прежний скачком. -->
                 {#key l.text}
                   <span class="latency {l.tone}" title={l.hint}>{l.text}</span>
@@ -357,11 +359,23 @@
       {/if}
     </div>
   {/each}
+  </div>
 </section>
 
 <style>
   .list {
-    padding-bottom: var(--space-2);
+    container-type: inline-size;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .body {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding-bottom: var(--space-1);
+    overflow-y: auto;
+    border-radius: 0 0 var(--radius-m) var(--radius-m);
+    scrollbar-width: thin;
   }
 
   /* Панель с поиском и «+» остаётся на месте, пока прокручивается длинный список. */
@@ -545,77 +559,83 @@
     padding: 0 var(--space-5) var(--space-2);
   }
 
+  /* Серверы — плитками: на широком окне в несколько столбцов, на узком — в один.
+     Плитка не уже 220 px, чтобы название и протокол помещались. */
   ul {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+    gap: 6px;
     margin: 0;
-    padding: 0 var(--space-2) var(--space-2);
+    padding: 0 var(--space-3) var(--space-3);
     list-style: none;
   }
 
   .row {
+    --tile: color-mix(in srgb, var(--surface), var(--text) 4%);
     display: grid;
-    grid-template-columns: 16px 20px 1fr auto 72px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: var(--space-3);
     width: 100%;
-    min-height: 40px;
-    padding: 0 var(--space-3);
+    min-height: 52px;
+    padding: 6px var(--space-3);
     border: 0;
-    border-radius: var(--radius-s);
-    background: transparent;
+    border-radius: 6px;
+    background: var(--tile);
     text-align: left;
     cursor: pointer;
-    transition: background-color var(--dur-fast) var(--ease);
+    transition:
+      background-color var(--dur-fast) var(--ease),
+      box-shadow var(--dur-fast) var(--ease);
   }
 
   .row:hover {
-    background: var(--surface-hover);
+    background: color-mix(in srgb, var(--surface), var(--text) 8%);
   }
 
   .row:active {
-    background: var(--surface-pressed);
+    background: color-mix(in srgb, var(--surface), var(--text) 11%);
   }
 
+  /* Выбранный — акцентная рамка и подсветка, без отдельной радиокнопки. */
   .row.selected {
     background: var(--accent-subtle);
+    box-shadow: inset 0 0 0 1px var(--accent);
   }
 
-  /* Радиокнопка: точка выбора «наливается» плавно. */
-  .radio {
-    width: 14px;
-    height: 14px;
-    border: 1px solid var(--stroke-strong);
-    border-radius: 50%;
-    transition:
-      border-width var(--dur-fast) var(--ease),
-      border-color var(--dur-fast) var(--ease);
+  .row:focus-visible {
+    outline: none;
+    box-shadow: var(--focus);
   }
 
-  .selected .radio {
-    border: 4px solid var(--accent);
+  .info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
   }
 
   /* Эмодзи в названиях (⚡, 🚀) — цветным шрифтом Windows. */
-  .name {
+  .name,
+  .sub {
     overflow: hidden;
-    font-family: var(--font), "Segoe UI Emoji";
     white-space: nowrap;
     text-overflow: ellipsis;
   }
 
-  .via {
-    margin-left: 6px;
-    font-size: 12px;
-    color: var(--text-2);
+  .name {
+    font-family: var(--font), "Segoe UI Emoji";
+    line-height: 20px;
   }
 
-  .tag {
+  .sub {
+    min-height: 16px;
     font-size: 12px;
-    color: var(--text-2);
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
+    line-height: 16px;
+    color: var(--text-3);
   }
 
   .latency {
+    min-width: 44px;
     font-size: 12px;
     text-align: right;
     white-space: nowrap;
@@ -691,7 +711,8 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
-    padding: var(--space-1) var(--space-3) var(--space-2) calc(16px + 20px + 2 * var(--space-3) + var(--space-3));
+    grid-column: 1 / -1;
+    padding: var(--space-1) var(--space-3) var(--space-2);
   }
 
   .confirm .caption {
@@ -710,7 +731,9 @@
     opacity: 0.9;
   }
 
-  @media (max-width: 720px) {
+  /* Узкая колонка (узкое окно или список рядом с карточкой статуса): срок подписки
+     переносится под название группы. */
+  @container (max-width: 560px) {
     .group-head {
       flex-wrap: wrap;
     }
@@ -719,14 +742,6 @@
       order: 3;
       width: 100%;
       padding-left: var(--space-8);
-    }
-
-    .tag {
-      display: none;
-    }
-
-    .row {
-      grid-template-columns: 16px 20px 1fr 64px;
     }
   }
 </style>

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import Flag, { country } from "./Flag.svelte";
+  import Flag from "./Flag.svelte";
+  import ServerName from "./ServerName.svelte";
   import {
     formatBytes,
     formatElapsed,
@@ -156,13 +157,12 @@
         {:else if zapretOnly}
           Стратегия {strategyTitle(zapretOnly.strategy)} · без VPN
         {:else if mode === "zapret" && !connected}
-          Обход DPI без VPN — сервер не нужен
+          Сервер не нужен — только обход DPI
         {:else if server}
           <!-- Без флага — без пустого места перед названием. -->
           <span class="server"
-            >{#if server.flag}<Flag code={server.flag} />{/if}<span class="name">{server.name}</span
-            >{#if server.via}<span class="caption" title="Вход через {country(server.via)}">через {server.via.toUpperCase()}</span
-            >{/if}{#if coreName}<span class="caption">· {coreName}</span>{/if}</span
+            >{#if server.flag}<Flag code={server.flag} />{/if}<span class="name"><ServerName name={server.name} /></span
+            >{#if coreName}<span class="caption">· {coreName}</span>{/if}</span
           >
         {:else}
           Выберите сервер ниже
@@ -608,5 +608,76 @@
   .why:hover {
     text-decoration: underline;
     text-underline-offset: 2px;
+  }
+
+  /* Узкая колонка (рядом со списком серверов или узкое окно): кнопка сверху по центру,
+     под ней состояние, режимы на всю ширину. */
+  @container (max-width: 520px) {
+    .status {
+      grid-template-columns: minmax(0, 1fr);
+      /* Карточка тянется на высоту окна — содержимое собирается по центру. */
+      align-content: center;
+      justify-items: center;
+      gap: var(--space-3);
+      text-align: center;
+    }
+
+    .action {
+      grid-column: 1;
+      grid-row: 1;
+      min-width: 0;
+    }
+
+    .power {
+      --size: 96px;
+    }
+
+    .icon {
+      width: 36px;
+      height: 36px;
+    }
+
+    /* Подпись «Подключить» дублирует заголовок под кнопкой — здесь она лишняя. */
+    .label {
+      display: none;
+    }
+
+    .state {
+      grid-row: 2;
+      justify-content: center;
+      max-width: 100%;
+    }
+
+    /* Состояние и так видно по кольцу кнопки и заголовку. */
+    .dot {
+      display: none;
+    }
+
+    .server {
+      justify-content: center;
+    }
+
+    .session {
+      justify-content: center;
+    }
+
+    .modes {
+      grid-row: 3;
+      justify-self: stretch;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: var(--space-1);
+    }
+
+    .thumb {
+      width: calc((100% - 4px) / 3);
+    }
+
+    .hint {
+      grid-row: 4;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--space-1);
+      margin: 0;
+    }
   }
 </style>

@@ -11,6 +11,11 @@
     Object.entries(urls).map(([path, url]) => [path.slice(path.lastIndexOf("/") + 1, -".svg".length), url]),
   );
 
+  /** Картинка флага по коду (`ee`), если она есть в сборке. */
+  export function flagUrl(code: string): string | undefined {
+    return byCode.get(code);
+  }
+
   const names = (() => {
     try {
       return new Intl.DisplayNames(["ru"], { type: "region" });
@@ -30,22 +35,33 @@
 </script>
 
 <script lang="ts">
-  let { code }: { code: string | null } = $props();
+  /** width — ширина в пикселях, высота по пропорции флага 4×3. */
+  let { code, width = 20 }: { code: string | null; width?: number } = $props();
   const src = $derived(code ? byCode.get(code) : undefined);
+  const height = $derived(Math.round((width * 3) / 4));
 </script>
 
 {#if code && src}
-  <img class="flag" {src} alt={country(code)} title={country(code)} width="20" height="15" draggable="false" />
+  <img
+    class="flag"
+    {src}
+    alt={country(code)}
+    title={country(code)}
+    {width}
+    {height}
+    style:width="{width}px"
+    style:height="{height}px"
+    style:border-radius="{width >= 24 ? 4 : 2}px"
+    draggable="false"
+  />
 {:else}
-  <span class="flag none" aria-hidden="true"></span>
+  <span class="flag none" aria-hidden="true" style:width="{width}px" style:height="{height}px"></span>
 {/if}
 
 <style>
   .flag {
     display: block;
-    width: 20px;
-    height: 15px;
-    border-radius: 2px;
+    flex: none;
     object-fit: cover;
     /* Тонкая рамка: белые полосы флагов не сливаются со светлым фоном. */
     box-shadow: 0 0 0 1px rgb(0 0 0 / 0.12);

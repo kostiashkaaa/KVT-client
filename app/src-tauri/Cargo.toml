@@ -41,6 +41,10 @@ rfd = { version = "0.17", default-features = false }
 # Уведомления Windows (тосты) с откликом на клик — тот же `windows` 0.62, что у Tauri.
 tauri-winrt-notification = "0.8"
 
+[dev-dependencies]
+# Виртуальное время в тестах ожидания лимитов NetGovernor.
+tokio = { workspace = true, features = ["test-util"] }
+
 [lints]
 workspace = true
 

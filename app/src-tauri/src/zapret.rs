@@ -563,6 +563,10 @@ async fn pick(
     state: &AppState,
     before: Option<ServiceStatus>,
 ) -> Result<PickResult, String> {
+    // Подбор идёт минутами и сам переключает службу. Если за это время пользователь
+    // подключился, отключился или сменил режим, подбор не трогает его выбор.
+    let epoch = state.epoch();
+    let acted = || state.epoch() != epoch;
     let strategies = zapret_strategies().await?;
     if strategies.is_empty() {
         return Err("Нет стратегий zapret. Нажмите «Переустановить» во вкладке Zapret.".into());
@@ -599,7 +603,7 @@ async fn pick(
     let mut cancelled = false;
     if baseline.passed < MAX_SCORE {
         for (i, strategy) in strategies.iter().enumerate() {
-            if state.zapret_cancel.load(Ordering::SeqCst) {
+            if state.zapret_cancel.load(Ordering::SeqCst) || acted() {
                 cancelled = true;
                 break;
             }
@@ -633,6 +637,11 @@ async fn pick(
     }
     // Стратегия, которая не лучше, чем без zapret, не нужна.
     let best = best.filter(|(_, c)| c.passed > baseline.passed);
+    if acted() {
+        // Служба уже работает так, как решил пользователь, — не останавливаем её.
+        crate::tray::refresh(app).await;
+        return Err("Подбор прерван: подключение изменили во время проверки.".into());
+    }
 
     if let Some((strategy, _)) = &best {
         let saved = state.choice.lock().ok().map(|mut c| {

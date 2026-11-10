@@ -2,12 +2,13 @@
 //! не рисует эмодзи-флаги — вместо них видны буквы. Поэтому флаг вынимается из
 //! названия как код страны, а интерфейс рисует его картинкой.
 //!
-//! Цепочки серверов провайдеры называют «🇷🇺→🇪🇪 для wifi · via RU»: вход через одну
-//! страну, выход — в другой. Флагом сервера считается страна выхода (последний флаг):
-//! через неё виден интернет. Страна входа — отдельной пометкой.
+//! Как в обычных клиентах: флаг сервера — первый флаг-эмодзи в названии. Если
+//! название с него начинается, он уходит из текста; всё остальное («→🇪🇪 для wifi ·
+//! via RU») остаётся как в подписке, а прочие флаги интерфейс рисует прямо в тексте.
 
 const RI_START: u32 = 0x1F1E6;
 const RI_END: u32 = 0x1F1FF;
+const VS16: char = '\u{FE0F}';
 
 /// Коды, для которых в интерфейсе есть картинка (flag-icons, 4×3, двухбуквенные).
 const KNOWN: &str = "ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi \
@@ -20,14 +21,12 @@ const KNOWN: &str = "ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be
     si sj sk sl sm sn so sr ss st sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz \
     ua ug um un us uy uz va vc ve vg vi vn vu wf ws xk ye yt za zm zw";
 
-/// Флаги, разобранные из названия сервера.
+/// Флаг, разобранный из названия сервера.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerFlags {
-    /// Страна, через которую виден интернет (`"ee"`).
+    /// Страна по первому флагу в названии (`"ru"`).
     pub flag: Option<String>,
-    /// Страна входа у цепочки (`"ru"`), если она отличается от страны выхода.
-    pub via: Option<String>,
-    /// Название без флагов и без «via RU».
+    /// Название как в подписке, без ведущего флага.
     pub name: String,
 }
 
@@ -38,201 +37,185 @@ fn regional(c: char) -> Option<char> {
         .then(|| char::from(b'a' + (code - RI_START) as u8))
 }
 
-/// Код страны из слова («RU», «uk»), если для него есть флаг.
-fn country_code(word: &str) -> Option<String> {
-    if word.len() != 2 || !word.bytes().all(|b| b.is_ascii_alphabetic()) {
-        return None;
-    }
-    let code = match word.to_ascii_lowercase().as_str() {
-        "uk" => "gb".to_owned(),
-        other => other.to_owned(),
-    };
-    KNOWN.split_whitespace().any(|k| k == code).then_some(code)
+fn known(code: &str) -> bool {
+    KNOWN.split_whitespace().any(|k| k == code)
 }
 
-/// Разделители, которые остаются по краям названия, когда из него вынули флаги.
+/// Флаг-эмодзи в начале `chars`: код страны (`"ru"`), даже если картинки для него нет.
+fn flag_at(chars: &[char]) -> Option<String> {
+    let a = regional(*chars.first()?)?;
+    let b = regional(*chars.get(1)?)?;
+    Some(format!("{a}{b}"))
+}
+
+/// Разделители между ведущим флагом и названием: «🇩🇰 | для wifi».
 fn is_separator(c: char) -> bool {
-    c.is_whitespace() || matches!(c, '|' | '-' | '·' | ',' | '→' | '>' | '\u{FE0F}')
+    c.is_whitespace() || matches!(c, '|' | '·' | ',' | ':' | VS16)
 }
 
 pub fn split_flags(name: &str) -> ServerFlags {
-    let chars: Vec<char> = name.chars().collect();
-    let mut flags: Vec<String> = Vec::new();
-    // Флаги вынимаются целиком; на месте каждого — пробел, чтобы слова не слиплись.
-    let mut text = String::with_capacity(name.len());
+    let trimmed = name.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+
+    // Первый флаг, для которого есть картинка: незнакомая пара индикаторов — не страна.
+    let mut first = None;
     let mut i = 0;
     while i < chars.len() {
-        match regional(chars[i]).zip(chars.get(i + 1).copied().and_then(regional)) {
-            Some((a, b)) => {
-                flags.push(format!("{a}{b}"));
-                text.push(' ');
-                i += 2;
+        match flag_at(&chars[i..]) {
+            Some(code) if known(&code) => {
+                first = Some((i, code));
+                break;
             }
-            // Одинокий индикатор не флаг — выбрасываем, он всё равно не читается.
-            None if regional(chars[i]).is_some() => i += 1,
-            None => {
-                text.push(chars[i]);
-                i += 1;
-            }
+            Some(_) => i += 2,
+            None => i += 1,
         }
     }
 
-    let mut words: Vec<&str> = text.split_whitespace().collect();
-
-    // «via RU» / «через RU» — страна входа словами.
-    let mut via_word = None;
-    if let Some(pos) = words.windows(2).position(|w| {
-        matches!(w[0].to_lowercase().as_str(), "via" | "через") && country_code(w[1]).is_some()
-    }) {
-        via_word = country_code(words[pos + 1]);
-        words.drain(pos..pos + 2);
-    }
-
-    // Нет флага-эмодзи, но название начинается с кода страны: «DK для wifi».
-    if flags.is_empty() {
-        if let Some(code) = words
-            .first()
-            .filter(|w| w.bytes().all(|b| b.is_ascii_uppercase()))
-            .and_then(|w| country_code(w))
-        {
-            flags.push(code);
-            words.remove(0);
-        }
-    }
-
-    let flag = flags.last().cloned();
-    let via = match flags.len() {
-        0 | 1 => via_word,
-        _ => flags.first().cloned(),
-    }
-    .filter(|v| Some(v) != flag.as_ref());
-
-    let joined = words.join(" ");
-    // Разделитель, оставшийся от вынутого «· via RU», тоже уходит.
-    let trimmed = joined.trim_matches(is_separator).to_owned();
-    let name = if trimmed.is_empty() {
-        name.trim().to_owned()
-    } else {
-        trimmed
+    let Some((at, flag)) = first else {
+        return ServerFlags {
+            flag: None,
+            name: trimmed.to_owned(),
+        };
     };
-    ServerFlags { flag, via, name }
+    // Флаг посреди названия («Fast 🇩🇪 Frankfurt») остаётся в тексте: это часть названия.
+    let rest: String = if at == 0 {
+        chars.iter().skip(2).collect()
+    } else {
+        trimmed.to_owned()
+    };
+    let rest = rest.trim_start_matches(is_separator).trim_end();
+    // Название из одного флага — показываем его же, а не пустую строку.
+    let name = if rest.is_empty() { trimmed } else { rest };
+    ServerFlags {
+        flag: Some(flag),
+        name: name.to_owned(),
+    }
 }
 
-/// Название без флагов и код страны выхода (`"nl"`).
+/// Код страны по первому флагу и название без ведущего флага.
 pub fn split_flag(name: &str) -> (Option<String>, String) {
     let f = split_flags(name);
     (f.flag, f.name)
+}
+
+/// Название для трея и уведомлений, где картинку не нарисовать: флаги-эмодзи
+/// заменяются кодами стран — «RU→EE для wifi · via RU». Windows всё равно показала
+/// бы их буквами, но в рамках и вплотную к тексту.
+pub fn plain_name(name: &str) -> String {
+    let chars: Vec<char> = name.trim().chars().collect();
+    let mut out = String::with_capacity(name.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some(code) = flag_at(&chars[i..]) {
+            out.push_str(&code.to_ascii_uppercase());
+            i += 2;
+        } else {
+            if chars[i] != VS16 && regional(chars[i]).is_none() {
+                out.push(chars[i]);
+            }
+            i += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn flags(name: &str) -> (Option<String>, Option<String>, String) {
-        let f = split_flags(name);
-        (f.flag, f.via, f.name)
-    }
-
-    fn want(
-        flag: Option<&str>,
-        via: Option<&str>,
-        name: &str,
-    ) -> (Option<String>, Option<String>, String) {
-        (flag.map(Into::into), via.map(Into::into), name.into())
+    fn want(flag: Option<&str>, name: &str) -> (Option<String>, String) {
+        (flag.map(Into::into), name.into())
     }
 
     #[test]
     fn leading_flag() {
-        assert_eq!(
-            split_flag("🇳🇱 Нидерланды"),
-            (Some("nl".into()), "Нидерланды".into())
-        );
+        assert_eq!(split_flag("🇳🇱 Нидерланды"), want(Some("nl"), "Нидерланды"));
         assert_eq!(
             split_flag("🇩🇰 | DK для wifi"),
-            (Some("dk".into()), "DK для wifi".into())
+            want(Some("dk"), "DK для wifi")
+        );
+        assert_eq!(
+            split_flag("🇪🇪\u{FE0F} для wifi"),
+            want(Some("ee"), "для wifi")
+        );
+        assert_eq!(split_flag("  🇷🇺Москва "), want(Some("ru"), "Москва"));
+    }
+
+    #[test]
+    fn first_flag_wins_rest_of_name_stays() {
+        // Цепочка: флаг — первый (страна входа), остальное — как в подписке.
+        assert_eq!(
+            split_flag("🇷🇺→🇪🇪 для wifi · via RU"),
+            want(Some("ru"), "→🇪🇪 для wifi · via RU")
+        );
+        assert_eq!(
+            split_flag("🇷🇺 🇪🇪 для wifi · прямой"),
+            want(Some("ru"), "🇪🇪 для wifi · прямой")
         );
     }
 
     #[test]
-    fn flag_in_the_middle() {
+    fn flag_in_the_middle_stays_in_name() {
         assert_eq!(
             split_flag("Fast 🇩🇪 Frankfurt ⚡"),
-            (Some("de".into()), "Fast Frankfurt ⚡".into())
+            want(Some("de"), "Fast 🇩🇪 Frankfurt ⚡")
         );
     }
 
     #[test]
-    fn chain_takes_exit_country() {
-        for name in [
-            "🇷🇺→🇪🇪 для wifi · via RU",
-            "🇷🇺 → 🇪🇪 для wifi",
-            "🇷🇺>🇪🇪 для wifi",
-            "🇷🇺-🇪🇪 для wifi",
-            "🇷🇺 🇪🇪 для wifi",
-        ] {
+    fn words_are_not_flags() {
+        // Код страны словом — обычный текст, как в других клиентах.
+        assert_eq!(split_flag("DK для wifi"), want(None, "DK для wifi"));
+        assert_eq!(split_flag("Таллин via RU"), want(None, "Таллин via RU"));
+    }
+
+    #[test]
+    fn no_flag() {
+        assert_eq!(split_flag("  Server 1 "), want(None, "Server 1"));
+        assert_eq!(split_flag("🚀 Turbo"), want(None, "🚀 Turbo"));
+        assert_eq!(
+            split_flag("📶 LTE сервера 👇"),
+            want(None, "📶 LTE сервера 👇")
+        );
+        assert_eq!(split_flag(""), want(None, ""));
+    }
+
+    #[test]
+    fn broken_indicators() {
+        // Одинокий индикатор и пара без страны (🇽🇽) — не флаг, текст не теряется.
+        assert_eq!(split_flag("\u{1F1F7} x"), want(None, "\u{1F1F7} x"));
+        assert_eq!(split_flag("🇽🇽 тест"), want(None, "🇽🇽 тест"));
+        assert_eq!(split_flag("🇽🇽 🇳🇱 тест"), want(Some("nl"), "🇽🇽 🇳🇱 тест"));
+    }
+
+    #[test]
+    fn only_flag_keeps_something_readable() {
+        assert_eq!(split_flag("🇯🇵"), want(Some("jp"), "🇯🇵"));
+    }
+
+    #[test]
+    fn every_known_code_round_trips() {
+        for code in KNOWN.split_whitespace() {
+            let emoji: String = code
+                .bytes()
+                .map(|b| char::from_u32(RI_START + u32::from(b - b'a')).unwrap())
+                .collect();
             assert_eq!(
-                flags(name),
-                want(Some("ee"), Some("ru"), "для wifi"),
-                "{name}"
+                split_flag(&format!("{emoji} x")),
+                want(Some(code), "x"),
+                "{code}"
             );
         }
     }
 
     #[test]
-    fn via_in_words() {
+    fn plain_name_spells_flags() {
         assert_eq!(
-            flags("🇩🇰 для wifi · via RU"),
-            want(Some("dk"), Some("ru"), "для wifi")
+            plain_name("🇷🇺→🇪🇪 для wifi · via RU"),
+            "RU→EE для wifi · via RU"
         );
-        assert_eq!(flags("Таллин через ru"), want(None, Some("ru"), "Таллин"));
-        // «via» без кода страны — обычные слова.
-        assert_eq!(flags("🇳🇱 via cdn"), want(Some("nl"), None, "via cdn"));
-    }
-
-    #[test]
-    fn same_country_twice_is_not_a_chain() {
-        assert_eq!(
-            flags("🇩🇪→🇩🇪 Франкфурт"),
-            want(Some("de"), None, "Франкфурт")
-        );
-    }
-
-    #[test]
-    fn country_code_as_first_word() {
-        assert_eq!(flags("DK для wifi"), want(Some("dk"), None, "для wifi"));
-        assert_eq!(flags("UK London"), want(Some("gb"), None, "London"));
-        // Только заглавные, только первое слово, только настоящие коды.
-        assert_eq!(flags("Dk для wifi"), want(None, None, "Dk для wifi"));
-        assert_eq!(flags("Сервер DE"), want(None, None, "Сервер DE"));
-        assert_eq!(flags("XX тест"), want(None, None, "XX тест"));
-        assert_eq!(flags("LTE сервера"), want(None, None, "LTE сервера"));
-    }
-
-    #[test]
-    fn no_flag() {
-        assert_eq!(split_flag("  Server 1 "), (None, "Server 1".into()));
-        assert_eq!(split_flag("🚀 Turbo"), (None, "🚀 Turbo".into()));
-        assert_eq!(
-            split_flag("📶 LTE сервера 👇"),
-            (None, "📶 LTE сервера 👇".into())
-        );
-    }
-
-    #[test]
-    fn only_flag_keeps_something_readable() {
-        let (flag, name) = split_flag("🇯🇵");
-        assert_eq!(flag.as_deref(), Some("jp"));
-        assert_eq!(name, "🇯🇵");
-    }
-
-    #[test]
-    fn code_is_always_two_ascii_letters() {
-        for c in RI_START..=RI_END {
-            let ch = char::from_u32(c).unwrap();
-            let (flag, _) = split_flag(&format!("{ch}{ch} x"));
-            let flag = flag.unwrap();
-            assert_eq!(flag.len(), 2);
-            assert!(flag.bytes().all(|b| b.is_ascii_lowercase()));
-        }
+        assert_eq!(plain_name("🇪🇪\u{FE0F} для wifi"), "EE для wifi");
+        assert_eq!(plain_name(" Server "), "Server");
+        assert_eq!(plain_name("\u{1F1F7} x"), " x");
     }
 }

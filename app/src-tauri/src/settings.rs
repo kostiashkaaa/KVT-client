@@ -163,6 +163,11 @@ pub fn save(dir: &Path, choice: &Choice) -> Result<(), String> {
         map.insert("version".into(), VERSION.into());
     }
     let bytes = serde_json::to_vec_pretty(&value).map_err(|_| crate::errors::STATE)?;
+    // Сохраняют окно, трей, автопереключение и профиль сети — из разных потоков.
+    // Общий .tmp при одновременной записи давал бы битый JSON (хвост длинной
+    // записи после короткой), а битый файл при запуске сбросил бы kill switch.
+    static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = dir.join(format!("{FILE}.tmp"));
     std::fs::write(&tmp, bytes)
         .and_then(|()| std::fs::rename(&tmp, dir.join(FILE)))

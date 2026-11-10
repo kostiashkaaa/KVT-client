@@ -458,6 +458,14 @@ impl Supervisor {
             self.zapret = None;
             let last = self.recent_log(1).pop().unwrap_or_default();
             tracing::error!(%reason, %last, "zapret завершился");
+            // «Гибрид»: без winws ядро осталось бы работать, а статус — «ошибка»:
+            // окно предлагало бы «Подключить», автопереключение перестало бы следить
+            // за туннелем. Останавливаем и ядро — состояние совпадает со статусом,
+            // kill switch (если включён) держит интернет закрытым, как при сбое ядра.
+            if let Some(mut running) = self.running.take() {
+                let _ = running.child.start_kill();
+                tracing::info!("ядро остановлено вслед за zapret");
+            }
             return Some(format!("{reason}: {last}"));
         }
         let running = self.running.as_mut()?;

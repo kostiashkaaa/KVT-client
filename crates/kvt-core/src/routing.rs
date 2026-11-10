@@ -29,7 +29,7 @@ pub enum Layer {
     Provider,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum Matcher {
     /// Домен и все его поддомены.
@@ -250,6 +250,24 @@ pub mod presets {
         "::1/128",
     ];
 
+    /// Обновления Windows, Defender и OneDrive. Только узкие имена: остальной
+    /// microsoft.com маршрутизируется как обычно.
+    pub const WINDOWS_UPDATE_DOMAINS: &[&str] = &[
+        "windowsupdate.com",
+        "windowsupdate.microsoft.com",
+        "update.microsoft.com",
+        "delivery.mp.microsoft.com",
+        "do.dsp.mp.microsoft.com",
+        "wustat.windows.com",
+        "ntservicepack.microsoft.com",
+        "definitionupdates.microsoft.com",
+        "onedrive.live.com",
+        "storage.live.com",
+        "api.onedrive.com",
+        "d.docs.live.net",
+        "oneclient.sfx.ms",
+    ];
+
     /// Какие списки блокировок использовать.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
@@ -276,6 +294,13 @@ pub mod presets {
                 .map(|c| rule(Layer::System, Matcher::IpCidr((*c).into()), Action::Direct)),
         );
         let p = Layer::Preset;
+        // Обновления Windows, Defender и OneDrive: не тратят трафик подписки и не
+        // тормозят из-за VPN. Свой сайт («Свои сайты») это правило перекрывает.
+        plan.extend(
+            WINDOWS_UPDATE_DOMAINS
+                .iter()
+                .map(|d| rule(p, Matcher::DomainSuffix((*d).into()), Action::Direct)),
+        );
         match mode {
             ListMode::Compact => plan.extend([
                 // Российские сайты, которые не открываются с зарубежных IP.
@@ -319,6 +344,171 @@ pub mod presets {
         pub everything_else: Action,
         /// Выбор для отдельных списков itdoginfo: id → действие.
         pub overrides: std::collections::BTreeMap<String, Action>,
+        /// Свои сайты и адреса. Важнее списков. Неверная запись пропускается, а не
+        /// сбрасывает весь выбор.
+        #[serde(deserialize_with = "lenient_custom")]
+        pub custom: Vec<CustomRule>,
+    }
+
+    /// Свой сайт или адрес: домен со всеми поддоменами, IP или подсеть.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct CustomRule {
+        pub target: String,
+        pub action: Action,
+    }
+
+    fn lenient_custom<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<CustomRule>, D::Error> {
+        let raw = Vec::<serde_json::Value>::deserialize(d)?;
+        Ok(raw
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect())
+    }
+
+    /// Больше своих правил не берём: это ручной список, а не реестр.
+    pub const MAX_CUSTOM_RULES: usize = 300;
+
+    /// Разбор того, что ввёл пользователь: `https://www.Пример.рф/путь` →
+    /// `xn--e1afmkfd.xn--p1ai`, `1.2.3.4` → `1.2.3.4/32`, `10.1.2.3/8` → `10.0.0.0/8`.
+    /// Ошибка — готовый текст для интерфейса.
+    pub fn custom_matcher(input: &str) -> Result<Matcher, &'static str> {
+        parse_custom(input).map(|(m, _)| m)
+    }
+
+    /// Свой адрес для показа: кириллический домен остаётся кириллицей
+    /// (`Пример.РФ` → `пример.рф`), остальное — как в правиле.
+    pub fn custom_display(input: &str) -> Result<String, &'static str> {
+        let (m, unicode) = parse_custom(input)?;
+        Ok(match (m, unicode) {
+            (_, Some(u)) => u,
+            (Matcher::DomainSuffix(d), None) => d,
+            // Один адрес — без `/32`: так его и вводят.
+            (Matcher::IpCidr(c), None) => match c.split_once('/') {
+                Some((ip, "32" | "128")) => ip.to_owned(),
+                _ => c,
+            },
+            _ => return Err("Не похоже на адрес сайта. Пример: example.com"),
+        })
+    }
+
+    /// Правило и, для кириллического домена, его вид в Unicode.
+    fn parse_custom(input: &str) -> Result<(Matcher, Option<String>), &'static str> {
+        const NOT_A_SITE: &str = "Не похоже на адрес сайта. Пример: example.com";
+        let text = input.trim();
+        if text.is_empty() {
+            return Err("Введите адрес сайта, IP или подсеть.");
+        }
+        if text.len() > 300 || text.chars().any(char::is_whitespace) {
+            return Err("Одно правило — один адрес, без пробелов.");
+        }
+        if let Some(m) = cidr(text)? {
+            return Ok((m, None));
+        }
+        // Ссылка целиком: схема, логин, путь и порт отбрасываются.
+        let rest = text.split_once("://").map_or(text, |(_, r)| r);
+        let rest = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        let rest = rest.rsplit_once('@').map_or(rest, |(_, h)| h);
+        if let Some(inner) = rest.strip_prefix('[') {
+            // [2001:db8::1]:443
+            let (ip, _) = inner.split_once(']').ok_or(NOT_A_SITE)?;
+            return cidr(ip)?.ok_or(NOT_A_SITE).map(|m| (m, None));
+        }
+        let host = match rest.rsplit_once(':') {
+            Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
+            _ => rest,
+        };
+        if let Some(m) = cidr(host)? {
+            return Ok((m, None));
+        }
+        let host = host.to_lowercase();
+        let host = host.trim_start_matches("*.").trim_matches('.');
+        let host = host.strip_prefix("www.").unwrap_or(host);
+        let domain = match url::Host::parse(host) {
+            Ok(url::Host::Domain(d)) => d,
+            Ok(url::Host::Ipv4(ip)) => return Ok((ip_cidr(ip.into(), None), None)),
+            Ok(url::Host::Ipv6(ip)) => return Ok((ip_cidr(ip.into(), None), None)),
+            Err(_) => return Err(NOT_A_SITE),
+        };
+        let labels_ok = domain
+            .split('.')
+            .all(|l| !l.starts_with('-') && !l.ends_with('-'));
+        if !crate::zapret::valid_domain(&domain) || !labels_ok {
+            return Err(NOT_A_SITE);
+        }
+        let unicode = (!host.is_ascii()).then(|| host.to_owned());
+        Ok((Matcher::DomainSuffix(domain), unicode))
+    }
+
+    /// IP или подсеть; `Ok(None)` — это не адрес. Слишком широкие подсети
+    /// отвергаются: для всего трафика есть «Всё остальное».
+    fn cidr(text: &str) -> Result<Option<Matcher>, &'static str> {
+        let (addr, prefix) = match text.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (text, None),
+        };
+        let Ok(ip) = addr.parse::<std::net::IpAddr>() else {
+            return Ok(None);
+        };
+        let (max, min) = if ip.is_ipv4() { (32, 8) } else { (128, 16) };
+        let prefix = match prefix.map(str::parse::<u8>) {
+            None => None,
+            Some(Ok(n)) if n > max => return Err("Неверная длина подсети."),
+            Some(Ok(n)) if n < min => {
+                return Err("Подсеть слишком широкая — для всего трафика есть «Всё остальное».")
+            }
+            Some(Ok(n)) => Some(n),
+            Some(Err(_)) => return Err("Неверная длина подсети."),
+        };
+        Ok(Some(ip_cidr(ip, prefix)))
+    }
+
+    /// Подсеть в каноническом виде: биты адреса за префиксом обнуляются.
+    fn ip_cidr(ip: std::net::IpAddr, prefix: Option<u8>) -> Matcher {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        let text = match ip {
+            IpAddr::V4(v4) => {
+                let n = u32::from(prefix.unwrap_or(32));
+                let mask = u32::MAX.checked_shl(32 - n).unwrap_or(0);
+                format!("{}/{n}", Ipv4Addr::from(u32::from(v4) & mask))
+            }
+            IpAddr::V6(v6) => {
+                let n = u32::from(prefix.unwrap_or(128));
+                let mask = u128::MAX.checked_shl(128 - n).unwrap_or(0);
+                format!("{}/{n}", Ipv6Addr::from(u128::from(v6) & mask))
+            }
+        };
+        Matcher::IpCidr(text)
+    }
+
+    /// Свои правила для плана: неверные и повторы пропускаются, не больше
+    /// `MAX_CUSTOM_RULES`. Zapret здесь не бывает — только VPN, напрямую, блок.
+    /// Ядро берёт первое совпавшее правило, поэтому узкие идут раньше широких:
+    /// `mail.example.com` раньше `example.com`, `/24` раньше `/16` — порядок, в
+    /// котором их добавили, на результат не влияет.
+    pub fn custom_rules(custom: &[CustomRule]) -> Vec<Rule> {
+        let mut seen = std::collections::HashSet::new();
+        let mut rules: Vec<Rule> = custom
+            .iter()
+            .filter(|c| matches!(c.action, Action::Proxy | Action::Direct | Action::Block))
+            .filter_map(|c| custom_matcher(&c.target).ok().map(|m| (m, c.action)))
+            .filter(|(m, _)| seen.insert(m.clone()))
+            .take(MAX_CUSTOM_RULES)
+            .map(|(m, action)| rule(Layer::User, m, action))
+            .collect();
+        rules.sort_by_key(|r| std::cmp::Reverse(specificity(&r.matcher)));
+        rules
+    }
+
+    /// Насколько узкое правило: число меток домена или длина префикса подсети.
+    fn specificity(m: &Matcher) -> usize {
+        match m {
+            Matcher::DomainSuffix(d) => d.split('.').count(),
+            Matcher::IpCidr(c) => c
+                .rsplit_once('/')
+                .and_then(|(_, p)| p.parse().ok())
+                .unwrap_or(0),
+            _ => 0,
+        }
     }
 
     impl Default for RoutingSettings {
@@ -327,6 +517,7 @@ pub mod presets {
                 list_mode: ListMode::Compact,
                 everything_else: Action::Proxy,
                 overrides: Default::default(),
+                custom: Vec::new(),
             }
         }
     }
@@ -339,6 +530,8 @@ pub mod presets {
             _ => Action::Proxy,
         };
         let mut plan = russia_smart(everything_else, s.list_mode);
+        // Свой сайт важнее выбора для списка: в слое User они идут первыми.
+        plan.extend(custom_rules(&s.custom));
         for (id, action) in &s.overrides {
             if matches!(action, Action::Proxy | Action::Direct | Action::Block) {
                 if let Some(r) = list_choice(id, *action) {
@@ -458,6 +651,201 @@ mod tests {
         let s: RoutingSettings = serde_json::from_str(r#"{"listMode":"full"}"#).unwrap();
         assert_eq!(s.list_mode, ListMode::Full);
         assert_eq!(s.everything_else, Action::Proxy);
+    }
+
+    fn custom(target: &str) -> Result<Matcher, &'static str> {
+        custom_matcher(target)
+    }
+
+    #[test]
+    fn custom_targets_are_normalized() {
+        let d = |s: &str| Ok(Matcher::DomainSuffix(s.into()));
+        let ip = |s: &str| Ok(Matcher::IpCidr(s.into()));
+        assert_eq!(custom("Example.COM"), d("example.com"));
+        assert_eq!(custom("https://www.example.com/a?b#c"), d("example.com"));
+        assert_eq!(custom("*.example.com"), d("example.com"));
+        assert_eq!(custom("user:pw@example.com:8443/x"), d("example.com"));
+        assert_eq!(custom("пример.рф"), d("xn--e1afmkfd.xn--p1ai"));
+        assert_eq!(
+            custom_display("https://www.Пример.РФ/путь").unwrap(),
+            "пример.рф"
+        );
+        assert_eq!(custom_display("WWW.Example.com").unwrap(), "example.com");
+        assert_eq!(custom_display("10.1.2.3/8").unwrap(), "10.0.0.0/8");
+        assert_eq!(custom_display("1.2.3.4/32").unwrap(), "1.2.3.4");
+        assert_eq!(custom_display("[2001:db8::1]:443").unwrap(), "2001:db8::1");
+        assert_eq!(custom(" sub.example.org. "), d("sub.example.org"));
+        assert_eq!(custom("1.2.3.4"), ip("1.2.3.4/32"));
+        assert_eq!(custom("http://1.2.3.4:8080/"), ip("1.2.3.4/32"));
+        assert_eq!(custom("10.1.2.3/8"), ip("10.0.0.0/8"));
+        assert_eq!(custom("2001:db8::1"), ip("2001:db8::1/128"));
+        assert_eq!(custom("[2001:db8::1]:443"), ip("2001:db8::1/128"));
+        assert_eq!(custom("2001:db8:1::/48"), ip("2001:db8:1::/48"));
+    }
+
+    #[test]
+    fn bad_custom_targets_are_rejected() {
+        for bad in [
+            "",
+            "   ",
+            "two words.com",
+            "0.0.0.0/0",
+            "1.2.3.4/33",
+            "1.2.3.4/x",
+            "::/0",
+            "exa_mple.com",
+            "-bad.com",
+            "регулярка.*",
+            "regexp:.*",
+            "domain:evil.com",
+            "a..b",
+            "[::1",
+        ] {
+            assert!(custom(bad).is_err(), "{bad:?}");
+        }
+        let long = format!("{}.com", "a".repeat(400));
+        assert!(custom(&long).is_err());
+    }
+
+    #[test]
+    fn custom_rules_beat_lists_and_skip_bad_values() {
+        let mut s = RoutingSettings::default();
+        s.overrides.insert("youtube".into(), Action::Direct);
+        s.custom = vec![
+            CustomRule {
+                target: "https://www.YouTube.com/watch".into(),
+                action: Action::Proxy,
+            },
+            CustomRule {
+                target: "youtube.com".into(),
+                action: Action::Block,
+            },
+            CustomRule {
+                target: "gosuslugi.ru".into(),
+                action: Action::Proxy,
+            },
+            CustomRule {
+                target: "discord.com".into(),
+                action: Action::Zapret,
+            },
+            CustomRule {
+                target: "not a site".into(),
+                action: Action::Direct,
+            },
+        ];
+        let plan = from_settings(&s);
+        assert!(plan.validate().is_ok());
+        // Повтор не перекрывает первое правило; zapret и мусор пропущены.
+        assert_eq!(custom_rules(&s.custom).len(), 2);
+        let user: Vec<_> = plan
+            .ordered()
+            .into_iter()
+            .filter(|r| r.layer == Layer::User)
+            .collect();
+        assert_eq!(user[0].matcher, Matcher::DomainSuffix("youtube.com".into()));
+        assert_eq!(user[0].action, Action::Proxy);
+        assert_eq!(plan.resolve_domain("m.youtube.com"), Action::Proxy);
+        // Свой сайт сильнее пресета «.ru напрямую».
+        assert_eq!(plan.resolve_domain("www.gosuslugi.ru"), Action::Proxy);
+    }
+
+    #[test]
+    fn narrow_custom_rule_wins_regardless_of_order() {
+        let s = RoutingSettings {
+            custom: vec![
+                CustomRule {
+                    target: "example.com".into(),
+                    action: Action::Direct,
+                },
+                CustomRule {
+                    target: "mail.example.com".into(),
+                    action: Action::Proxy,
+                },
+                CustomRule {
+                    target: "10.20.0.0/16".into(),
+                    action: Action::Proxy,
+                },
+                CustomRule {
+                    target: "10.20.30.0/24".into(),
+                    action: Action::Block,
+                },
+            ],
+            ..Default::default()
+        };
+        let plan = from_settings(&s);
+        assert_eq!(plan.resolve_domain("mail.example.com"), Action::Proxy);
+        assert_eq!(plan.resolve_domain("www.example.com"), Action::Direct);
+        let ips: Vec<_> = plan
+            .ordered()
+            .into_iter()
+            .filter_map(|r| match (&r.layer, &r.matcher) {
+                (Layer::User, Matcher::IpCidr(c)) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ips, ["10.20.30.0/24", "10.20.0.0/16"]);
+    }
+
+    #[test]
+    fn custom_rules_are_capped() {
+        let custom: Vec<_> = (0..MAX_CUSTOM_RULES + 50)
+            .map(|i| CustomRule {
+                target: format!("site{i}.example.com"),
+                action: Action::Direct,
+            })
+            .collect();
+        assert_eq!(custom_rules(&custom).len(), MAX_CUSTOM_RULES);
+    }
+
+    #[test]
+    fn user_direct_drops_domain_from_zapret() {
+        let mut plan = hybrid();
+        plan.extend(custom_rules(&[CustomRule {
+            target: "youtube.com".into(),
+            action: Action::Direct,
+        }]));
+        assert_eq!(plan.resolve_domain("youtube.com"), Action::Direct);
+        assert!(!plan.zapret_hostlist().contains(&"youtube.com".to_string()));
+        assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn windows_update_goes_direct_but_not_all_of_microsoft() {
+        let plan = russia_smart(Action::Proxy);
+        for host in [
+            "fe3.delivery.mp.microsoft.com",
+            "download.windowsupdate.com",
+            "sls.update.microsoft.com",
+            "definitionupdates.microsoft.com",
+        ] {
+            assert_eq!(plan.resolve_domain(host), Action::Direct, "{host}");
+        }
+        assert_eq!(plan.resolve_domain("microsoft.com"), Action::Proxy);
+        assert_eq!(plan.resolve_domain("login.live.com"), Action::Proxy);
+        // Свой сайт перекрывает пресет.
+        let mut s = RoutingSettings::default();
+        s.custom.push(CustomRule {
+            target: "windowsupdate.com".into(),
+            action: Action::Proxy,
+        });
+        assert_eq!(
+            from_settings(&s).resolve_domain("download.windowsupdate.com"),
+            Action::Proxy
+        );
+    }
+
+    #[test]
+    fn old_settings_without_custom_load() {
+        let s: RoutingSettings = serde_json::from_str(
+            r#"{"listMode":"compact","everythingElse":"direct","overrides":{}}"#,
+        )
+        .unwrap();
+        assert!(s.custom.is_empty());
+        let s: RoutingSettings = serde_json::from_str(
+            r#"{"custom":[{"target":"example.com","action":"direct"},{"target":"x","action":"weird"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.custom.len(), 1);
     }
 
     #[test]

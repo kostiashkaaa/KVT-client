@@ -180,10 +180,45 @@ pub fn show_main_window(app: &AppHandle) {
         return;
     }
     if let Some(config) = app.config().app.windows.first() {
-        if let Err(e) = WebviewWindowBuilder::from_config(app, config).and_then(|b| b.build()) {
-            tracing::error!(error = %e, "не удалось открыть окно KVT");
+        match WebviewWindowBuilder::from_config(app, config).and_then(|b| b.build()) {
+            #[cfg(debug_assertions)]
+            Ok(window) => dev_dock_right(&window),
+            #[cfg(not(debug_assertions))]
+            Ok(_) => {}
+            Err(e) => tracing::error!(error = %e, "не удалось открыть окно KVT"),
         }
     }
+}
+
+/// Разработка: с `KVT_DEV_DOCK=right` (scripts/dev.ps1) окно встаёт к правому краю
+/// экрана на всю высоту — рядом с редактором, и так после каждой пересборки.
+#[cfg(debug_assertions)]
+fn dev_dock_right(window: &tauri::WebviewWindow) {
+    if std::env::var("KVT_DEV_DOCK").as_deref() != Ok("right") {
+        return;
+    }
+    let Ok(Some(monitor)) = window.primary_monitor() else {
+        return;
+    };
+    let area = monitor.work_area();
+    // Не уже minWidth окна (720 логических пикселей), иначе оно вылезет за край.
+    let min = (720.0 * monitor.scale_factor()).ceil() as u32;
+    let width = (area.size.width * 2 / 5).max(min).min(area.size.width);
+    // set_size задаёт область содержимого: рамку и заголовок вычитаем, чтобы окно
+    // целиком влезло в рабочую область над панелью задач.
+    let (frame_w, frame_h) = match (window.outer_size(), window.inner_size()) {
+        (Ok(o), Ok(i)) => (
+            o.width.saturating_sub(i.width),
+            o.height.saturating_sub(i.height),
+        ),
+        _ => (0, 0),
+    };
+    let x = area.position.x + i32::try_from(area.size.width - width).unwrap_or(0);
+    let _ = window.set_size(tauri::PhysicalSize::new(
+        width.saturating_sub(frame_w),
+        area.size.height.saturating_sub(frame_h),
+    ));
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, area.position.y));
 }
 
 /// Открывает окно на странице `page` («why» — «Почему не работает?» с запуском).

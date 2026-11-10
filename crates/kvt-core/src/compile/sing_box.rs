@@ -164,9 +164,18 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
             o.insert("method".into(), method.clone().into());
             o.insert("password".into(), password.expose().into());
         }
-        Protocol::Hysteria2 { password, obfs } => {
+        Protocol::Hysteria2 {
+            password,
+            obfs,
+            ports,
+        } => {
             o.insert("type".into(), "hysteria2".into());
             o.insert("password".into(), password.expose().into());
+            if let Some(ports) = ports {
+                // `server_ports` не сочетается с `server_port`: основной порт — в списке.
+                o.remove("server_port");
+                o.insert("server_ports".into(), server_ports(s.port, ports).into());
+            }
             if let Some(obfs) = obfs {
                 o.insert(
                     "obfs".into(),
@@ -200,6 +209,16 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
             o.insert("type".into(), "anytls".into());
             o.insert("password".into(), password.expose().into());
         }
+        Protocol::Socks { username, password } => {
+            o.insert("type".into(), "socks".into());
+            o.insert("version".into(), "5".into());
+            if let Some(u) = username {
+                o.insert("username".into(), u.expose().into());
+            }
+            if let Some(p) = password {
+                o.insert("password".into(), p.expose().into());
+            }
+        }
     }
 
     if let Some(transport) = transport(&s.transport)? {
@@ -209,6 +228,21 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
         o.insert("tls".into(), tls);
     }
     Ok(o.into())
+}
+
+/// `20000-30000,40000` → `["443:443", "20000:30000", "40000:40000"]` (формат sing-box).
+fn server_ports(port: u16, ranges: &str) -> Vec<String> {
+    let mut list: Vec<(u16, u16)> = ranges
+        .split(',')
+        .filter_map(|r| {
+            let (a, b) = r.split_once('-').unwrap_or((r, r));
+            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+        })
+        .collect();
+    if !list.iter().any(|(a, b)| (*a..=*b).contains(&port)) {
+        list.insert(0, (port, port));
+    }
+    list.into_iter().map(|(a, b)| format!("{a}:{b}")).collect()
 }
 
 fn transport(t: &Transport) -> Result<Option<Value>, CompileError> {
@@ -331,6 +365,36 @@ mod tests {
         assert_eq!(p["type"], "hysteria2");
         assert_eq!(p["obfs"]["type"], "salamander");
         assert_eq!(p["tls"]["alpn"][0], "h3");
+    }
+
+    #[test]
+    fn hysteria2_port_hopping() {
+        let c = build("hy2://secret@hy.example.com:443?mport=20000-30000,40000&sni=hy.example.com");
+        let p = &c.config["outbounds"][0];
+        assert!(p.get("server_port").is_none());
+        assert_eq!(
+            p["server_ports"],
+            json!(["443:443", "20000:30000", "40000:40000"])
+        );
+        // Основной порт уже внутри диапазона — отдельно не добавляется.
+        let c = build("hy2://secret@hy.example.com:20000-30000");
+        assert_eq!(
+            c.config["outbounds"][0]["server_ports"],
+            json!(["20000:30000"])
+        );
+    }
+
+    #[test]
+    fn socks5_outbound() {
+        let c = build("socks5://u:p@px.example.com:1080#s");
+        let p = &c.config["outbounds"][0];
+        assert_eq!(p["type"], "socks");
+        assert_eq!(p["version"], "5");
+        assert_eq!(
+            (p["username"].as_str(), p["password"].as_str()),
+            (Some("u"), Some("p"))
+        );
+        assert!(p.get("tls").is_none());
     }
 
     #[test]

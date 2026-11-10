@@ -149,9 +149,28 @@
         }
         // Подписки уже есть (KVT пользовались до подсказок) — первый запуск позади.
         if (groups.some((g) => g.servers.length > 0)) onboarded = true;
+        void autoPing();
       })
       .finally(() => (restored = true));
   });
+
+  /** Пинг при открытии окна: колонка задержки сразу заполнена, а не «—».
+   *  Только TCP без TLS (DPI не замечает) и только для небольших списков. */
+  const AUTO_PING_MAX = 200;
+  async function autoPing() {
+    if (groups.reduce((n, g) => n + g.servers.length, 0) > AUTO_PING_MAX) return;
+    for (const g of groups) {
+      if (g.servers.length === 0 || checking !== null || fullChecking !== null) continue;
+      checking = g.id;
+      try {
+        results = { ...results, ...(await quickCheck(g.id)) };
+      } catch {
+        /* служба не ответила — пользователь нажмёт «Пинг» сам */
+      } finally {
+        checking = null;
+      }
+    }
+  }
 
   // Сервер или режим сменились не из окна: автопереключение или профиль сети.
   $effect(() =>
@@ -163,7 +182,8 @@
         // Автопереключение уже подключилось к новому серверу, профиль сети сам
         // переподключил с новым режимом, автоподбор zapret сам перезапустил службу
         // с новой стратегией — второй раз из окна не нужно.
-        if (connectedWith) connectedWith = { server: snap.choice.server, mode, zapret: zapretKey() };
+        if (connectedWith)
+          connectedWith = { server: snap.choice.server, mode, zapret: zapretKey(), routing: routingKey() };
       });
     }),
   );
@@ -410,12 +430,22 @@
     addError = null;
     try {
       const result = await addSubscription(body);
-      if (result.servers === 0) {
-        addError = "В подписке не нашлось ни одного сервера.";
+      if (result.servers === 0 || result.group === null) {
+        addError = result.failed[0] ?? "В подписке не нашлось ни одного сервера.";
         return;
       }
+      // Добавилась только часть вставки — сказать, что именно не вышло.
+      if (result.failed.length > 0) {
+        pushNotice({
+          text: `Добавлено не всё. ${result.failed.join(" ")}`,
+          tone: "warn",
+          key: "add-partial",
+        });
+      }
       await reloadGroups();
-      if (result.first) selected = result.first;
+      // При работающем VPN выбор не трогаем: иначе KVT сразу переподключился бы
+      // к первому серверу новой подписки.
+      if (result.first && (!active || selected === null)) selected = result.first;
       adding = false;
       page = "home";
       void check(result.group);
@@ -452,18 +482,24 @@
   const active = $derived(status?.state === "connected" || status?.state === "zapret");
   /** Настройки zapret, с которыми запущена служба (стратегия, фильтр). */
   const zapretKey = () => JSON.stringify($state.snapshot(zapret));
+  /** Настройки маршрутизации без учёта порядка выбора списков. */
+  const routingKey = () =>
+    JSON.stringify({
+      ...$state.snapshot(routing),
+      overrides: Object.entries(routing.overrides).sort(([a], [b]) => a.localeCompare(b)),
+    });
   /** В режиме «VPN» из настроек zapret на подключение влияет только прокси Telegram. */
   const telegramOf = (key: string) => {
     const z = JSON.parse(key) as ZapretChoice;
     return `${z.telegram}:${z.telegramRoute}`;
   };
   /** С каким сервером, режимом и настройками zapret сейчас подключены. */
-  let connectedWith = $state<{ server: string | null; mode: Mode; zapret: string } | null>(null);
+  let connectedWith = $state<{ server: string | null; mode: Mode; zapret: string; routing: string } | null>(null);
 
   async function onconnect() {
     busy = true;
     dismissKey("error");
-    const target = { server: selected, mode, zapret: zapretKey() };
+    const target = { server: selected, mode, zapret: zapretKey(), routing: routingKey() };
     try {
       await setChoice(currentChoice());
       status = await connect();
@@ -509,13 +545,17 @@
     const refreshStatus = async () => {
       if (busy) return;
       const next = await serviceStatus().catch(() => null);
+      // Пока шёл опрос, пользователь нажал «Подключить»: старый ответ не должен
+      // перезаписать статус и сбросить connectedWith.
+      if (busy) return;
       if (next?.state === "failed" && status?.state === "connected") {
         showError(`Соединение прервано: ${next.reason}`, true);
       }
       const nextActive = next?.state === "connected" || next?.state === "zapret";
       if (!nextActive) connectedWith = null;
       // Подключились из трея или профиля сети — считаем, что с текущим выбором.
-      else if (!connectedWith && restored) connectedWith = { server: selected, mode, zapret: zapretKey() };
+      else if (!connectedWith && restored)
+        connectedWith = { server: selected, mode, zapret: zapretKey(), routing: routingKey() };
       status = next;
       polled = true;
       mismatch = next === null && (await serviceMismatch().catch(() => false));
@@ -534,7 +574,7 @@
     <NoticeStack />
     <!-- Новая вкладка проявляется с лёгким подъёмом; старая уходит сразу, без задержки. -->
     {#key page}
-    <div class="page">
+    <div class="page" class:home={page === "home"}>
     {#if page === "home"}
       <h1>Главная</h1>
 
@@ -563,13 +603,18 @@
         </div>
       {/if}
 
+      <!-- Широкое окно: слева управление (прилипает при прокрутке), справа серверы.
+           Узкое — всё в одну колонку. -->
+      <div class="home-grid">
+      <div class="side">
       <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {mismatch} telegram={zapret.telegram} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} onwhy={askWhy} />
-
 
       {#if mode !== "vpn"}
         <ZapretCard bind:zapret vpnConnected={status?.state === "connected"} onopen={() => (page = "zapret")} />
       {/if}
+      </div>
 
+      <div class="servers">
       {#if allServers.length > 0}
         <ServerList
           {groups}
@@ -594,12 +639,20 @@
           <Banner>{addError}</Banner>
         {/if}
       {/if}
+      </div>
+      </div>
     {:else if page === "subscriptions"}
       <h1>Подписки</h1>
       <Subscriptions onadd={() => (adding = true)} />
     {:else if page === "routing"}
       <h1>Маршрутизация</h1>
-      <Routing bind:routing connected={status?.state === "connected"} />
+      <Routing
+        bind:routing
+        connected={status?.state === "connected"}
+        pending={status?.state === "connected" && !!connectedWith && connectedWith.routing !== routingKey()}
+        {busy}
+        onapply={onconnect}
+      />
     {:else if page === "zapret"}
       <h1>Zapret</h1>
       <ZapretPage bind:zapret bind:mode {status} {busy} {onconnect} />
@@ -662,6 +715,8 @@
   main {
     /* Закреплённые панели (список серверов) прилипают к самому верху окна. */
     --page-pad-top: var(--space-6);
+    /* Карточки подстраиваются под ширину своей колонки (@container), а не окна. */
+    container: main / inline-size;
     flex: 1;
     min-width: 0;
     padding: var(--page-pad-top) var(--space-8) var(--space-6);
@@ -669,19 +724,80 @@
     scrollbar-gutter: stable;
   }
 
+  /* Страница не растягивается бесконечно: на большом экране стоит по центру. */
   .page {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    max-width: 880px;
+    max-width: 1040px;
+    margin-inline: auto;
     /* backwards: после анимации на странице не остаётся transform — закреплённая
        панель списка серверов работает как обычно. */
     animation: kvt-rise var(--dur) var(--ease) backwards;
   }
 
+  /* Главная шире: серверы встают до трёх столбцов. */
+  .page.home {
+    max-width: 1240px;
+  }
+
   /* Карточки не сжимаются под высоту окна — страница прокручивается целиком. */
-  .page > :global(*) {
+  .page > :global(*),
+  .side > :global(*),
+  .servers > :global(*) {
     flex-shrink: 0;
+  }
+
+  .home-grid,
+  .side,
+  .servers {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-width: 0;
+  }
+
+  .side,
+  .servers {
+    container-type: inline-size;
+  }
+
+  /* Две колонки одной высоты — по содержимому, но не выше окна: короткий список
+     не растягивается в пустую панель, длинный прокручивается внутри карточки.
+     Страница при этом сама не прокручивается. */
+  @container main (min-width: 900px) {
+    .page.home {
+      height: 100%;
+      min-height: 480px;
+    }
+
+    .page > .home-grid {
+      display: grid;
+      grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+      flex: 0 1 auto;
+      min-height: 0;
+    }
+
+    .home-grid > .side,
+    .home-grid > .servers {
+      min-height: 0;
+    }
+
+    /* Низкое окно, подбор zapret, предупреждения — колонка прокручивается сама. */
+    .side {
+      overflow-y: auto;
+      scrollbar-width: thin;
+    }
+
+    /* Список выше карточки статуса — она тянется до его высоты, кнопка по центру. */
+    .side > :global(.status) {
+      flex: 1 0 auto;
+    }
+
+    .servers > :global(.list) {
+      flex: 0 1 auto;
+      min-height: 0;
+    }
   }
 
   .overlay {
@@ -700,7 +816,7 @@
   .overlay-error {
     width: min(560px, calc(100vw - 32px));
   }
-  @media (max-width: 720px) {
+  @media (max-width: 900px) {
     main {
       --page-pad-top: var(--space-4);
       padding: var(--space-4);

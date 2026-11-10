@@ -193,9 +193,156 @@ pub fn unwrap_app_link(raw: &str) -> Result<Option<String>, &'static str> {
     }
 }
 
+/// Больше ссылок на подписки за одну вставку не берём: каждая — сетевой запрос.
+pub const MAX_INPUT_URLS: usize = 20;
+
+/// Вставка, разложенная на адреса подписок и всё остальное (ключи, base64, JSON).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SplitInput {
+    /// Адреса подписок (`https://…`, `http://…`, ссылки «добавить в приложение») в
+    /// порядке вставки, без повторов. Проверка схемы — дело загрузчика.
+    pub urls: Vec<String>,
+    /// Остальное: ссылки на серверы, base64 или конфиги. Пусто — ключей во вставке нет.
+    pub rest: String,
+}
+
+/// Раскладывает вставку пользователя. Понимает несколько ссылок на подписки сразу,
+/// ссылку внутри текста («Ваша подписка: https://…», кавычки, скобки) и смесь
+/// подписок с ключами. base64 и JSON целиком уходят в `rest` как есть.
+pub fn split_input(input: &str) -> SplitInput {
+    let trimmed = input.trim().trim_start_matches('\u{feff}').trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') || !trimmed.contains("://") {
+        return SplitInput {
+            urls: Vec::new(),
+            rest: trimmed.to_owned(),
+        };
+    }
+    let mut urls: Vec<String> = Vec::new();
+    let mut keys: Vec<&str> = Vec::new();
+    for line in trimmed.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        // Ссылка на сервер занимает строку целиком: в названии после `#` бывают пробелы.
+        if starts_with_server_scheme(line) {
+            keys.push(line);
+            continue;
+        }
+        // Ключ посреди текста («Ключ: vless://…») — до конца строки.
+        if let Some(at) = server_link_start(line) {
+            keys.push(&line[at..]);
+        }
+        for token in line.split_whitespace() {
+            const QUOTES: &str = "\"'«»<>()[]{}`";
+            let token = token
+                .trim_start_matches(|c: char| QUOTES.contains(c))
+                .trim_end_matches(|c: char| QUOTES.contains(c) || ".,;!?:".contains(c));
+            if is_subscription_address(token) && !urls.iter().any(|u| u == token) {
+                urls.push(token.to_owned());
+            }
+        }
+    }
+    urls.truncate(MAX_INPUT_URLS);
+    // Ни одного адреса подписки — вставка как есть (её разберёт парсер ключей).
+    let rest = if urls.is_empty() {
+        trimmed.to_owned()
+    } else {
+        keys.join("\n")
+    };
+    SplitInput { urls, rest }
+}
+
+/// Где в строке текста начинается ссылка на сервер (после пробела).
+fn server_link_start(line: &str) -> Option<usize> {
+    line.match_indices(char::is_whitespace)
+        .map(|(i, c)| i + c.len())
+        .find(|&i| starts_with_server_scheme(&line[i..]))
+}
+
+/// Строка начинается со ссылки на сервер (`vless://`, `ss://`, …), а не на подписку.
+fn starts_with_server_scheme(line: &str) -> bool {
+    let Some((scheme, _)) = line.split_once("://") else {
+        return false;
+    };
+    !scheme.is_empty()
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && !is_subscription_address(line)
+}
+
+fn is_subscription_address(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        return lower.len() > "https://".len();
+    }
+    lower
+        .split_once("://")
+        .is_some_and(|(scheme, _)| APP_SCHEMES.contains(&scheme))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_url_stays_url() {
+        let got = split_input("  https://sub.example.com/abc?x=1 \n");
+        assert_eq!(got.urls, ["https://sub.example.com/abc?x=1"]);
+        assert!(got.rest.is_empty());
+    }
+
+    #[test]
+    fn url_inside_text_is_found() {
+        let got = split_input("Ваша подписка: «https://sub.example.com/abc». Срок — 30 дней.");
+        assert_eq!(got.urls, ["https://sub.example.com/abc"]);
+        assert!(got.rest.is_empty());
+    }
+
+    #[test]
+    fn several_urls_and_keys_are_split() {
+        let input = "https://a.example.com/1\nhappy text\nhttps://b.example.com/2 https://a.example.com/1\n\
+                     vless://id@h:443?type=tcp#Сервер с пробелами\nКлюч: trojan://p@h:443#b\n\
+                     happ://add/https://c.example.com/3";
+        let got = split_input(input);
+        assert_eq!(
+            got.urls,
+            [
+                "https://a.example.com/1",
+                "https://b.example.com/2",
+                "happ://add/https://c.example.com/3"
+            ]
+        );
+        assert_eq!(
+            got.rest,
+            "vless://id@h:443?type=tcp#Сервер с пробелами\ntrojan://p@h:443#b"
+        );
+    }
+
+    #[test]
+    fn keys_base64_and_json_are_left_alone() {
+        let keys = "vless://id@h:443#a\ntrojan://p@h:443#b";
+        assert_eq!(split_input(keys).rest, keys);
+        assert!(split_input(keys).urls.is_empty());
+        let b64 = "dmxlc3M6Ly9pZEBoOjQ0MyNh";
+        assert_eq!(split_input(b64).rest, b64);
+        // В JSON бывают адреса (`https://…` в remarks) — это не подписка.
+        let json = r#"{"outbounds":[],"remarks":"https://example.com"}"#;
+        assert_eq!(split_input(json).rest, json);
+        assert!(split_input(json).urls.is_empty());
+    }
+
+    #[test]
+    fn hostile_input_does_not_panic() {
+        for input in [
+            "://",
+            "https://",
+            "a://b://c",
+            "\u{feff}",
+            "https:// x",
+            &"https://a/ ".repeat(500),
+        ] {
+            let got = split_input(input);
+            assert!(got.urls.len() <= MAX_INPUT_URLS);
+        }
+    }
 
     #[test]
     fn parses_common_headers() {

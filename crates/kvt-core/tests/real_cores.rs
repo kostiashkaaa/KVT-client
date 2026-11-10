@@ -45,6 +45,8 @@ const SAMPLES: &[(&str, CoreKind)] = &[
     ("vmess://eyJ2IjoiMiIsInBzIjoidm1lc3MiLCJhZGQiOiJ2bS5leGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6ImI4MzEzODFkLTYzMjQtNGQ1My1hZDRmLThjZGE0OGIzMDgxMSIsImFpZCI6IjAiLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJwYXRoIjoiL3ZtIiwiaG9zdCI6InZtLmV4YW1wbGUuY29tIiwidGxzIjoidGxzIiwic25pIjoidm0uZXhhbXBsZS5jb20ifQ==", CoreKind::SingBox),
     ("tuic://b831381d-6324-4d53-ad4f-8cda48b30811:pass@tu.example.com:443?congestion_control=bbr&udp_relay_mode=native&sni=tu.example.com#tuic", CoreKind::SingBox),
     ("anytls://secret@at.example.com:443?sni=at.example.com&fp=firefox#anytls", CoreKind::SingBox),
+    ("hy2://secret@hy.example.com:443,20000-30000?sni=hy.example.com#hop", CoreKind::SingBox),
+    ("socks5://user:pass@198.51.100.9:1080#socks", CoreKind::SingBox),
 ];
 
 #[test]

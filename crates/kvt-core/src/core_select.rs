@@ -41,7 +41,8 @@ pub fn select_core(server: &Server) -> CoreChoice {
         Protocol::Hysteria2 { .. }
         | Protocol::Shadowsocks { .. }
         | Protocol::Tuic { .. }
-        | Protocol::AnyTls { .. } => CoreKind::SingBox,
+        | Protocol::AnyTls { .. }
+        | Protocol::Socks { .. } => CoreKind::SingBox,
     };
     CoreChoice {
         core,

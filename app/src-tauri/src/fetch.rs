@@ -35,6 +35,36 @@ pub fn acquire(governor: &Mutex<NetGovernor>, host: &str) -> Result<(), String> 
         .lock()
         .map_err(crate::errors::state)?
         .try_acquire(host, now);
+    settle(host, decision, now)
+}
+
+/// Как `acquire`, но паузу до `max_wait` выжидает, а не отказывает: несколько подписок
+/// одного провайдера (один адрес) обновляются подряд, а не «слишком частыми запросами».
+/// Заморозку не выжидаем — это признак ТСПУ, о нём надо сказать сразу.
+pub async fn acquire_patiently(
+    governor: &Mutex<NetGovernor>,
+    host: &str,
+    max_wait: Duration,
+) -> Result<(), String> {
+    // Часы tokio: в тестах время виртуальное и проходит без настоящего ожидания.
+    let clock = || tokio::time::Instant::now().into_std();
+    let deadline = clock() + max_wait;
+    loop {
+        let now = clock();
+        let decision = governor
+            .lock()
+            .map_err(crate::errors::state)?
+            .try_acquire(host, now);
+        match decision {
+            Decision::RetryAt(at) if at <= deadline => {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await;
+            }
+            other => return settle(host, other, now),
+        }
+    }
+}
+
+fn settle(host: &str, decision: Decision, now: Instant) -> Result<(), String> {
     netlog::record_hold(
         Origin::App,
         Purpose::Subscription,
@@ -213,6 +243,25 @@ mod tests {
     fn errors_do_not_contain_token() {
         let err = validate_url("http://sub.example.com/SECRET-TOKEN").unwrap_err();
         assert!(!err.contains("SECRET"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn patient_acquire_waits_out_short_pause() {
+        let g = Mutex::new(NetGovernor::new(NetPolicy::default()));
+        assert!(acquire(&g, "sub.example.com").is_ok());
+        // Пауза между запросами — 2 с: в пределах ожидания дожидаемся.
+        assert!(
+            acquire_patiently(&g, "sub.example.com", Duration::from_secs(5))
+                .await
+                .is_ok()
+        );
+        // Третий запрос в минуту — ждать почти минуту, а разрешено 5 с: отказ.
+        assert!(
+            acquire_patiently(&g, "sub.example.com", Duration::from_secs(5))
+                .await
+                .unwrap_err()
+                .contains("повторите")
+        );
     }
 
     #[test]

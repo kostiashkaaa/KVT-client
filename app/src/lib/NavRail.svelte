@@ -57,7 +57,7 @@
     onclick={() => (current = "settings")}
   >
     <span class="icon">
-      <Icon name="sliders" />
+      <Icon name="settings" />
       {#if update.version}<i class="badge" aria-hidden="true"></i>{/if}
     </span>
     <span>Настройки{#if update.version}<b class="sr"> — вышла новая версия</b>{/if}</span>
@@ -178,7 +178,8 @@
     clip: rect(0 0 0 0);
   }
 
-  @media (max-width: 720px) {
+  /* Узкое окно (в том числе у края экрана при разработке): только значки. */
+  @media (max-width: 900px) {
     nav {
       width: 56px;
     }

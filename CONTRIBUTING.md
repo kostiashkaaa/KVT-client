@@ -29,6 +29,7 @@ Windows 10 или 11, Rust (stable, MSVC), Node.js 20+, Visual Studio Build Tool
 | Что | Команда |
 |---|---|
 | Окно KVT целиком | `cd app && npm install && npm run tauri dev` |
+| Окно у правого края экрана с горячей перезагрузкой | `scripts\dev.ps1`; служба: `scripts\dev.ps1 -Service` (спросит UAC) |
 | Только интерфейс в браузере, с тестовыми данными | `cd app && npm run dev` → http://localhost:5173 |
 | Длинный список в превью | http://localhost:5173/?servers=10000 |
 | Тесты Rust | `cargo test --workspace` |

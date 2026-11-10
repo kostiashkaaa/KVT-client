@@ -46,6 +46,11 @@ pub enum Protocol {
     Hysteria2 {
         password: Secret,
         obfs: Option<Hysteria2Obfs>,
+        /// Port hopping: диапазоны портов `20000-30000,40000`; `port` сервера — первый
+        /// из них (или порт из ссылки при `mport=`). Без диапазона поле не пишется —
+        /// ключи серверов и дубликаты считаются как раньше.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ports: Option<String>,
     },
     /// VMess (только AEAD, `alterId` = 0). `cipher` — `auto`, `aes-128-gcm`,
     /// `chacha20-poly1305`, `none` или `zero`.
@@ -64,6 +69,11 @@ pub enum Protocol {
     AnyTls {
         password: Secret,
     },
+    /// Обычный прокси SOCKS5 (без шифрования) — через sing-box.
+    Socks {
+        username: Option<Secret>,
+        password: Option<Secret>,
+    },
 }
 
 impl Protocol {
@@ -76,6 +86,7 @@ impl Protocol {
             Protocol::Vmess { .. } => "vmess",
             Protocol::Tuic { .. } => "tuic",
             Protocol::AnyTls { .. } => "anytls",
+            Protocol::Socks { .. } => "socks",
         }
     }
 

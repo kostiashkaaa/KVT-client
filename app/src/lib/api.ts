@@ -4,16 +4,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-
 export interface ServerSummary {
   /** Постоянный ключ сервера: выбор и проверки привязаны к нему, а не к номеру. */
   key: string;
-  /** Название без флага-эмодзи. */
+  /** Название как в подписке без ведущего флага; флаги внутри («→🇪🇪») остаются. */
   name: string;
-  /** Страна выхода: код из флага в названии (`nl`). */
+  /** Страна по первому флагу в названии (`ru`), как в других клиентах. */
   flag: string | null;
-  /** Страна входа у цепочки серверов (`ru`): «🇷🇺→🇪🇪» — вход в России, выход в Эстонии. */
-  via: string | null;
   address: string;
   port: number;
   protocol: string;
@@ -47,33 +44,41 @@ export interface Group {
 }
 
 export interface Added {
-  group: string;
+  /** Первая добавленная группа. */
+  group: string | null;
   /** Первый сервер новой подписки — его сразу выбираем. */
   first: string | null;
   servers: number;
+  /** Сколько подписок по ссылке добавлено (или обновлено, если уже были). */
+  subscriptions: number;
+  /** Что не добавилось (часть вставки) — тексты без ссылок. */
+  failed: string[];
 }
 
 export type Mode = "vpn" | "hybrid" | "zapret";
 
-const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const inTauri =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 /** Окно работает в приложении, а не в превью браузера (`npm run dev`). */
 export const inApp = inTauri;
 
-/** Одна https-ссылка — это адрес подписки; всё остальное — содержимое (ссылки на серверы).
- * Ссылки «добавить в приложение» (happ://add/…, incy://, v2raytun://import/…) — тоже адрес:
- * KVT развернёт их в исходный https. */
-export function isSubscriptionUrl(input: string): boolean {
-  const s = input.trim();
-  return /^https?:\/\/\S+$/i.test(s) || /^(happ|incy|v2raytun|hiddify|v2rayng|v2box|streisand|clash|sing-box):\/\/\S+$/i.test(s);
-}
-
+/** Любая вставка: ссылки на подписки (одна, несколько или внутри текста), ссылки
+ *  «добавить в приложение» (happ://add/…), ключи, base64, конфиги Xray и sing-box.
+ *  Разбирает Rust; если добавилась только часть, причины — в `failed`. */
 export async function addSubscription(input: string): Promise<Added> {
-  if (isSubscriptionUrl(input)) {
-    if (!inTauri) throw new Error("Загрузка подписки по ссылке работает в приложении (npm run tauri dev).");
-    return invoke<Added>("add_subscription_url", { url: input.trim() });
+  if (!inTauri) {
+    if (
+      /(^|\s)https?:\/\//i.test(input) &&
+      !/(vless|vmess|trojan|ss|hy2|hysteria2|tuic|anytls|socks5?):\/\//i.test(
+        input,
+      )
+    )
+      throw new Error(
+        "Загрузка подписки по ссылке работает в приложении (npm run tauri dev).",
+      );
+    return previewAdd(input);
   }
-  if (!inTauri) return previewAdd(input);
-  return invoke<Added>("parse_subscription", { body: input });
+  return invoke<Added>("add_input", { input });
 }
 
 export type QuickResult =
@@ -83,7 +88,9 @@ export type QuickResult =
   | { kind: "not_applicable" };
 
 /** Быстрая проверка: TCP-пинг без TLS. `group` — одна подписка, `null` — все. Итог — по ключам серверов. */
-export async function quickCheck(group: string | null): Promise<Record<string, QuickResult>> {
+export async function quickCheck(
+  group: string | null,
+): Promise<Record<string, QuickResult>> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 600));
     const out: Record<string, QuickResult> = {};
@@ -91,7 +98,10 @@ export async function quickCheck(group: string | null): Promise<Record<string, Q
       .filter((g) => group === null || g.id === group)
       .flatMap((g) => g.servers)
       .forEach((s, i) => {
-        out[s.key] = i === 1 ? { kind: "unreachable" } : { kind: "reachable", latency_ms: 40 + i * 37 };
+        out[s.key] =
+          i === 1
+            ? { kind: "unreachable" }
+            : { kind: "reachable", latency_ms: 40 + i * 37 };
       });
     return out;
   }
@@ -115,12 +125,21 @@ export interface RoutingSettings {
   everythingElse: "proxy" | "direct";
   /** Выбор для отдельных списков: id → действие. */
   overrides: Record<string, ListAction>;
+  /** Свои сайты и адреса: важнее списков. */
+  custom: CustomRoute[];
+}
+
+/** Свой сайт: домен со всеми поддоменами, IP или подсеть. */
+export interface CustomRoute {
+  target: string;
+  action: ListAction;
 }
 
 export const defaultRouting = (): RoutingSettings => ({
   listMode: "compact",
   everythingElse: "proxy",
   overrides: {},
+  custom: [],
 });
 
 export interface Choice {
@@ -148,21 +167,79 @@ export interface ListInfo {
   id: string;
   title: string;
   kind: "region" | "category" | "service";
+  /** Что входит в список; пусто — подсказки нет. */
+  hint: string;
 }
 
 export async function listCatalog(): Promise<ListInfo[]> {
   if (!inTauri) {
     return [
-      { id: "russia_inside", title: "Заблокировано в России", kind: "region" },
-      { id: "russia_outside", title: "Российские сайты, закрытые для зарубежа", kind: "region" },
-      { id: "geoblock", title: "Сервисы, закрытые для России", kind: "category" },
-      { id: "news", title: "Новости", kind: "category" },
-      { id: "youtube", title: "YouTube", kind: "service" },
-      { id: "discord", title: "Discord", kind: "service" },
-      { id: "telegram", title: "Telegram", kind: "service" },
+      {
+        id: "russia_inside",
+        title: "Заблокировано в России",
+        kind: "region",
+        hint: "Сайты и сервисы из реестра блокировок и замедленные",
+      },
+      {
+        id: "russia_outside",
+        title: "Российские сайты, закрытые для зарубежа",
+        kind: "region",
+        hint: "Госуслуги, банки, магазины — не открываются с зарубежных IP",
+      },
+      {
+        id: "geoblock",
+        title: "Сервисы, закрытые для России",
+        kind: "category",
+        hint: "ИИ, стриминг и магазины, которые сами не пускают из России",
+      },
+      {
+        id: "news",
+        title: "Новости",
+        kind: "category",
+        hint: "Заблокированные СМИ",
+      },
+      {
+        id: "youtube",
+        title: "YouTube",
+        kind: "service",
+        hint: "youtube.com, googlevideo.com, ytimg.com",
+      },
+      {
+        id: "discord",
+        title: "Discord",
+        kind: "service",
+        hint: "discord.com, discord.gg, голосовые серверы",
+      },
+      {
+        id: "telegram",
+        title: "Telegram",
+        kind: "service",
+        hint: "t.me, telegram.org и адреса серверов",
+      },
+      { id: "roblox", title: "Roblox", kind: "service", hint: "" },
     ];
   }
   return invoke<ListInfo[]>("list_catalog");
+}
+
+/** Свой сайт в том виде, в каком он попадёт в правило, или текст ошибки. */
+export async function checkRouteTarget(target: string): Promise<string> {
+  if (!inTauri) {
+    const t = target.trim().toLowerCase();
+    if (!t) throw "Введите адрес сайта, IP или подсеть.";
+    if (/\s/.test(t)) throw "Одно правило — один адрес, без пробелов.";
+    const host = t
+      .replace(/^[a-z]+:\/\//, "")
+      .split(/[/?#]/)[0]!
+      .replace(/^.*@/, "")
+      .replace(/:\d+$/, "")
+      .replace(/^\*\./, "")
+      .replace(/^www\./, "");
+    if (!/^[\p{L}\d-]+(\.[\p{L}\d-]+)*$/u.test(host))
+      throw "Не похоже на адрес сайта. Пример: example.com";
+    return host;
+  }
+  return invoke<string>("check_route_target", { target });
 }
 
 /** Выбор сервера, режима и kill switch хранится в Rust — им пользуется и трей. */
@@ -171,13 +248,19 @@ export async function setChoice(choice: Choice): Promise<void> {
 }
 
 /** Состояние для окна, открытого заново из трея. */
-export async function snapshot(): Promise<{ groups: Group[]; choice: Choice | null }> {
+export async function snapshot(): Promise<{
+  groups: Group[];
+  choice: Choice | null;
+}> {
   if (!inTauri) return { groups: withStressGroup(previewGroups), choice: null };
   return invoke("snapshot");
 }
 
 export async function connect(): Promise<ServiceStatus> {
-  if (!inTauri) throw new Error("Подключение работает в приложении (npm run tauri dev) при запущенной службе.");
+  if (!inTauri)
+    throw new Error(
+      "Подключение работает в приложении (npm run tauri dev) при запущенной службе.",
+    );
   return invoke<ServiceStatus>("connect");
 }
 
@@ -187,7 +270,11 @@ export type CheckResult =
   | { verdict: "info"; detail: string };
 
 export interface LeakReport {
-  openProxies: { port: number; process: string | null; knownScanPort: boolean }[];
+  openProxies: {
+    port: number;
+    process: string | null;
+    knownScanPort: boolean;
+  }[];
   ipv4Route: CheckResult;
   ipv6Route: CheckResult;
   dns: CheckResult;
@@ -197,10 +284,21 @@ export async function leakTest(connected: boolean): Promise<LeakReport> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 500));
     return {
-      openProxies: [{ port: 10808, process: "example-vpn.exe", knownScanPort: false }],
-      ipv4Route: { verdict: "info", detail: "VPN выключен: трафик идёт напрямую" },
-      ipv6Route: { verdict: "ok", detail: "IPv6 в интернет недоступен — утечки через IPv6 быть не может" },
-      dns: { verdict: "info", detail: "VPN выключен: DNS обслуживает провайдер" },
+      openProxies: [
+        { port: 10808, process: "example-vpn.exe", knownScanPort: false },
+      ],
+      ipv4Route: {
+        verdict: "info",
+        detail: "VPN выключен: трафик идёт напрямую",
+      },
+      ipv6Route: {
+        verdict: "ok",
+        detail: "IPv6 в интернет недоступен — утечки через IPv6 быть не может",
+      },
+      dns: {
+        verdict: "info",
+        detail: "VPN выключен: DNS обслуживает провайдер",
+      },
     };
   }
   return invoke<LeakReport>("leak_test", { connected });
@@ -229,7 +327,12 @@ const previewStart = Date.now();
 
 /** Последний сеанс, о котором сообщила служба (берётся после `serviceStatus`). */
 export async function serviceSession(): Promise<Session | null> {
-  if (!inTauri) return { secs: 4325 + Math.floor((Date.now() - previewStart) / 1000), rx: 1_331_000_000, tx: 88_200_000 };
+  if (!inTauri)
+    return {
+      secs: 4325 + Math.floor((Date.now() - previewStart) / 1000),
+      rx: 1_331_000_000,
+      tx: 88_200_000,
+    };
   return invoke<Session | null>("service_session");
 }
 
@@ -256,14 +359,21 @@ export function formatBytes(bytes: number): string {
 }
 
 // Предпросмотр интерфейса в обычном браузере (npm run dev) без Rust-части.
+// Флаг — первый эмодзи-флаг, ведущий уходит из названия (упрощённо, как kvt_core::flag).
 function previewServer(name: string, i: number, group: string): ServerSummary {
-  const flags: Record<string, string> = { "🇳🇱": "nl", "🇩🇪": "de", "🇫🇮": "fi", "🇩🇰": "dk", "🇺🇸": "us" };
-  const flag = Object.keys(flags).find((f) => name.startsWith(f));
+  const first = /([\u{1F1E6}-\u{1F1FF}]{2})/u.exec(name);
+  const flag = first
+    ? Array.from(first[1]!, (c) =>
+        String.fromCharCode(97 + c.codePointAt(0)! - 0x1f1e6),
+      ).join("")
+    : null;
+  const leading = first?.index === 0;
   return {
     key: `${group}-${i}`,
-    name: flag ? name.slice(flag.length).trim() : name,
-    flag: flag ? flags[flag]! : null,
-    via: i % 7 === 3 ? "ru" : null,
+    name: leading
+      ? name.slice(first![1]!.length).replace(/^[\s|·,:\uFE0F]+/u, "")
+      : name,
+    flag,
     address: "preview.example",
     port: 443,
     protocol: "vless",
@@ -279,8 +389,13 @@ function withStressGroup(groups: Group[]): Group[] {
   const n = Number(new URLSearchParams(location.search).get("servers") ?? 0);
   if (!n) return groups;
   const flags = ["🇳🇱", "🇩🇪", "🇫🇮", "🇩🇰", "🇺🇸"];
-  const servers = Array.from({ length: n }, (_, i) => previewServer(`${flags[i % flags.length]} Сервер ${i + 1}`, i, "big"));
-  return [...groups, { ...groups[0]!, id: "big", title: `Большая подписка (${n})`, servers }];
+  const servers = Array.from({ length: n }, (_, i) =>
+    previewServer(`${flags[i % flags.length]} Сервер ${i + 1}`, i, "big"),
+  );
+  return [
+    ...groups,
+    { ...groups[0]!, id: "big", title: `Большая подписка (${n})`, servers },
+  ];
 }
 
 const previewGroups: Group[] = [
@@ -298,6 +413,8 @@ const previewGroups: Group[] = [
       announce: null,
     },
     servers: [
+      "🇷🇺→🇪🇪 для wifi · via RU",
+      "🇪🇪 для wifi · прямой",
       "🇳🇱 Нидерланды",
       "🇩🇪 Германия ⚡",
       "🇫🇮 Финляндия",
@@ -312,8 +429,35 @@ const previewGroups: Group[] = [
     title: "Добавлено вручную",
     byUrl: false,
     updatedAt: Math.floor(Date.now() / 1000) - 60,
-    meta: { title: null, usedBytes: null, totalBytes: null, expire: null, supportUrl: null, announce: null },
+    meta: {
+      title: null,
+      usedBytes: null,
+      totalBytes: null,
+      expire: null,
+      supportUrl: null,
+      announce: null,
+    },
     servers: [previewServer("🇩🇰 DK для wifi-familydk", 0, "b")],
+    info: [],
+    errors: 0,
+  },
+  {
+    id: "c",
+    title: "Резервный провайдер",
+    byUrl: true,
+    updatedAt: Math.floor(Date.now() / 1000) - 3 * 86400,
+    meta: {
+      title: "Резервный провайдер",
+      usedBytes: 47 * 2 ** 30,
+      totalBytes: 50 * 2 ** 30,
+      expire: Math.floor(Date.now() / 1000) + 2 * 86400,
+      supportUrl: null,
+      announce: null,
+    },
+    servers: [
+      previewServer("🇸🇪 Швеция", 0, "c"),
+      previewServer("🇵🇱 Польша", 1, "c"),
+    ],
     info: [],
     errors: 0,
   },
@@ -329,7 +473,14 @@ function previewAdd(body: string): Added {
       title: "Добавлено вручную",
       byUrl: false,
       updatedAt: 0,
-      meta: { title: null, usedBytes: null, totalBytes: null, expire: null, supportUrl: null, announce: null },
+      meta: {
+        title: null,
+        usedBytes: null,
+        totalBytes: null,
+        expire: null,
+        supportUrl: null,
+        announce: null,
+      },
       servers: [],
       info: [],
       errors: 0,
@@ -339,10 +490,22 @@ function previewAdd(body: string): Added {
   const start = group.servers.length;
   const id = group.id;
   group.servers.push(
-    ...lines.map((l, i) => previewServer(decodeURIComponent(l.split("#")[1] ?? `Сервер ${i + 1}`), start + i, id)),
+    ...lines.map((l, i) =>
+      previewServer(
+        decodeURIComponent(l.split("#")[1] ?? `Сервер ${i + 1}`),
+        start + i,
+        id,
+      ),
+    ),
   );
   group.updatedAt = Math.floor(Date.now() / 1000);
-  return { group: id, first: lines.length > 0 ? `${id}-${start}` : null, servers: lines.length };
+  return {
+    group: id,
+    first: lines.length > 0 ? `${id}-${start}` : null,
+    servers: lines.length,
+    subscriptions: 0,
+    failed: [],
+  };
 }
 
 export interface SubscriptionItem {
@@ -356,6 +519,26 @@ export interface SubscriptionItem {
   expire: number | null;
   /** Unix-время последнего обновления. */
   updatedAt: number;
+  /** Когда обновится сама (только у подписок по ссылке). */
+  nextUpdate: number | null;
+  /** Название задал пользователь. */
+  renamed: boolean;
+  /** Последнее обновление не удалось: почему и когда. */
+  lastError: string | null;
+  failedAt: number | null;
+  /** Ссылки провайдера (только https) — открываются через Rust по id подписки. */
+  supportUrl: string | null;
+  webPageUrl: string | null;
+  /** Текст провайдера — выводится только как текст. */
+  announce: string | null;
+  /** Служебные строки провайдера («Осталось 10 ГБ»). */
+  info: string[];
+  /** Серверы по протоколам, по убыванию. */
+  protocols: { protocol: string; count: number }[];
+  /** Почему часть строк подписки пропущена. */
+  skipped: { reason: string; count: number }[];
+  /** Выброшенные точные повторы. */
+  duplicates: number;
   /** Ключи группы «Добавлено вручную» (у подписок по ссылке пусто). */
   keys: ManualKey[];
 }
@@ -366,7 +549,7 @@ export interface ManualKey {
   key: string;
   /** Название целиком, как в ссылке (с флагами-эмодзи) — для правки. */
   name: string;
-  /** Название без флагов — для списка (Windows рисует флаги-эмодзи буквами). */
+  /** Название без ведущего флага — для списка; он рисуется картинкой (`flag`). */
   title: string;
   flag: string | null;
   protocol: string;
@@ -374,17 +557,53 @@ export interface ManualKey {
   port: number;
 }
 
+/** Превью: у первой подписки — пропущенные строки, у второй — неудачное обновление. */
+const previewExtras: Record<string, Partial<SubscriptionItem>> = {
+  a: {
+    supportUrl: "https://t.me/support",
+    webPageUrl: "https://example.com",
+    announce:
+      "Плановые работы на серверах в Германии 20 ноября с 03:00 до 04:00 МСК.",
+    skipped: [{ reason: "не поддерживается: WireGuard", count: 2 }],
+    duplicates: 1,
+  },
+  c: {
+    lastError:
+      "Не удалось подключиться к серверу подписки — возможно, он заблокирован. Включите VPN и повторите",
+    failedAt: Math.floor(Date.now() / 1000) - 2 * 3600,
+  },
+};
+
 export async function listSubscriptions(): Promise<SubscriptionItem[]> {
   if (!inTauri) {
     return previewGroups.map((g) => ({
       id: g.id,
-      title: g.title,
+      title: previewTitles[g.id] ?? g.title,
       byUrl: g.byUrl,
       servers: g.servers.length,
       usedBytes: g.meta.usedBytes,
       totalBytes: g.meta.totalBytes,
       expire: g.meta.expire,
       updatedAt: g.updatedAt,
+      nextUpdate: g.byUrl ? g.updatedAt + 12 * 3600 : null,
+      renamed: g.id in previewTitles,
+      lastError: null,
+      failedAt: null,
+      supportUrl: null,
+      webPageUrl: null,
+      announce: null,
+      info: g.info,
+      protocols: Object.entries(
+        g.servers.reduce<Record<string, number>>(
+          (acc, s) => ((acc[s.protocol] = (acc[s.protocol] ?? 0) + 1), acc),
+          {},
+        ),
+      )
+        .map(([protocol, count]) => ({ protocol, count }))
+        .sort((a, b) => b.count - a.count),
+      skipped: [],
+      duplicates: 0,
+      ...previewExtras[g.id],
       keys: g.byUrl
         ? []
         : g.servers.map((s) => ({
@@ -403,12 +622,21 @@ export async function listSubscriptions(): Promise<SubscriptionItem[]> {
 
 /** Меняет ключ из группы «Добавлено вручную»: название и, если указана, ссылку.
  *  Возвращает ключ сервера после правки (меняется вместе с адресом или портом). */
-export async function editServer(key: string, name: string, link: string | null): Promise<string> {
+export async function editServer(
+  key: string,
+  name: string,
+  link: string | null,
+): Promise<string> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 400));
-    const s = previewGroups.flatMap((g) => g.servers).find((x) => x.key === key);
+    const s = previewGroups
+      .flatMap((g) => g.servers)
+      .find((x) => x.key === key);
     if (!s) throw new Error("Этого сервера уже нет в списке.");
-    if (link && !link.includes("://")) throw new Error("В ссылке не нашлось сервера — проверьте, что она скопирована целиком.");
+    if (link && !link.includes("://"))
+      throw new Error(
+        "В ссылке не нашлось сервера — проверьте, что она скопирована целиком.",
+      );
     if (name.trim()) s.name = name.trim();
     return key;
   }
@@ -418,8 +646,11 @@ export async function editServer(key: string, name: string, link: string | null)
 /** Удаляет один ключ из группы «Добавлено вручную» (последний — вместе с группой). */
 export async function removeServer(key: string): Promise<void> {
   if (!inTauri) {
-    for (const g of previewGroups) g.servers = g.servers.filter((s) => s.key !== key);
-    const i = previewGroups.findIndex((g) => !g.byUrl && g.servers.length === 0);
+    for (const g of previewGroups)
+      g.servers = g.servers.filter((s) => s.key !== key);
+    const i = previewGroups.findIndex(
+      (g) => !g.byUrl && g.servers.length === 0,
+    );
     if (i >= 0) previewGroups.splice(i, 1);
     return;
   }
@@ -441,6 +672,39 @@ export async function refreshSubscription(id: string): Promise<void> {
     return;
   }
   await invoke("refresh_subscription", { id });
+}
+
+/** Обновляет все подписки по ссылке. Возвращает, сколько не обновилось. */
+export async function refreshAllSubscriptions(): Promise<number> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 900));
+    return previewGroups.some((g) => g.id === "c") ? 1 : 0;
+  }
+  return invoke<number>("refresh_all_subscriptions");
+}
+
+const previewTitles: Record<string, string> = {};
+
+/** Своё название подписки; пустое — снова от провайдера. */
+export async function renameSubscription(
+  id: string,
+  title: string,
+): Promise<void> {
+  if (!inTauri) {
+    if (title.trim()) previewTitles[id] = title.trim();
+    else delete previewTitles[id];
+    return;
+  }
+  await invoke("rename_subscription", { id, title });
+}
+
+/** Открывает в браузере поддержку или сайт провайдера (адрес — из подписки, в Rust). */
+export async function openSubscriptionLink(
+  id: string,
+  which: "support" | "site",
+): Promise<void> {
+  if (!inTauri) return;
+  await invoke("open_subscription_link", { id, which });
 }
 
 /** Подписки изменились (добавлена, удалена, обновилась в фоне). Возвращает отписку. */
@@ -473,7 +737,9 @@ export async function fullCheck(
   onResult: (key: string, outcome: Outcome) => void,
 ): Promise<void> {
   if (!inTauri) {
-    const keys = previewGroups.filter((g) => group === null || g.id === group).flatMap((g) => g.servers.map((s) => s.key));
+    const keys = previewGroups
+      .filter((g) => group === null || g.id === group)
+      .flatMap((g) => g.servers.map((s) => s.key));
     const demo: Outcome[] = [
       { kind: "checked", verdict: "works", latency_ms: 184 },
       { kind: "checked", verdict: "data_frozen", latency_ms: 240 },
@@ -486,8 +752,9 @@ export async function fullCheck(
     }
     return;
   }
-  const off = await listen<{ key: string; outcome: Outcome }>("probe-result", (e) =>
-    onResult(e.payload.key, e.payload.outcome),
+  const off = await listen<{ key: string; outcome: Outcome }>(
+    "probe-result",
+    (e) => onResult(e.payload.key, e.payload.outcome),
   );
   try {
     await invoke("full_check", { group });
@@ -549,7 +816,10 @@ export interface DnsChoice {
   remote: string;
 }
 
-export const defaultDns = (): DnsChoice => ({ local: "yandex", remote: "cloudflare" });
+export const defaultDns = (): DnsChoice => ({
+  local: "yandex",
+  remote: "cloudflare",
+});
 
 const previewResolvers: Resolver[] = [
   { id: "yandex", title: "Яндекс", udp: "77.88.8.8", tunnel: false },
@@ -572,7 +842,10 @@ export async function dnsCheck(): Promise<DnsReport> {
       resolvers: previewResolvers.map((r, i) => ({
         id: r.id,
         title: r.title,
-        udp: i === 2 ? { state: "intercepted", ms: 12, by: "212.48.193.5" } : works(20 + i * 9),
+        udp:
+          i === 2
+            ? { state: "intercepted", ms: 12, by: "212.48.193.5" }
+            : works(20 + i * 9),
         dot: i === 3 ? { state: "blocked" } : works(150 + i * 20),
         doh: i === 0 ? { state: "not_checked" } : works(190 + i * 15),
       })),
@@ -621,14 +894,23 @@ export async function troubleshoot(): Promise<Diagnosis> {
     return {
       tone: "error",
       title: "Провайдер блокирует этот сервер",
-      detail: "Соединение обрывается после первых килобайт — режет DPI. Можно переключиться на «DE Frankfurt».",
+      detail:
+        "Соединение обрывается после первых килобайт — режет DPI. Можно переключиться на «DE Frankfurt».",
       steps: [
         { title: "Сеть", state: "ok", detail: "Подключение к сети есть" },
         { title: "Служба KVT", state: "ok", detail: "Служба работает" },
         { title: "Подписка", state: "ok", detail: "Подписка действует" },
         { title: "Интернет без VPN", state: "ok", detail: "Интернет работает" },
-        { title: "Сервер", state: "ok", detail: "«NL Amsterdam» отвечает, 48 мс" },
-        { title: "Проверка сервера", state: "fail", detail: "Соединение обрывается после первых килобайт — режет DPI" },
+        {
+          title: "Сервер",
+          state: "ok",
+          detail: "«NL Amsterdam» отвечает, 48 мс",
+        },
+        {
+          title: "Проверка сервера",
+          state: "fail",
+          detail: "Соединение обрывается после первых килобайт — режет DPI",
+        },
       ],
       fix: { kind: "switch_server", key: "a-1", name: "Германия ⚡" },
     };
@@ -658,11 +940,17 @@ export interface NetworkView {
 }
 
 export async function currentNetwork(): Promise<NetworkView> {
-  if (!inTauri) return { network: { key: "preview", label: "Home 5G", kind: "wifi" }, profile: null };
+  if (!inTauri)
+    return {
+      network: { key: "preview", label: "Home 5G", kind: "wifi" },
+      profile: null,
+    };
   return invoke<NetworkView>("current_network");
 }
 
-export function onNetworkChanged(handler: (view: NetworkView) => void): () => void {
+export function onNetworkChanged(
+  handler: (view: NetworkView) => void,
+): () => void {
   if (!inTauri) return () => {};
   const off = listen<NetworkView>("network-changed", (e) => handler(e.payload));
   return () => void off.then((f) => f());
@@ -685,7 +973,9 @@ export type WatchdogEvent =
   /** Сервер, к которому были подключены, исчез из подписок — VPN отключён. */
   | { kind: "server_removed"; server: string };
 
-export function onWatchdog(handler: (event: WatchdogEvent) => void): () => void {
+export function onWatchdog(
+  handler: (event: WatchdogEvent) => void,
+): () => void {
   if (!inTauri) return () => {};
   const off = listen<WatchdogEvent>("watchdog", (e) => handler(e.payload));
   return () => void off.then((f) => f());
@@ -745,8 +1035,15 @@ export const defaultZapret = (): ZapretChoice => ({
 });
 
 /** Стратегия для сети: подобранная для неё, иначе выбранная, иначе основная. */
-export function strategyFor(z: ZapretChoice, networkKey: string | null): string {
-  return (networkKey ? z.byNetwork[networkKey] : undefined) ?? z.strategy ?? "general";
+export function strategyFor(
+  z: ZapretChoice,
+  networkKey: string | null,
+): string {
+  return (
+    (networkKey ? z.byNetwork[networkKey] : undefined) ??
+    z.strategy ??
+    "general"
+  );
 }
 
 /** «general (ALT4)» → «ALT4», «general» → «Основная». */
@@ -791,7 +1088,12 @@ const previewStrategies: ZapretStrategy[] = [
   "general (FAKE TLS AUTO)",
   "general (SIMPLE FAKE)",
   "general (ALT5)",
-].map((id, i) => ({ id, title: strategyTitle(id), recommended: i !== 6, needsTimestamps: i === 2 }));
+].map((id, i) => ({
+  id,
+  title: strategyTitle(id),
+  recommended: i !== 6,
+  needsTimestamps: i === 2,
+}));
 
 export async function zapretStrategies(): Promise<ZapretStrategy[]> {
   if (!inTauri) return previewStrategies;
@@ -810,7 +1112,9 @@ export async function zapretStopConflicts(): Promise<ZapretConflict[]> {
 
 let previewCancel = false;
 
-export async function zapretAutoselect(onProgress: (p: ZapretProgress) => void): Promise<ZapretPick> {
+export async function zapretAutoselect(
+  onProgress: (p: ZapretProgress) => void,
+): Promise<ZapretPick> {
   if (!inTauri) {
     previewCancel = false;
     const total = previewStrategies.length;
@@ -820,17 +1124,43 @@ export async function zapretAutoselect(onProgress: (p: ZapretProgress) => void):
     const tried: ZapretPick["tried"] = [];
     for (const [i, s] of previewStrategies.slice(0, 4).entries()) {
       if (previewCancel) {
-        return { best: null, bestTitle: null, score: 4, max: 13, baseline: 4, tested: i, cancelled: true, tried };
+        return {
+          best: null,
+          bestTitle: null,
+          score: 4,
+          max: 13,
+          baseline: 4,
+          tested: i,
+          cancelled: true,
+          tried,
+        };
       }
       onProgress({ index: i + 1, total, title: s.title, score: null, max: 13 });
       await new Promise((r) => setTimeout(r, 700));
       const passed = i === 3 ? 13 : 6 + i;
       tried.push({ id: s.id, title: s.title, passed });
-      onProgress({ index: i + 1, total, title: s.title, score: passed, max: 13 });
+      onProgress({
+        index: i + 1,
+        total,
+        title: s.title,
+        score: passed,
+        max: 13,
+      });
     }
-    return { best: "general (ALT4)", bestTitle: "ALT4", score: 13, max: 13, baseline: 4, tested: 4, cancelled: false, tried };
+    return {
+      best: "general (ALT4)",
+      bestTitle: "ALT4",
+      score: 13,
+      max: 13,
+      baseline: 4,
+      tested: 4,
+      cancelled: false,
+      tried,
+    };
   }
-  const off = await listen<ZapretProgress>("zapret-progress", (e) => onProgress(e.payload));
+  const off = await listen<ZapretProgress>("zapret-progress", (e) =>
+    onProgress(e.payload),
+  );
   try {
     return await invoke<ZapretPick>("zapret_autoselect");
   } finally {
@@ -899,7 +1229,8 @@ export interface CheckRecord {
   check: ZapretCheck;
 }
 
-export type ZapretFix = "repair" | "stop_conflicts" | "autoselect" | "allow_timestamps" | "enable";
+export type ZapretFix =
+  "repair" | "stop_conflicts" | "autoselect" | "allow_timestamps" | "enable";
 
 export interface ZapretDiagnosis {
   tone: "ok" | "warning" | "error";
@@ -922,7 +1253,11 @@ const previewCheck = (passed: number): ZapretCheck => ({
     ["YouTube", 390, 410],
     ["YouTube: картинки", 320, 370],
     ["YouTube: видео", 300, 360],
-  ].map(([name, a, b]) => ({ name: name as string, tls13: a as number | null, tls12: b as number | null })),
+  ].map(([name, a, b]) => ({
+    name: name as string,
+    tls13: a as number | null,
+    tls12: b as number | null,
+  })),
   download: true,
   passed,
   max: 13,
@@ -952,7 +1287,8 @@ export async function tgProxyOpen(): Promise<void> {
 
 /** Ссылка `tg://proxy` для ручного подключения. */
 export async function tgProxyLink(): Promise<string> {
-  if (!inTauri) return "tg://proxy?server=127.0.0.1&port=1443&secret=dd00000000000000000000000000000000";
+  if (!inTauri)
+    return "tg://proxy?server=127.0.0.1&port=1443&secret=dd00000000000000000000000000000000";
   return invoke<string>("tg_proxy_link");
 }
 
@@ -987,7 +1323,11 @@ export async function zapretUpdate(): Promise<MaintenanceReport> {
       version: "1.10.5",
       changed: true,
       binariesUpdated: true,
-      steps: ["Скачан релиз 1.10.5 (SHA-256 сверен с GitHub)", "Стратегий: 22", "winws и WinDivert — проверенные версии"],
+      steps: [
+        "Скачан релиз 1.10.5 (SHA-256 сверен с GitHub)",
+        "Стратегий: 22",
+        "winws и WinDivert — проверенные версии",
+      ],
     };
   }
   return invoke<MaintenanceReport>("zapret_update");
@@ -1013,7 +1353,11 @@ export async function zapretRepair(): Promise<MaintenanceReport> {
 export async function zapretCheck(): Promise<CheckRecord> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 1200));
-    return { at: Math.floor(Date.now() / 1000), strategy: "general (ALT4)", check: previewCheck(12) };
+    return {
+      at: Math.floor(Date.now() / 1000),
+      strategy: "general (ALT4)",
+      check: previewCheck(12),
+    };
   }
   return invoke<CheckRecord>("zapret_check");
 }
@@ -1033,11 +1377,24 @@ export async function zapretDiagnose(): Promise<ZapretDiagnosis> {
         "С «ALT4» открывается 5 из 13 проверок. Провайдеры блокируют по-разному — подберите стратегию. Если не поможет ни одна, переустановите zapret.",
       steps: [
         { title: "Служба KVT", state: "ok", detail: "Работает" },
-        { title: "Файлы zapret", state: "ok", detail: "Flowseal 1.10.4, стратегий: 22" },
+        {
+          title: "Файлы zapret",
+          state: "ok",
+          detail: "Flowseal 1.10.4, стратегий: 22",
+        },
         { title: "Другие обходы", state: "ok", detail: "Не найдены" },
         { title: "zapret", state: "ok", detail: "Работает, стратегия «ALT4»" },
-        { title: "Мешающая программа", state: "warning", detail: "AdGuard — мешает Discord; добавьте Discord в исключения AdGuard" },
-        { title: "Discord и YouTube", state: "fail", detail: "Открывается 5 из 13 проверок" },
+        {
+          title: "Мешающая программа",
+          state: "warning",
+          detail:
+            "AdGuard — мешает Discord; добавьте Discord в исключения AdGuard",
+        },
+        {
+          title: "Discord и YouTube",
+          state: "fail",
+          detail: "Открывается 5 из 13 проверок",
+        },
       ],
       fix: "autoselect",
       check: previewCheck(5),
@@ -1046,13 +1403,17 @@ export async function zapretDiagnose(): Promise<ZapretDiagnosis> {
   return invoke<ZapretDiagnosis>("zapret_diagnose");
 }
 
-export function onZapretCheck(handler: (record: CheckRecord) => void): () => void {
+export function onZapretCheck(
+  handler: (record: CheckRecord) => void,
+): () => void {
   if (!inTauri) return () => {};
   const off = listen<CheckRecord>("zapret-check", (e) => handler(e.payload));
   return () => void off.then((f) => f());
 }
 
-export function onZapretAuto(handler: (event: ZapretAutoEvent) => void): () => void {
+export function onZapretAuto(
+  handler: (event: ZapretAutoEvent) => void,
+): () => void {
   if (!inTauri) return () => {};
   const off = listen<ZapretAutoEvent>("zapret-auto", (e) => handler(e.payload));
   return () => void off.then((f) => f());
@@ -1106,25 +1467,140 @@ export interface NetJournal {
 
 function previewJournal(): NetJournal {
   const now = Date.now();
-  const ev = (ago: number, e: Omit<NetEvent, "at">): NetEvent => ({ at: now - ago * 1000, ...e });
+  const ev = (ago: number, e: Omit<NetEvent, "at">): NetEvent => ({
+    at: now - ago * 1000,
+    ...e,
+  });
   const events: NetEvent[] = [
-    ev(4, { origin: "app", purpose: "tunnel", host: "www.cloudflare.com", route: "tunnel", outcome: "ok", ms: 182, detail: "" }),
-    ev(64, { origin: "app", purpose: "tunnel", host: "www.cloudflare.com", route: "tunnel", outcome: "ok", ms: 175, detail: "" }),
-    ev(95, { origin: "app", purpose: "server_check", host: "www.microsoft.com", route: "test_core", outcome: "deferred", ms: null, detail: "повтор через 58 с" }),
-    ev(97, { origin: "app", purpose: "server_check", host: "www.microsoft.com", route: "test_core", outcome: "ok", ms: 412, detail: "Работает" }),
-    ev(99, { origin: "app", purpose: "server_check", host: "cdn.example.net", route: "test_core", outcome: "failed", ms: 5000, detail: "Провайдер притормозил соединение — подождите или выберите другой сервер" }),
-    ev(120, { origin: "app", purpose: "server_ping", host: "nl1.example.net:443", route: "direct", outcome: "ok", ms: 48, detail: "" }),
-    ev(120, { origin: "app", purpose: "server_ping", host: "de1.example.net:443", route: "direct", outcome: "failed", ms: null, detail: "TCP не открылся" }),
-    ev(300, { origin: "service", purpose: "rules", host: "raw.githubusercontent.com", route: "direct", outcome: "ok", ms: 640, detail: "" }),
-    ev(302, { origin: "service", purpose: "rules", host: "github.com", route: "direct", outcome: "ok", ms: 910, detail: "" }),
-    ev(900, { origin: "app", purpose: "subscription", host: "sub.example.com", route: "direct", outcome: "ok", ms: 730, detail: "" }),
-    ev(1800, { origin: "app", purpose: "dns", host: "1.1.1.1:53", route: "direct", outcome: "ok", ms: 21, detail: "UDP" }),
-    ev(1800, { origin: "app", purpose: "dns", host: "cloudflare-dns.com", route: "direct", outcome: "ok", ms: 160, detail: "DoH" }),
-    ev(2400, { origin: "app", purpose: "update", host: "api.github.com", route: "direct", outcome: "ok", ms: 380, detail: "версия Flowseal" }),
+    ev(4, {
+      origin: "app",
+      purpose: "tunnel",
+      host: "www.cloudflare.com",
+      route: "tunnel",
+      outcome: "ok",
+      ms: 182,
+      detail: "",
+    }),
+    ev(64, {
+      origin: "app",
+      purpose: "tunnel",
+      host: "www.cloudflare.com",
+      route: "tunnel",
+      outcome: "ok",
+      ms: 175,
+      detail: "",
+    }),
+    ev(95, {
+      origin: "app",
+      purpose: "server_check",
+      host: "www.microsoft.com",
+      route: "test_core",
+      outcome: "deferred",
+      ms: null,
+      detail: "повтор через 58 с",
+    }),
+    ev(97, {
+      origin: "app",
+      purpose: "server_check",
+      host: "www.microsoft.com",
+      route: "test_core",
+      outcome: "ok",
+      ms: 412,
+      detail: "Работает",
+    }),
+    ev(99, {
+      origin: "app",
+      purpose: "server_check",
+      host: "cdn.example.net",
+      route: "test_core",
+      outcome: "failed",
+      ms: 5000,
+      detail:
+        "Провайдер притормозил соединение — подождите или выберите другой сервер",
+    }),
+    ev(120, {
+      origin: "app",
+      purpose: "server_ping",
+      host: "nl1.example.net:443",
+      route: "direct",
+      outcome: "ok",
+      ms: 48,
+      detail: "",
+    }),
+    ev(120, {
+      origin: "app",
+      purpose: "server_ping",
+      host: "de1.example.net:443",
+      route: "direct",
+      outcome: "failed",
+      ms: null,
+      detail: "TCP не открылся",
+    }),
+    ev(300, {
+      origin: "service",
+      purpose: "rules",
+      host: "raw.githubusercontent.com",
+      route: "direct",
+      outcome: "ok",
+      ms: 640,
+      detail: "",
+    }),
+    ev(302, {
+      origin: "service",
+      purpose: "rules",
+      host: "github.com",
+      route: "direct",
+      outcome: "ok",
+      ms: 910,
+      detail: "",
+    }),
+    ev(900, {
+      origin: "app",
+      purpose: "subscription",
+      host: "sub.example.com",
+      route: "direct",
+      outcome: "ok",
+      ms: 730,
+      detail: "",
+    }),
+    ev(1800, {
+      origin: "app",
+      purpose: "dns",
+      host: "1.1.1.1:53",
+      route: "direct",
+      outcome: "ok",
+      ms: 21,
+      detail: "UDP",
+    }),
+    ev(1800, {
+      origin: "app",
+      purpose: "dns",
+      host: "cloudflare-dns.com",
+      route: "direct",
+      outcome: "ok",
+      ms: 160,
+      detail: "DoH",
+    }),
+    ev(2400, {
+      origin: "app",
+      purpose: "update",
+      host: "api.github.com",
+      route: "direct",
+      outcome: "ok",
+      ms: 380,
+      detail: "версия Flowseal",
+    }),
   ];
   const by = new Map<string, HostSummary>();
   for (const e of events) {
-    const s = by.get(e.host) ?? { host: e.host, opened: 0, failed: 0, held: 0, peakPerMinute: 0, last: 0 };
+    const s = by.get(e.host) ?? {
+      host: e.host,
+      opened: 0,
+      failed: 0,
+      held: 0,
+      peakPerMinute: 0,
+      last: 0,
+    };
     if (e.outcome === "ok" || e.outcome === "failed") s.opened += 1;
     else s.held += 1;
     if (e.outcome === "failed") s.failed += 1;
@@ -1132,7 +1608,11 @@ function previewJournal(): NetJournal {
     s.last = Math.max(s.last, e.at);
     by.set(e.host, s);
   }
-  return { events, hosts: [...by.values()].sort((a, b) => b.opened - a.opened), service: true };
+  return {
+    events,
+    hosts: [...by.values()].sort((a, b) => b.opened - a.opened),
+    service: true,
+  };
 }
 
 export async function netLog(): Promise<NetJournal> {
@@ -1191,11 +1671,24 @@ export async function pcAudit(): Promise<AuditReport> {
             group: "leaks",
             level: "ok",
             title: "Системный прокси",
-            detail: "Не задан: программы выходят в сеть обычным путём, через туннель KVT.",
+            detail:
+              "Не задан: программы выходят в сеть обычным путём, через туннель KVT.",
             fix: null,
           },
-      { group: "leaks", level: "ok", title: "Прокси WinHTTP", detail: "Не задан.", fix: null },
-      { group: "leaks", level: "ok", title: "Teredo", detail: "Выключен или не используется.", fix: null },
+      {
+        group: "leaks",
+        level: "ok",
+        title: "Прокси WinHTTP",
+        detail: "Не задан.",
+        fix: null,
+      },
+      {
+        group: "leaks",
+        level: "ok",
+        title: "Teredo",
+        detail: "Выключен или не используется.",
+        fix: null,
+      },
       {
         group: "leaks",
         level: "info",
@@ -1212,7 +1705,13 @@ export async function pcAudit(): Promise<AuditReport> {
           "Два VPN одновременно спорят за маршруты и DNS: часть трафика уходит не туда, подключение обрывается. Закройте другой клиент, пока работает KVT.",
         fix: { kind: "close_process", pid: 4242, name: "v2rayN" },
       },
-      { group: "conflicts", level: "ok", title: "Туннели других VPN", detail: "Активных нет.", fix: null },
+      {
+        group: "conflicts",
+        level: "ok",
+        title: "Туннели других VPN",
+        detail: "Активных нет.",
+        fix: null,
+      },
       {
         group: "conflicts",
         level: "info",
@@ -1227,7 +1726,11 @@ export async function pcAudit(): Promise<AuditReport> {
         title: "Служба zapret запускается вместе с Windows",
         detail:
           "zapret стартует при каждом включении компьютера и мешает zapret в KVT. Исправление остановит её и переведёт в ручной запуск — ничего не удаляется.",
-        fix: { kind: "service", action: "disable_zapret_service", name: "zapret" },
+        fix: {
+          kind: "service",
+          action: "disable_zapret_service",
+          name: "zapret",
+        },
       },
     ];
     return { findings, ms: 1500 };
@@ -1305,16 +1808,22 @@ export async function migrateScan(): Promise<MigrationPreview[]> {
 
 /** `null` — пользователь закрыл окно выбора папки. */
 export async function migratePickFolder(): Promise<MigrationPreview[] | null> {
-  if (!inTauri) throw new Error("Выбор папки работает в приложении (npm run tauri dev).");
+  if (!inTauri)
+    throw new Error("Выбор папки работает в приложении (npm run tauri dev).");
   return invoke<MigrationPreview[] | null>("migrate_pick_folder");
 }
 
-export async function migrateImport(locations: string[], servers: boolean): Promise<MigrationReport> {
+export async function migrateImport(
+  locations: string[],
+  servers: boolean,
+): Promise<MigrationReport> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 1000));
     return { loaded: 1, pending: 1, existing: 0, servers: servers ? 2 : 0 };
   }
-  return invoke<MigrationReport>("migrate_import", { request: { locations, servers } });
+  return invoke<MigrationReport>("migrate_import", {
+    request: { locations, servers },
+  });
 }
 
 // ── Этап 5.4: надёжность ──
@@ -1380,7 +1889,9 @@ export async function aboutInfo(): Promise<About> {
 }
 
 /** Открывает исходники, страницу загрузки или папку лицензий — только их. */
-export async function openLink(target: "source" | "releases" | "latest" | "licenses"): Promise<void> {
+export async function openLink(
+  target: "source" | "releases" | "latest" | "licenses",
+): Promise<void> {
   if (inTauri) await invoke("open_link", { target });
 }
 
@@ -1398,13 +1909,27 @@ export interface UpdateStatus {
 /** Что известно о новой версии — без запроса в сеть. */
 export async function updateStatus(): Promise<UpdateStatus> {
   // В предпросмотре — как будто вышла новая версия: видно плашку и точку у «Настроек».
-  if (!inTauri) return { current: "0.9.4", latest: "0.9.5", available: true, checkedAt: Date.now(), error: null };
+  if (!inTauri)
+    return {
+      current: "0.9.4",
+      latest: "0.9.5",
+      available: true,
+      checkedAt: Date.now(),
+      error: null,
+    };
   return invoke<UpdateStatus>("update_status");
 }
 
 /** Спросить у GitHub сейчас (не чаще раза в минуту). */
 export async function updateCheck(): Promise<UpdateStatus> {
-  if (!inTauri) return { current: "0.9.4", latest: "0.9.5", available: true, checkedAt: Date.now(), error: null };
+  if (!inTauri)
+    return {
+      current: "0.9.4",
+      latest: "0.9.5",
+      available: true,
+      checkedAt: Date.now(),
+      error: null,
+    };
   return invoke<UpdateStatus>("update_check");
 }
 
@@ -1431,7 +1956,9 @@ export async function tunnelState(): Promise<boolean | null> {
   return invoke<boolean | null>("tunnel_state");
 }
 
-export function onTunnelState(handler: (ok: boolean | null) => void): () => void {
+export function onTunnelState(
+  handler: (ok: boolean | null) => void,
+): () => void {
   if (!inTauri) return () => {};
   const off = listen<boolean | null>("tunnel-state", (e) => handler(e.payload));
   return () => void off.then((f) => f());
@@ -1449,11 +1976,18 @@ export async function diagPreview(): Promise<DiagFile[]> {
     return [
       {
         name: "README.txt",
-        text: ["Диагностика KVT 0.1.0", "Ключи, пароли, UUID, ссылки подписок и адреса серверов скрыты."].join("\n"),
+        text: [
+          "Диагностика KVT 0.1.0",
+          "Ключи, пароли, UUID, ссылки подписок и адреса серверов скрыты.",
+        ].join("\n"),
       },
       {
         name: "status.json",
-        text: JSON.stringify({ service: { state: "connected", core: "xray" }, tunnelOk: true }, null, 2),
+        text: JSON.stringify(
+          { service: { state: "connected", core: "xray" }, tunnelOk: true },
+          null,
+          2,
+        ),
       },
       {
         name: "kvt.log",
@@ -1462,7 +1996,10 @@ export async function diagPreview(): Promise<DiagFile[]> {
           "2026-11-05T10:00:05Z  WARN подписка не обновилась error=нет ответа",
         ].join("\n"),
       },
-      { name: "service.log", text: "2026-11-05T10:00:01Z  INFO подключено core=Xray kill_switch=true" },
+      {
+        name: "service.log",
+        text: "2026-11-05T10:00:01Z  INFO подключено core=Xray kill_switch=true",
+      },
       { name: "core.log", text: "" },
     ];
   }
@@ -1471,6 +2008,7 @@ export async function diagPreview(): Promise<DiagFile[]> {
 
 /** Сохраняет показанное в предпросмотре. false — пользователь закрыл окно выбора файла. */
 export async function diagSave(): Promise<boolean> {
-  if (!inTauri) throw new Error("Сохранение работает в приложении (npm run tauri dev).");
+  if (!inTauri)
+    throw new Error("Сохранение работает в приложении (npm run tauri dev).");
   return invoke<boolean>("diag_save");
 }

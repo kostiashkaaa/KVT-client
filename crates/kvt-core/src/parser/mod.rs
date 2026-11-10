@@ -4,6 +4,8 @@
 mod anytls;
 mod hysteria2;
 mod shadowsocks;
+mod sing_box_json;
+mod socks;
 mod stream;
 mod trojan;
 mod tuic;
@@ -86,6 +88,7 @@ pub fn parse_uri(input: &str) -> Result<Entry, ParseError> {
         "vmess" => vmess::parse(input)?,
         "tuic" => tuic::parse(input)?,
         "anytls" => anytls::parse(input)?,
+        "socks" | "socks5" | "socks5h" | "socks4" | "socks4a" => socks::parse(input)?,
         other => {
             let shown: String = other.chars().take(16).collect();
             return Err(ParseError::UnknownScheme(shown));
@@ -132,18 +135,29 @@ fn parse_chunk(
     };
 
     let is_json = text.starts_with('{') || text.starts_with('[');
-    // Конфиги Xray: номер «строки» в ошибках — номер конфига в массиве.
-    if let Some(entries) = is_json.then(|| xray_json::parse(text)).flatten() {
+    // Конфиги sing-box и Xray: номер «строки» в ошибках — номер подключения или
+    // конфига в массиве. sing-box первым: у его конфига тоже есть `outbounds`.
+    let entries = is_json
+        .then(|| sing_box_json::parse(text).or_else(|| xray_json::parse(text)))
+        .flatten();
+    if let Some(entries) = entries {
         let count = entries.len();
         for (idx, entry) in entries.into_iter().enumerate() {
             add_entry(out, seen, offset + idx + 1, entry);
         }
         return count;
     }
-    if is_json || text.contains("\nproxies:") {
+    if is_json {
         out.errors.push((
             offset,
-            ParseError::Unsupported("подписки sing-box и Clash пока не поддерживаются"),
+            ParseError::Unsupported("JSON без списка подключений (outbounds)"),
+        ));
+        return 1;
+    }
+    if text.starts_with("proxies:") || text.contains("\nproxies:") {
+        out.errors.push((
+            offset,
+            ParseError::Unsupported("подписки Clash пока не поддерживаются"),
         ));
         return 1;
     }
@@ -177,7 +191,7 @@ pub fn normalize_pasted(body: &str) -> String {
         trimmed
     };
     if text.starts_with('{') || text.starts_with('[') {
-        if let Some(links) = xray_json::links(text) {
+        if let Some(links) = sing_box_json::links(text).or_else(|| xray_json::links(text)) {
             // Конфиг без поддерживаемого подключения пропускается — как и при разборе.
             return links.into_iter().flatten().collect::<Vec<_>>().join("\n");
         }

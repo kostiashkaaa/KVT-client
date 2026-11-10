@@ -25,14 +25,46 @@
       /* доступ к буферу запрещён — пользователь вставит вручную */
     }
   }
+
+  // Подсказка «что найдено» — грубый подсчёт для глаз, разбирает вставку Rust.
+  const APP = /^(happ|incy|v2raytun|hiddify|v2rayng|v2box|streisand|clash|sing-box):\/\//i;
+  const KEY = /^(vless|vmess|trojan|ss|hy2|hysteria2|tuic|anytls|socks5?|socks5h):\/\//i;
+  const found = $derived.by(() => {
+    const text = value.trim();
+    if (!text) return { urls: 0, text: "" };
+    if (/^[[{]/.test(text)) return { urls: 0, text: "Похоже на конфиг в JSON" };
+    if (!text.includes("://")) return { urls: 0, text: "Похоже на подписку в base64" };
+    let urls = 0;
+    let keys = 0;
+    for (const line of text.split(/\r?\n/)) {
+      const l = line.trim();
+      if (KEY.test(l)) keys++;
+      else
+        for (const t of l.split(/\s+/)) {
+          const token = t.replace(/^["'«<(\[]+/, "");
+          if (/^https?:\/\/\S/i.test(token) || APP.test(token)) urls++;
+        }
+    }
+    const parts = [];
+    if (urls) parts.push(plural(urls, "ссылка на подписку", "ссылки на подписки", "ссылок на подписки"));
+    if (keys) parts.push(plural(keys, "ключ", "ключа", "ключей"));
+    return { urls, text: parts.length ? `Найдено: ${parts.join(", ")}` : "Не вижу ни ссылки на подписку, ни ключей" };
+  });
+
+  function plural(n: number, one: string, few: string, many: string): string {
+    const d = n % 10;
+    const dd = n % 100;
+    const word = d === 1 && dd !== 11 ? one : d >= 2 && d <= 4 && (dd < 12 || dd > 14) ? few : many;
+    return `${n} ${word}`;
+  }
 </script>
 
 <section class="card empty" class:dialog={!!oncancel}>
   <div class="icon" aria-hidden="true"><Icon name="shield" size={32} /></div>
   <h2 id="add-title">{oncancel ? "Добавить подписку или ключ" : "Добавьте подписку"}</h2>
   <p class="muted">
-    Вставьте ссылку на подписку (https://…), ссылки на серверы (vless://, vmess://, trojan://, ss://, hy2://, tuic://, anytls://) или
-    содержимое подписки.
+    Ссылка на подписку (https://…), ключи серверов или конфиг Xray / sing-box. Можно несколько сразу и вместе с
+    текстом из письма провайдера — KVT найдёт нужное.
   </p>
 
   <textarea
@@ -41,6 +73,7 @@
     spellcheck="false"
     autocomplete="off"
     placeholder="https://… или vless://…"
+    disabled={busy}
     aria-label="Ссылки или подписка"
     use:focus
     onkeydown={(e) => {
@@ -48,6 +81,16 @@
       if (e.key === "Enter" && e.ctrlKey && value.trim() && !busy) onadd(value);
     }}
   ></textarea>
+
+  <p class="caption found" aria-live="polite">
+    {#if busy && found.urls > 1}
+      Загружаю подписки по очереди — к одному провайдеру KVT ходит с паузой, это может занять минуту.
+    {:else if found.text}
+      {found.text}
+    {:else}
+      VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5
+    {/if}
+  </p>
 
   <div class="actions">
     {#if oncancel}
@@ -118,6 +161,12 @@
     outline: none;
     border-bottom-color: var(--accent);
     box-shadow: inset 0 -1px 0 var(--accent);
+  }
+
+  .found {
+    max-width: 520px;
+    min-height: 18px;
+    margin-top: calc(-1 * var(--space-1));
   }
 
   .actions {

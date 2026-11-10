@@ -268,20 +268,9 @@ impl AppState {
 }
 
 /// Название сервера для трея и уведомлений, где флаг картинкой не нарисовать:
-/// без флагов-эмодзи (Windows показывает их буквами). У цепочки страны остаются
-/// кодами — «EE для wifi · через RU», иначе одинаковые названия не различить.
+/// название как в подписке, флаги-эмодзи — кодами стран («RU→EE для wifi»).
 pub(crate) fn display_name(s: &Server) -> String {
-    let f = kvt_core::flag::split_flags(&s.name);
-    match (f.flag, f.via) {
-        (Some(exit), Some(via)) => format!(
-            "{} {} · через {}",
-            exit.to_uppercase(),
-            f.name,
-            via.to_uppercase()
-        ),
-        (None, Some(via)) => format!("{} · через {}", f.name, via.to_uppercase()),
-        _ => f.name,
-    }
+    kvt_core::flag::plain_name(&s.name)
 }
 
 #[derive(Clone, Serialize)]
@@ -289,10 +278,8 @@ pub(crate) fn display_name(s: &Server) -> String {
 pub(crate) struct ServerSummary {
     key: String,
     name: String,
-    /// Страна выхода: код из флага в названии (`nl`).
+    /// Страна по первому флагу в названии (`nl`).
     flag: Option<String>,
-    /// Страна входа у цепочки серверов (`ru`).
-    via: Option<String>,
     address: String,
     port: u16,
     protocol: &'static str,
@@ -315,7 +302,6 @@ impl ServerSummary {
             key: key.to_owned(),
             name: f.name,
             flag: f.flag,
-            via: f.via,
             address: s.address.clone(),
             port: s.port,
             protocol: s.protocol.kind(),
@@ -404,6 +390,13 @@ fn dns_catalog() -> &'static [kvt_core::dns::Resolver] {
 #[tauri::command]
 fn list_catalog() -> &'static [kvt_core::lists::ListInfo] {
     kvt_core::lists::ITDOG_LISTS
+}
+
+/// Свой сайт для раздела «Маршрутизация»: адрес в том виде, в каком он попадёт в
+/// правило (`https://www.Example.com/x` → `example.com`), или понятная ошибка.
+#[tauri::command]
+fn check_route_target(target: String) -> Result<String, String> {
+    Ok(presets::custom_display(&target)?.to_owned())
 }
 
 /// Серверы одной подписки (`group`) или всех: ключи и серверы.
@@ -819,8 +812,10 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            subs::parse_subscription,
-            subs::add_subscription_url,
+            subs::add_input,
+            subs::rename_subscription,
+            subs::refresh_all_subscriptions,
+            subs::open_subscription_link,
             subs::list_subscriptions,
             subs::remove_subscription,
             subs::remove_server,
@@ -836,6 +831,7 @@ fn main() {
             snapshot,
             set_choice,
             list_catalog,
+            check_route_target,
             dns_catalog,
             dnscheck::dns_check,
             troubleshoot::troubleshoot,

@@ -207,10 +207,17 @@ async fn handle_incident(app: &AppHandle, epoch: u64) {
         .unwrap_or_default();
     let candidates = alternatives(&state, current.as_ref()).await;
     let tried = !candidates.is_empty();
+    // Последний кандидат, через которого данные не пошли (он записан в выбор).
+    let mut failed: Option<String> = None;
     for key in candidates {
         if stale() {
             tracing::info!(
                 "пользователь сам подключился или отключился — автопереключение остановлено"
+            );
+            revert_failed(
+                app,
+                failed.as_deref(),
+                current.as_ref().map(|e| e.key.as_str()),
             );
             return;
         }
@@ -222,16 +229,42 @@ async fn handle_incident(app: &AppHandle, epoch: u64) {
             let _ = app.emit(EVENT, Event::Switched { from, to });
             return;
         }
+        failed = Some(key);
     }
     // Замены не нашлось: возвращаем прежний сервер, иначе в окне остался бы выбран
     // последний неудачный кандидат, а уведомление говорило бы о другом.
     if stale() {
+        revert_failed(
+            app,
+            failed.as_deref(),
+            current.as_ref().map(|e| e.key.as_str()),
+        );
         return;
     }
     if let (true, Some(original)) = (tried, current.as_ref()) {
         let _ = restore(app, &original.key).await;
     }
     let _ = app.emit(EVENT, Event::NoAlternative { server: from });
+}
+
+/// Пользователь вмешался, пока проверялся кандидат: подключаться не нужно, но
+/// выбранным не должен остаться неудачный кандидат. Меняем выбор, только если
+/// пользователь сам не выбрал другой сервер.
+fn revert_failed(app: &AppHandle, failed: Option<&str>, original: Option<&str>) {
+    let (Some(failed), Some(original)) = (failed, original) else {
+        return;
+    };
+    let state = app.state::<AppState>();
+    let choice = match state.choice.lock() {
+        Ok(mut c) if c.server.as_deref() == Some(failed) => {
+            c.server = Some(original.to_owned());
+            c.clone()
+        }
+        _ => return,
+    };
+    if save_choice(app, &choice).is_ok() {
+        let _ = app.emit(CHOICE_EVENT, ());
+    }
 }
 
 /// Возвращает выбор на сервер `key` и подключается к нему без проверки туннеля.

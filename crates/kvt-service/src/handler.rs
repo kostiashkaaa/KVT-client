@@ -59,7 +59,7 @@ impl State {
         }
     }
 
-    fn status_response(&mut self) -> Response {
+    pub fn status_response(&mut self) -> Response {
         let active = self.active();
         let session = match self.session.as_mut() {
             Some(session) if active => {
@@ -79,19 +79,29 @@ impl State {
     }
 }
 
-pub async fn handle(state: &mut State, request: Request) -> Response {
-    state.refresh().await;
+/// Ответ на Hello: сверка версии протокола, состояние не нужно.
+pub fn hello(request: &Request) -> Response {
     match request {
-        Request::Hello { protocol_version } if protocol_version == PROTOCOL_VERSION => {
+        Request::Hello { protocol_version } if *protocol_version == PROTOCOL_VERSION => {
             Response::Hello {
                 protocol_version: PROTOCOL_VERSION,
                 service_version: env!("CARGO_PKG_VERSION").to_owned(),
             }
         }
-        Request::Hello { .. } => Response::Error {
+        _ => Response::Error {
             message: "Окно KVT и служба разных версий. Переустановите KVT — они обновятся вместе."
                 .into(),
         },
+    }
+}
+
+pub async fn handle(state: &mut State, request: Request) -> Response {
+    if matches!(request, Request::Hello { .. }) {
+        return hello(&request);
+    }
+    state.refresh().await;
+    match request {
+        request @ Request::Hello { .. } => hello(&request),
         Request::Status => state.status_response(),
         Request::Connect(plan) => connect(state, &plan).await,
         Request::StartZapret(plan) => start_zapret(state, &plan).await,

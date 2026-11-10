@@ -175,6 +175,12 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
                 feature: "AnyTLS (используйте sing-box)",
             })
         }
+        Protocol::Socks { .. } => {
+            return Err(CompileError::Unsupported {
+                core: CORE,
+                feature: "SOCKS5 (используйте sing-box)",
+            })
+        }
     };
     Ok(json!({
         "tag": TAG_PROXY,

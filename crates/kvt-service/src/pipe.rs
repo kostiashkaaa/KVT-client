@@ -11,7 +11,7 @@
 
 use crate::handler::{self, State};
 use crate::win;
-use kvt_core::ipc::{self, Request, Response, PIPE_NAME};
+use kvt_core::ipc::{self, Request, Response, ServiceStatus, PIPE_NAME};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,16 +28,29 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
     // стоять установленный KVT со своим манифестом, а kvt.exe из сборки — другой.
     let manifest =
         crate::manifest::installed(&allowed_dir).then(crate::manifest::Verifier::default);
+    let snapshot = Arc::new(std::sync::Mutex::new(Response::Status {
+        status: ServiceStatus::Disconnected,
+        session: None,
+    }));
     let mut server = win::create_pipe(PIPE_NAME, true)?;
     tracing::info!(pipe = PIPE_NAME, "служба слушает");
 
     loop {
-        tokio::select! {
-            res = server.connect() => res?,
+        let connected = tokio::select! {
+            res = server.connect() => res,
             _ = shutdown.changed() => break,
+        };
+        if let Err(e) = connected {
+            // Клиент закрылся, не дождавшись приёма (ERROR_NO_DATA и т. п.). Выход из
+            // цикла остановил бы службу вместе с ядром и kill switch — а вызвать это
+            // может любая программа пользователя. Пересоздаём экземпляр и ждём дальше.
+            tracing::warn!(error = %e, "сбой приёма клиента pipe");
+            drop(server);
+            server = recreate_pipe(&mut shutdown).await?;
+            continue;
         }
         let client = server;
-        server = win::create_pipe(PIPE_NAME, false)?;
+        server = recreate_pipe(&mut shutdown).await?;
 
         match win::pipe_client_image(&client) {
             Ok(image)
@@ -46,8 +59,9 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
             {
                 tracing::debug!(image = %image.display(), "клиент принят");
                 let state = Arc::clone(&state);
+                let snapshot = Arc::clone(&snapshot);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_client(client, state).await {
+                    if let Err(e) = handle_client(client, state, snapshot).await {
                         tracing::warn!(error = %e, "клиент отключён с ошибкой");
                     }
                 });
@@ -58,6 +72,23 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
     }
     state.lock().await.shutdown().await;
     Ok(())
+}
+
+/// Новый экземпляр pipe. Временный сбой (нехватка ресурсов) не должен
+/// останавливать службу: несколько попыток с паузой.
+async fn recreate_pipe(shutdown: &mut watch::Receiver<bool>) -> anyhow::Result<NamedPipeServer> {
+    let mut attempt = 0;
+    loop {
+        match win::create_pipe(PIPE_NAME, false) {
+            Ok(server) => return Ok(server),
+            Err(e) if attempt < 20 && !*shutdown.borrow() => {
+                attempt += 1;
+                tracing::warn!(error = %e, attempt, "не удалось создать экземпляр pipe");
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 fn is_trusted_client(image: &Path, allowed_dir: &Path) -> bool {
@@ -73,7 +104,22 @@ fn normalize(p: &Path) -> PathBuf {
     PathBuf::from(p.to_string_lossy().to_lowercase())
 }
 
-async fn handle_client(mut pipe: NamedPipeServer, state: Arc<Mutex<State>>) -> anyhow::Result<()> {
+/// Последний известный статус. Отдаётся на Status, пока другая команда держит
+/// состояние (подключение качает списки, обновление zapret — архив): иначе окно,
+/// трей и автопереключение висели бы до её конца, а «Подключение…» не было бы видно.
+type Snapshot = Arc<std::sync::Mutex<Response>>;
+
+fn set_snapshot(snapshot: &Snapshot, response: Response) {
+    if let Ok(mut s) = snapshot.lock() {
+        *s = response;
+    }
+}
+
+async fn handle_client(
+    mut pipe: NamedPipeServer,
+    state: Arc<Mutex<State>>,
+    snapshot: Snapshot,
+) -> anyhow::Result<()> {
     loop {
         let mut header = [0u8; 4];
         if pipe.read_exact(&mut header).await.is_err() {
@@ -87,7 +133,37 @@ async fn handle_client(mut pipe: NamedPipeServer, state: Arc<Mutex<State>>) -> a
             // Пинг идёт секунды и состояния не трогает: не держим блокировку,
             // чтобы окно тем временем получало статус.
             Ok(Request::Ping { targets }) => crate::net::ping(targets).await,
-            Ok(request) => handler::handle(&mut *state.lock().await, request).await,
+            // Сверка версии не зависит от состояния.
+            Ok(request @ Request::Hello { .. }) => handler::hello(&request),
+            Ok(Request::Status) => match state.try_lock() {
+                Ok(mut guard) => {
+                    let response = handler::handle(&mut guard, Request::Status).await;
+                    set_snapshot(&snapshot, response.clone());
+                    response
+                }
+                Err(_) => snapshot
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or(Response::Status {
+                        status: ServiceStatus::Connecting,
+                        session: None,
+                    }),
+            },
+            Ok(request) => {
+                if matches!(request, Request::Connect(_) | Request::StartZapret(_)) {
+                    set_snapshot(
+                        &snapshot,
+                        Response::Status {
+                            status: ServiceStatus::Connecting,
+                            session: None,
+                        },
+                    );
+                }
+                let mut guard = state.lock().await;
+                let response = handler::handle(&mut guard, request).await;
+                set_snapshot(&snapshot, guard.status_response());
+                response
+            }
             Err(_) => Response::Error {
                 message: "неизвестная команда".into(),
             },

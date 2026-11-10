@@ -261,7 +261,7 @@ fn required<'a>(v: &'a Value, key: &'static str) -> Result<&'a str, ParseError> 
         .ok_or(ParseError::MissingField(key))
 }
 
-fn encode(s: &str) -> String {
+pub(super) fn encode(s: &str) -> String {
     utf8_percent_encode(s, KEEP).to_string()
 }
 

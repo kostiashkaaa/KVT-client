@@ -91,15 +91,19 @@ fn legacy_key(sub: &str, s: &Server) -> String {
     hex(&h.finalize()[..8])
 }
 
-/// Название подписки: от провайдера, иначе хост ссылки (токен — в пути, хост не секрет).
+/// Название подписки: своё, иначе от провайдера, иначе хост ссылки (токен — в пути,
+/// хост не секрет).
 pub(crate) fn title(s: &Subscription) -> String {
-    s.meta.title.clone().unwrap_or_else(|| {
-        s.url
-            .as_ref()
-            .and_then(|u| url::Url::parse(u.expose()).ok())
-            .and_then(|u| u.host_str().map(str::to_owned))
-            .unwrap_or_else(|| "Добавлено вручную".into())
-    })
+    s.custom_title
+        .clone()
+        .or_else(|| s.meta.title.clone())
+        .unwrap_or_else(|| {
+            s.url
+                .as_ref()
+                .and_then(|u| url::Url::parse(u.expose()).ok())
+                .and_then(|u| u.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "Добавлено вручную".into())
+        })
 }
 
 /// Ключи для серверов одной подписки. Если у нескольких серверов одна основа

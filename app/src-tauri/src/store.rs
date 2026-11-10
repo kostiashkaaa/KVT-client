@@ -27,9 +27,21 @@ pub struct Subscription {
     pub updated_at: u64,
     /// Unix-время следующего автообновления (с разбросом, чтобы не ходить синхронно).
     pub next_update: u64,
+    /// Название, которое задал пользователь; важнее названия от провайдера.
+    pub custom_title: Option<String>,
+    /// Последнее обновление не удалось: когда и почему. Сбрасывается удачным.
+    pub last_error: Option<RefreshError>,
 }
 
-#[derive(Serialize, Deserialize)]
+/// Неудачное обновление подписки. Текст — из сообщений загрузчика, без ссылки и
+/// токена (см. `fetch::describe`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshError {
+    pub at: u64,
+    pub message: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct StoredSubscription {
     id: String,
     url: Option<String>,
@@ -37,6 +49,10 @@ struct StoredSubscription {
     meta: SubscriptionMeta,
     updated_at: u64,
     next_update: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custom_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_error: Option<RefreshError>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -50,6 +66,12 @@ pub struct Store {
     path: PathBuf,
     pub subscriptions: Vec<Subscription>,
     pub active: Option<String>,
+    /// Записи, которые не расшифровались (файл с другого компьютера или DPAPI
+    /// временно недоступен): сохраняются обратно как есть, а не теряются.
+    sealed: Vec<StoredSubscription>,
+    /// Файл есть, но не прочитался (занят антивирусом, нет доступа). Запись
+    /// пустого списка поверх стёрла бы все подписки — сохранять нельзя.
+    read_only: bool,
 }
 
 fn seal(plain: &str) -> io::Result<String> {
@@ -93,9 +115,17 @@ impl Store {
             path,
             subscriptions: Vec::new(),
             active: None,
+            sealed: Vec::new(),
+            read_only: false,
         };
-        let Ok(bytes) = std::fs::read(&store.path) else {
-            return store;
+        let bytes = match std::fs::read(&store.path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return store,
+            Err(e) => {
+                tracing::warn!(error = %e, "файл подписок не прочитался");
+                store.read_only = true;
+                return store;
+            }
         };
         let file: StoreFile = match serde_json::from_slice(&bytes) {
             Ok(f) => f,
@@ -107,10 +137,16 @@ impl Store {
         for s in file.subscriptions {
             // Подписку, которую нельзя расшифровать (например, файл с другого
             // компьютера), просто пропускаем.
-            let Ok(body) = unseal(&s.body) else { continue };
+            let Ok(body) = unseal(&s.body) else {
+                store.sealed.push(s);
+                continue;
+            };
             let url = match s.url.as_deref().map(unseal) {
                 Some(Ok(u)) => Some(Secret::new(u)),
-                Some(Err(_)) => continue,
+                Some(Err(_)) => {
+                    store.sealed.push(s);
+                    continue;
+                }
                 None => None,
             };
             store.subscriptions.push(Subscription {
@@ -120,6 +156,8 @@ impl Store {
                 meta: s.meta,
                 updated_at: s.updated_at,
                 next_update: s.next_update,
+                custom_title: s.custom_title,
+                last_error: s.last_error,
             });
         }
         store.active = file
@@ -130,7 +168,12 @@ impl Store {
     }
 
     pub fn save(&self) -> io::Result<()> {
-        let subscriptions = self
+        if self.read_only {
+            return Err(io::Error::other(
+                "файл подписок не прочитался при запуске — перезапустите KVT, иначе подписки сотрутся",
+            ));
+        }
+        let mut subscriptions = self
             .subscriptions
             .iter()
             .map(|s| {
@@ -141,9 +184,17 @@ impl Store {
                     meta: s.meta.clone(),
                     updated_at: s.updated_at,
                     next_update: s.next_update,
+                    custom_title: s.custom_title.clone(),
+                    last_error: s.last_error.clone(),
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;
+        subscriptions.extend(
+            self.sealed
+                .iter()
+                .filter(|s| !self.subscriptions.iter().any(|x| x.id == s.id))
+                .cloned(),
+        );
         let file = StoreFile {
             version: FILE_VERSION,
             active: self.active.clone(),
@@ -201,6 +252,8 @@ impl Store {
             body: Secret::new(body),
             meta,
             updated_at: now,
+            custom_title: None,
+            last_error: None,
         });
         self.active = Some(id.clone());
         id
@@ -212,14 +265,32 @@ impl Store {
             s.body = Secret::new(body);
             s.meta = meta;
             s.updated_at = now;
+            s.last_error = None;
         }
     }
 
     /// Неудачное обновление: повторим позже, но не раньше чем через час.
-    pub fn postpone(&mut self, id: &str, now: u64) {
+    /// `error` — причина для карточки подписки (без ссылки и токена).
+    pub fn postpone(&mut self, id: &str, now: u64, error: Option<&str>) {
         if let Some(s) = self.subscriptions.iter_mut().find(|s| s.id == id) {
             s.next_update = next_update(now, Duration::from_secs(3600));
+            if let Some(message) = error {
+                s.last_error = Some(RefreshError {
+                    at: now,
+                    message: message.chars().take(300).collect(),
+                });
+            }
         }
+    }
+
+    /// Своё название подписки; пустое — снова название от провайдера.
+    pub fn rename(&mut self, id: &str, title: &str) -> bool {
+        let title = title.trim();
+        let Some(s) = self.subscriptions.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        s.custom_title = Some(title.to_owned()).filter(|t| !t.is_empty());
+        true
     }
 
     pub fn remove(&mut self, id: &str) {
@@ -250,6 +321,32 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kvt-store-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("subscriptions.json")
+    }
+
+    #[test]
+    fn undecryptable_entries_survive_save() {
+        let path = tmp("sealed");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let raw = serde_json::json!({
+            "version": FILE_VERSION,
+            "active": null,
+            "subscriptions": [{
+                "id": "foreign",
+                "url": null,
+                "body": "bm90LWRwYXBp",
+                "meta": SubscriptionMeta::default(),
+                "updated_at": 1,
+                "next_update": 2
+            }]
+        });
+        std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        let store = Store::load(path.clone());
+        assert!(store.subscriptions.is_empty());
+        store.save().unwrap();
+        let back: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(back["subscriptions"][0]["id"], "foreign");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -326,6 +423,48 @@ mod tests {
         assert_eq!(due[0].0, by_url);
         store.remove(&by_url);
         assert_eq!(store.active.as_deref(), Some(manual.as_str()));
+    }
+
+    #[test]
+    fn rename_and_refresh_error_survive_reload() {
+        let path = tmp("rename");
+        let mut store = Store::load(path.clone());
+        let id = store.add(
+            Some(Secret::new(URL)),
+            BODY.into(),
+            SubscriptionMeta::default(),
+            1,
+        );
+        assert!(store.rename(&id, "  Рабочая  "));
+        store.postpone(&id, 5, Some("Сервер подписки ответил ошибкой 403"));
+        store.save().unwrap();
+
+        let mut loaded = Store::load(path.clone());
+        let s = loaded.get(&id).unwrap();
+        assert_eq!(s.custom_title.as_deref(), Some("Рабочая"));
+        assert_eq!(s.last_error.as_ref().map(|e| e.at), Some(5));
+        // Удачное обновление стирает ошибку, но не своё название.
+        loaded.update(&id, BODY.into(), SubscriptionMeta::default(), 9);
+        let s = loaded.get(&id).unwrap();
+        assert!(s.last_error.is_none());
+        assert_eq!(s.custom_title.as_deref(), Some("Рабочая"));
+        // Пустое название — снова от провайдера.
+        assert!(loaded.rename(&id, " "));
+        assert!(loaded.get(&id).unwrap().custom_title.is_none());
+        assert!(!loaded.rename("нет такой", "x"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn old_file_without_new_fields_loads() {
+        let path = tmp("old");
+        let mut store = Store::load(path.clone());
+        store.add(None, BODY.into(), SubscriptionMeta::default(), 1);
+        store.save().unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("custom_title") && !raw.contains("last_error"));
+        assert_eq!(Store::load(path.clone()).subscriptions.len(), 1);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

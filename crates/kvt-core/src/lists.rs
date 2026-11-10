@@ -25,59 +25,128 @@ pub struct ListInfo {
     pub id: &'static str,
     pub title: &'static str,
     pub kind: ListKind,
+    /// Что входит в список — подсказка под названием. Пусто, если нечего добавить.
+    pub hint: &'static str,
 }
 
-const fn list(id: &'static str, title: &'static str, kind: ListKind) -> ListInfo {
-    ListInfo { id, title, kind }
+const fn list(
+    id: &'static str,
+    title: &'static str,
+    kind: ListKind,
+    hint: &'static str,
+) -> ListInfo {
+    ListInfo {
+        id,
+        title,
+        kind,
+        hint,
+    }
 }
+
+use ListKind::{Category, Region, Service};
 
 /// Все списки itdoginfo (как в community lists podkop).
 pub const ITDOG_LISTS: &[ListInfo] = &[
-    list("russia_inside", "Заблокировано в России", ListKind::Region),
+    list(
+        "russia_inside",
+        "Заблокировано в России",
+        Region,
+        "Сайты и сервисы из реестра блокировок и замедленные",
+    ),
     list(
         "russia_outside",
         "Российские сайты, закрытые для зарубежа",
-        ListKind::Region,
+        Region,
+        "Госуслуги, банки, магазины — не открываются с зарубежных IP",
     ),
     list(
         "ukraine_inside",
         "Заблокировано в Украине",
-        ListKind::Region,
+        Region,
+        "Российские сервисы, закрытые в Украине",
     ),
     list(
         "geoblock",
         "Сервисы, закрытые для России",
-        ListKind::Category,
+        Category,
+        "ИИ, стриминг и магазины, которые сами не пускают из России",
     ),
-    list("block", "Заблокированные сайты", ListKind::Category),
-    list("news", "Новости", ListKind::Category),
-    list("anime", "Аниме", ListKind::Category),
-    list("porn", "18+", ListKind::Category),
+    list("block", "Заблокированные сайты", Category, ""),
+    list("news", "Новости", Category, "Заблокированные СМИ"),
+    list("anime", "Аниме", Category, "Сайты с аниме"),
+    list("porn", "18+", Category, "Сайты для взрослых"),
     list(
         "hodca",
-        "Хостинги (Hetzner, OVH, DO, Cloudflare, AWS)",
-        ListKind::Category,
+        "Хостинги",
+        Category,
+        "Hetzner, OVH, DigitalOcean, Cloudflare, AWS — адреса целиком",
     ),
-    list("youtube", "YouTube", ListKind::Service),
-    list("discord", "Discord", ListKind::Service),
-    list("telegram", "Telegram", ListKind::Service),
+    list(
+        "youtube",
+        "YouTube",
+        Service,
+        "youtube.com, googlevideo.com, ytimg.com",
+    ),
+    list(
+        "discord",
+        "Discord",
+        Service,
+        "discord.com, discord.gg, голосовые серверы",
+    ),
+    list(
+        "telegram",
+        "Telegram",
+        Service,
+        "t.me, telegram.org и адреса серверов",
+    ),
     list(
         "meta",
-        "Meta (Instagram, Facebook, WhatsApp)",
-        ListKind::Service,
+        "Meta",
+        Service,
+        "Instagram, Facebook, WhatsApp, Threads",
     ),
-    list("twitter", "X (Twitter)", ListKind::Service),
-    list("tiktok", "TikTok", ListKind::Service),
-    list("hdrezka", "HDRezka", ListKind::Service),
-    list("google_ai", "Google AI (Gemini)", ListKind::Service),
-    list("google_play", "Google Play", ListKind::Service),
-    list("google_meet", "Google Meet", ListKind::Service),
-    list("roblox", "Roblox", ListKind::Service),
-    list("cloudflare", "Cloudflare", ListKind::Service),
-    list("cloudfront", "Amazon CloudFront", ListKind::Service),
-    list("digitalocean", "DigitalOcean", ListKind::Service),
-    list("hetzner", "Hetzner", ListKind::Service),
-    list("ovh", "OVH", ListKind::Service),
+    list(
+        "twitter",
+        "X (Twitter)",
+        Service,
+        "x.com, twitter.com, twimg.com",
+    ),
+    list(
+        "tiktok",
+        "TikTok",
+        Service,
+        "tiktok.com и сеть доставки видео",
+    ),
+    list("hdrezka", "HDRezka", Service, "Сайт и зеркала"),
+    list(
+        "google_ai",
+        "Google AI",
+        Service,
+        "Gemini, AI Studio, NotebookLM",
+    ),
+    list(
+        "google_play",
+        "Google Play",
+        Service,
+        "Магазин приложений и загрузки",
+    ),
+    list("google_meet", "Google Meet", Service, "Видеозвонки Google"),
+    list("roblox", "Roblox", Service, ""),
+    list(
+        "cloudflare",
+        "Cloudflare",
+        Service,
+        "Адреса сети Cloudflare",
+    ),
+    list(
+        "cloudfront",
+        "Amazon CloudFront",
+        Service,
+        "Адреса сети CloudFront",
+    ),
+    list("digitalocean", "DigitalOcean", Service, "Адреса хостинга"),
+    list("hetzner", "Hetzner", Service, "Адреса хостинга"),
+    list("ovh", "OVH", Service, "Адреса хостинга"),
 ];
 
 /// Ссылка на набор правил в `Matcher::RuleSet`.
