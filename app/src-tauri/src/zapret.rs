@@ -9,7 +9,7 @@
 //! NetGovernor здесь не нужен: столько же соединений открывает одна вкладка YouTube.
 
 use crate::troubleshoot::{Step, StepState, Tone};
-use crate::{connect_current, query_status, save_choice, service_client, watchdog, AppState};
+use crate::{connect_current, query_status, service_client, watchdog, AppState};
 use kvt_core::ipc::{
     Conflict, MaintenanceReport, Request, Response, ServiceStatus, ZapretInfo, ZapretPlan,
 };
@@ -631,17 +631,13 @@ async fn pick(
     }
 
     if let Some((strategy, _)) = &best {
-        let saved = state.choice.lock().ok().map(|mut c| {
+        crate::update_choice(app, |c| {
             if let Some(key) = &network {
                 c.zapret.by_network.insert(key.clone(), strategy.id.clone());
             }
             c.zapret.strategy = Some(strategy.id.clone());
-            c.clone()
-        });
-        if let Some(c) = saved {
-            save_choice(app, &c)?;
-            let _ = app.emit(watchdog::CHOICE_EVENT, ());
-        }
+        })?;
+        let _ = app.emit(watchdog::CHOICE_EVENT, ());
     }
 
     // Возвращаем как было: zapret работал — запускаем его с новой стратегией.

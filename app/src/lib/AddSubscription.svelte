@@ -29,6 +29,8 @@
   // Подсказка «что найдено» — грубый подсчёт для глаз, разбирает вставку Rust.
   const APP = /^(happ|incy|v2raytun|hiddify|v2rayng|v2box|streisand|clash|sing-box):\/\//i;
   const KEY = /^(vless|vmess|trojan|ss|hy2|hysteria2|tuic|anytls|socks5?|socks5h):\/\//i;
+  /** HTTP-прокси: логин в адресе и пустой путь (у подписки путь с токеном есть всегда). */
+  const HTTP_PROXY = /^https?:\/\/[^\s/@]+@[^\s/?#]+\/?([?#]|$)/i;
   const found = $derived.by(() => {
     const text = value.trim();
     if (!text) return { urls: 0, text: "" };
@@ -38,7 +40,7 @@
     let keys = 0;
     for (const line of text.split(/\r?\n/)) {
       const l = line.trim();
-      if (KEY.test(l)) keys++;
+      if (KEY.test(l) || HTTP_PROXY.test(l)) keys++;
       else
         for (const t of l.split(/\s+/)) {
           const token = t.replace(/^["'«<(\[]+/, "");
@@ -88,7 +90,7 @@
     {:else if found.text}
       {found.text}
     {:else}
-      VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5
+      VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP-прокси
     {/if}
   </p>
 

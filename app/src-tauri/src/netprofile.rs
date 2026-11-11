@@ -5,7 +5,7 @@
 //! запросов (`netinfo::current`).
 
 use crate::netinfo::{self, Network};
-use crate::{connect_current, disconnect_service, query_status, save_choice, watchdog, AppState};
+use crate::{connect_current, disconnect_service, query_status, watchdog, AppState};
 use kvt_core::ipc::ServiceStatus;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -120,14 +120,8 @@ async fn on_join(app: &AppHandle, retry: bool, switched: bool) -> bool {
         .unwrap_or_else(|_| ("vpn".into(), String::new()));
     let mode_changed = plan.mode.as_ref().is_some_and(|m| *m != old_mode);
     if let Some(mode) = plan.mode.filter(|_| mode_changed) {
-        let choice = state.choice.lock().ok().map(|mut c| {
-            c.mode = Some(mode);
-            c.clone()
-        });
-        if let Some(choice) = choice {
-            let _ = save_choice(app, &choice);
-            let _ = app.emit(watchdog::CHOICE_EVENT, ());
-        }
+        let _ = crate::update_choice(app, |c| c.mode = Some(mode));
+        let _ = app.emit(watchdog::CHOICE_EVENT, ());
     }
     // В гибриде winws привязан к интерфейсу прежней сети, в режиме Zapret у новой
     // сети может быть своя подобранная стратегия, а другой режим требует перезапуска.

@@ -17,7 +17,7 @@ use kvt_core::probe::Verdict;
 use kvt_core::tester::{Outcome, QuickResult};
 use kvt_core::Server;
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -102,11 +102,14 @@ pub(crate) fn rank(
 pub(crate) async fn alternatives(state: &AppState, current: Option<&Entry>) -> Vec<String> {
     let entries = state.servers.lock().map(|s| s.clone()).unwrap_or_default();
     let outcomes = state.outcomes.lock().map(|o| o.clone()).unwrap_or_default();
-    let others = |same: bool| -> Vec<&Entry> {
+    // Повтор текущего сервера под другим названием — не замена; из нескольких
+    // одинаковых кандидатов проверяется один.
+    let mut exits: HashSet<&str> = current.map(Entry::exit_key).into_iter().collect();
+    let mut others = |same: bool| -> Vec<&Entry> {
         entries
             .iter()
-            .filter(|e| current.map_or(true, |c| c.key != e.key))
             .filter(|e| current.map_or(true, |c| (c.sub == e.sub) == same))
+            .filter(|e| exits.insert(e.exit_key()))
             .collect()
     };
     let tiers = if current.is_some() {
@@ -167,12 +170,7 @@ async fn tunnel_dead(client: &reqwest::Client) -> bool {
 /// Подключается к серверу `key` и проверяет, что данные пошли.
 pub(crate) async fn switch_to(app: &AppHandle, key: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let choice = {
-        let mut c = state.choice.lock().map_err(crate::errors::state)?;
-        c.server = Some(key.to_owned());
-        c.clone()
-    };
-    save_choice(app, &choice)?;
+    crate::update_choice(app, |c| c.server = Some(key.to_owned()))?;
     let _ = app.emit(CHOICE_EVENT, ());
     connect_current(app, false).await?;
     crate::tray::refresh(app).await;
@@ -255,27 +253,21 @@ fn revert_failed(app: &AppHandle, failed: Option<&str>, original: Option<&str>) 
         return;
     };
     let state = app.state::<AppState>();
-    let choice = match state.choice.lock() {
+    let saved = match state.choice.lock() {
         Ok(mut c) if c.server.as_deref() == Some(failed) => {
             c.server = Some(original.to_owned());
-            c.clone()
+            save_choice(app, &c).is_ok()
         }
         _ => return,
     };
-    if save_choice(app, &choice).is_ok() {
+    if saved {
         let _ = app.emit(CHOICE_EVENT, ());
     }
 }
 
 /// Возвращает выбор на сервер `key` и подключается к нему без проверки туннеля.
 async fn restore(app: &AppHandle, key: &str) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let choice = {
-        let mut c = state.choice.lock().map_err(crate::errors::state)?;
-        c.server = Some(key.to_owned());
-        c.clone()
-    };
-    save_choice(app, &choice)?;
+    crate::update_choice(app, |c| c.server = Some(key.to_owned()))?;
     let _ = app.emit(CHOICE_EVENT, ());
     let result = connect_current(app, true).await.map(|_| ());
     crate::tray::refresh(app).await;

@@ -153,12 +153,14 @@ async fn add_url(state: &AppState, raw: &str, patient: bool) -> Result<Added, St
     ensure_servers(&fetched.body)?;
     let body = fetched.body.clone();
     let id = with_store(state, |s| {
-        s.add(
+        let id = s.add(
             Some(Secret::new(url.as_str())),
             fetched.body,
             fetched.meta,
             now(),
-        )
+        );
+        s.set_source(&id, fetched.agent, fetched.validators);
+        id
     })?;
     added(state, id, &body)
 }
@@ -315,12 +317,13 @@ pub(crate) async fn import_url(
     match loaded {
         Ok(fetched) => {
             with_store(state, |s| {
-                s.add(
+                let id = s.add(
                     Some(Secret::new(url.as_str())),
                     fetched.body,
                     fetched.meta,
                     now(),
-                )
+                );
+                s.set_source(&id, fetched.agent, fetched.validators);
             })?;
             Ok(Imported::Loaded)
         }
@@ -390,6 +393,9 @@ pub struct SubscriptionItem {
     skipped: Vec<Skipped>,
     /// Точные повторы, которые выброшены.
     duplicates: usize,
+    /// Что KVT у части серверов не применяет (например, `pinSHA256`): текст и
+    /// сколько серверов. Сервер подключается, но пользователь знает, чем рискует.
+    warnings: Vec<Skipped>,
     /// Ключи группы «Добавлено вручную» — каждый можно переименовать, заменить или
     /// удалить. У подписок по ссылке пусто: серверы там задаёт провайдер.
     keys: Vec<ManualKey>,
@@ -435,6 +441,20 @@ fn skipped(errors: &[(usize, kvt_core::parser::ParseError)]) -> Vec<Skipped> {
         .collect();
     list.sort_by_key(|x| std::cmp::Reverse(x.count));
     list
+}
+
+fn warnings(servers: &[kvt_core::Server]) -> Vec<Skipped> {
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for w in servers.iter().flat_map(kvt_core::Server::warnings) {
+        *counts.entry(w).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(reason, count)| Skipped {
+            reason: reason.to_owned(),
+            count,
+        })
+        .collect()
 }
 
 /// Ключ, добавленный вручную, для редактирования. Без секретов: ссылка (в ней
@@ -486,6 +506,7 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
                 protocols: protocol_counts(&content.servers),
                 skipped: skipped(&content.errors),
                 duplicates: content.duplicates,
+                warnings: warnings(&content.servers),
                 keys: if s.url.is_some() {
                     Vec::new()
                 } else {
@@ -711,34 +732,64 @@ fn find_line(body: &str, target: &kvt_core::Server) -> Option<String> {
         })
 }
 
+/// Как обновляется подписка.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Refresh {
+    /// Кнопка «Обновить» у одной подписки: сразу и целиком — пользователь ждёт
+    /// свежий трафик и срок, а не «не изменилась».
+    Now,
+    /// «Обновить все» и трей: подождать очереди к серверу подписки (несколько
+    /// подписок одного провайдера подряд), но тоже целиком.
+    Batch,
+    /// По расписанию: в очереди и с вопросом «изменилась ли» (ETag / Last-Modified).
+    Scheduled,
+}
+
 /// Обновляет одну подписку по ссылке. Ошибка не трогает сохранённую версию, а
-/// запоминается у подписки. `patient` — подождать очереди к серверу подписки (при
-/// обновлении нескольких подряд), а не отказывать сразу.
-async fn refresh_one(state: &AppState, id: &str, patient: bool) -> Result<(), String> {
-    let url = {
+/// запоминается у подписки.
+async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Result<(), String> {
+    let (url, agent, validators) = {
         let guard = state.store.lock().map_err(lock_err)?;
-        guard
-            .as_ref()
-            .and_then(|s| s.get(id))
+        let sub = guard.as_ref().and_then(|s| s.get(id));
+        let url = sub
             .and_then(|s| s.url.clone())
-            .ok_or("У этой подписки нет ссылки для обновления")?
+            .ok_or("У этой подписки нет ссылки для обновления")?;
+        // Метки — только у непустого тела: подписка, добавленная без ответа
+        // провайдера, должна загрузиться целиком.
+        let validators = sub
+            .filter(|s| how == Refresh::Scheduled && !s.body.expose().is_empty())
+            .and_then(|s| s.validators.clone());
+        (url, sub.and_then(|s| s.agent.clone()), validators)
     };
     let url = fetch::validate_url(url.expose())?;
     let result = async {
         let host = url.host_str().unwrap_or_default();
-        if patient {
-            fetch::acquire_patiently(&state.governor, host, BATCH_WAIT).await?;
-        } else {
+        if how == Refresh::Now {
             fetch::acquire(&state.governor, host)?;
+        } else {
+            fetch::acquire_patiently(&state.governor, host, BATCH_WAIT).await?;
         }
-        let fetched = fetch::fetch(&url).await?;
-        ensure_servers(&fetched.body)?;
-        Ok::<_, String>(fetched)
+        let hints = fetch::Hints {
+            agent: agent.as_deref(),
+            validators: validators.as_ref(),
+        };
+        let loaded = fetch::load(&url, &hints).await?;
+        if let fetch::Loaded::Fresh(fetched) = &loaded {
+            ensure_servers(&fetched.body)?;
+        }
+        Ok::<_, String>(loaded)
     }
     .await;
     match result {
-        Ok(fetched) => {
-            with_store(state, |s| s.update(id, fetched.body, fetched.meta, now()))?;
+        Ok(fetch::Loaded::Fresh(fetched)) => {
+            with_store(state, |s| {
+                s.update(id, fetched.body, fetched.meta, now());
+                s.set_source(id, fetched.agent, fetched.validators);
+            })?;
+            Ok(())
+        }
+        Ok(fetch::Loaded::NotModified(meta)) => {
+            with_store(state, |s| s.not_modified(id, meta, now()))?;
             Ok(())
         }
         Err(e) => {
@@ -755,7 +806,7 @@ pub async fn refresh_subscription(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let before = state.selected();
-    let result = refresh_one(&state, &id, false).await;
+    let result = refresh_one(&state, &id, Refresh::Now).await;
     rebuild(&state)?;
     guard_selected(&app, before).await;
     notify(&app);
@@ -812,7 +863,7 @@ pub(crate) async fn refresh_all(app: &AppHandle) -> Result<usize, String> {
     let before = state.selected();
     let mut failed = 0;
     for id in &ids {
-        if let Err(e) = refresh_one(&state, id, true).await {
+        if let Err(e) = refresh_one(&state, id, Refresh::Batch).await {
             tracing::warn!(error = %e, "подписка не обновилась");
             failed += 1;
         }
@@ -840,7 +891,7 @@ pub fn spawn_updater(app: AppHandle) {
                 let state = app.state::<AppState>();
                 let before = state.selected();
                 for (id, _) in &due {
-                    if let Err(e) = refresh_one(&state, id, true).await {
+                    if let Err(e) = refresh_one(&state, id, Refresh::Scheduled).await {
                         tracing::warn!(error = %e, "подписка не обновилась");
                     }
                 }

@@ -1,6 +1,7 @@
 //! Hysteria2: `hysteria2://auth@host:443?sni=…&obfs=salamander&obfs-password=…#имя`.
 //! Port hopping — в адресе (`host:443,20000-30000`, как в официальном клиенте) или в
-//! параметре `mport=20000-30000` (v2rayN, NekoBox).
+//! параметре `mport=20000-30000` (v2rayN, NekoBox). `pinSHA256` запоминается, но не
+//! применяется (см. `Server::warnings`), `ech` — как у остальных протоколов.
 
 use super::{decode_component, host_of, name_of, parse_url, port_of, query_of, ParseError};
 use crate::model::{Hysteria2Obfs, Protocol, Security, Server, TlsSettings, Transport};
@@ -49,6 +50,13 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
             .transpose()?,
     };
 
+    let pin_sha256 = q
+        .get("pinsha256")
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(normalize_pin)
+        .transpose()?;
+
     Ok(Server {
         name: name_of(&url, &address),
         port: port_of(&url).or_else(|e| match e {
@@ -59,6 +67,7 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
             password: Secret::new(password),
             obfs,
             ports,
+            pin_sha256,
         },
         transport: Transport::Quic,
         security: Security::Tls(TlsSettings {
@@ -66,6 +75,7 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
             alpn: vec!["h3".into()],
             fingerprint: None,
             allow_insecure: matches!(q.get("insecure").map(String::as_str), Some("1" | "true")),
+            ech: super::stream::parse_ech(&q)?,
         }),
         address,
     })
@@ -131,9 +141,77 @@ fn normalize_ranges(spec: &str) -> Result<String, ParseError> {
         .map(|v| v.join(","))
 }
 
+/// `AB:CD:…` или `abcd…` → 64 строчных hex-символа (SHA-256).
+fn normalize_pin(pin: &str) -> Result<String, ParseError> {
+    let hex: String = pin
+        .chars()
+        .filter(|c| *c != ':')
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ParseError::InvalidField {
+            field: "pinSHA256",
+            reason: "не отпечаток SHA-256",
+        });
+    }
+    Ok(hex)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pin_is_kept_and_reported() {
+        let pin = "AB:".repeat(31) + "AB";
+        let s = parse(&format!(
+            "hy2://p@h.example.com:443?insecure=1&pinSHA256={pin}"
+        ))
+        .unwrap();
+        let Protocol::Hysteria2 { pin_sha256, .. } = &s.protocol else {
+            panic!("ожидался Hysteria2")
+        };
+        assert_eq!(pin_sha256.as_deref(), Some("ab".repeat(32).as_str()));
+        assert_eq!(s.warnings().len(), 1);
+        assert!(s.warnings()[0].contains("не проверяется"));
+        // Без insecure сертификат проверяется обычным способом — предупреждение мягче.
+        let s = parse(&format!(
+            "hy2://p@h.example.com?pinSHA256={}",
+            "0".repeat(64)
+        ))
+        .unwrap();
+        assert!(s.warnings()[0].contains("обычным способом"));
+        // Без пина предупреждений нет.
+        assert!(parse("hy2://p@h.example.com")
+            .unwrap()
+            .warnings()
+            .is_empty());
+        for bad in ["xyz", "ab:cd", &"g".repeat(64)] {
+            assert!(
+                parse(&format!("hy2://p@h.example.com?pinSHA256={bad}")).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn ech_config_is_taken_dns_form_is_refused() {
+        const ECH: &str = "AEX%2BDQBBpQAgACB%2FqtKXQOgnyY4kyw6jZ3Zt0ZNy1PtoE6OdBMsyqF4tPQAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA%3D";
+        let s = parse(&format!("hy2://p@h.example.com?ech={ECH}")).unwrap();
+        let Security::Tls(tls) = &s.security else {
+            panic!("ожидался TLS")
+        };
+        assert!(tls.ech.as_deref().is_some_and(|e| e.starts_with("AEX+")));
+        assert_eq!(
+            parse(
+                "hy2://p@h.example.com?ech=cloudflare-ech.com%2Bhttps%3A%2F%2F1.1.1.1%2Fdns-query"
+            )
+            .unwrap_err(),
+            ParseError::Unsupported("ECH с запросом конфига через DNS")
+        );
+        // base64, но не ECHConfigList (длина не сходится).
+        assert!(parse("hy2://p@h.example.com?ech=AAAAAAAA").is_err());
+    }
 
     fn ports_of(s: &Server) -> Option<&str> {
         match &s.protocol {

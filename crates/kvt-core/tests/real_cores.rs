@@ -47,6 +47,11 @@ const SAMPLES: &[(&str, CoreKind)] = &[
     ("anytls://secret@at.example.com:443?sni=at.example.com&fp=firefox#anytls", CoreKind::SingBox),
     ("hy2://secret@hy.example.com:443,20000-30000?sni=hy.example.com#hop", CoreKind::SingBox),
     ("socks5://user:pass@198.51.100.9:1080#socks", CoreKind::SingBox),
+    ("http://user:pass@198.51.100.9:8080#http", CoreKind::SingBox),
+    ("https://user:pass@px.example.com:8443/?sni=px.example.com#https", CoreKind::SingBox),
+    // ECH: готовый ECHConfigList (как у Cloudflare) — в обоих ядрах.
+    ("hy2://secret@hy.example.com:443?sni=hy.example.com&ech=AEX%2BDQBBpQAgACB%2FqtKXQOgnyY4kyw6jZ3Zt0ZNy1PtoE6OdBMsyqF4tPQAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA%3D#ech", CoreKind::SingBox),
+    ("trojan://secret@tr.example.com:443?sni=tr.example.com&ech=AEX%2BDQBBpQAgACB%2FqtKXQOgnyY4kyw6jZ3Zt0ZNy1PtoE6OdBMsyqF4tPQAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA%3D#ech", CoreKind::Xray),
 ];
 
 #[test]

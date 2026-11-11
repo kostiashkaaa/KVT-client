@@ -71,6 +71,7 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
             alpn,
             fingerprint: None,
             allow_insecure: insecure,
+            ech: super::stream::parse_ech(&q)?,
         }),
         address,
         port,

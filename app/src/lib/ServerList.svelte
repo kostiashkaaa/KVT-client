@@ -118,6 +118,9 @@
     return parts.join(" · ").toUpperCase();
   }
 
+  /** Названия серверов по ключу — для пометки «тот же сервер, что …». */
+  const names = $derived(new Map(groups.flatMap((g) => g.servers.map((s) => [s.key, s.name] as const))));
+
   const GB = 2 ** 30;
   const gb = (bytes: number) => (bytes / GB).toLocaleString("ru-RU", { maximumFractionDigits: 1 });
 
@@ -312,7 +315,13 @@
                 <Flag code={s.flag} width={24} />
                 <span class="info">
                   <span class="name"><ServerName name={s.name} /></span>
-                  <span class="sub">{label(s)}</span>
+                  <span class="sub"
+                    >{label(s)}{#if s.sameAs && names.has(s.sameAs)}<span
+                        class="same"
+                        title="Тот же адрес, порт и ключ — отличается только название. Автопереключение его не перебирает."
+                        > · тот же сервер, что «{names.get(s.sameAs)}»</span
+                      >{/if}</span
+                  >
                 </span>
                 <!-- Новый итог проверки проявляется, а не подменяет прежний скачком. -->
                 {#key l.text}

@@ -69,6 +69,9 @@
   /** Ключ выбранного сервера. */
   let selected = $state<string | null>(null);
   let busy = $state(false);
+  /** Идёт «Подключить», и его можно отменить; `cancelling` — отмена уже отправлена. */
+  let connecting = $state(false);
+  let cancelling = $state(false);
   /** Ошибка на главной; `why` — ошибка подключения, к ней уместно «Почему не работает?». */
   /** Ошибка добавления подписки — показывается рядом с формой, а не на главной. */
   let addError = $state<string | null>(null);
@@ -521,6 +524,8 @@
 
   async function onconnect() {
     busy = true;
+    connecting = true;
+    cancelling = false;
     dismissKey("error");
     const target = { server: selected, mode, zapret: zapretKey(), routing: routingKey(), settings: settingsKey() };
     try {
@@ -528,12 +533,27 @@
       status = await connect();
       session = await serviceSession().catch(() => null);
     } catch (e) {
-      failed(e, true);
+      // Отменили сами — служба ответила «Подключение отменено», это не ошибка.
+      if (!cancelling) failed(e, true);
       status = await serviceStatus().catch(() => null);
     } finally {
       // Даже при ошибке запоминаем попытку: иначе переподключение пошло бы по кругу.
       connectedWith = status?.state === "connected" || status?.state === "zapret" ? target : null;
+      connecting = false;
+      cancelling = false;
       busy = false;
+    }
+  }
+
+  /** «Отключить» во время подключения: служба бросает запуск и всё останавливает. */
+  async function oncancel() {
+    if (!connecting || cancelling) return;
+    cancelling = true;
+    try {
+      await disconnect();
+      session = null;
+    } catch (e) {
+      failed(e, true);
     }
   }
 
@@ -638,7 +658,7 @@
            Узкое — всё в одну колонку. -->
       <div class="home-grid">
       <div class="side">
-      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {starting} {mismatch} telegram={zapret.telegram} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} onwhy={askWhy} />
+      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {starting} {mismatch} telegram={zapret.telegram} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} cancelable={connecting && !cancelling} {oncancel} onwhy={askWhy} />
 
       {#if mode !== "vpn"}
         <ZapretCard bind:zapret vpnConnected={status?.state === "connected"} onopen={() => (page = "zapret")} />

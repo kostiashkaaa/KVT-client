@@ -19,6 +19,25 @@ pub(crate) struct Entry {
     pub sub: String,
     pub key: String,
     pub server: Server,
+    /// Тот же выход, что у сервера с этим ключом (выше в списке): совпадает всё,
+    /// кроме названия — провайдер повторил сервер под другим флагом. Отдельным
+    /// кандидатом автопереключения такой сервер не считается.
+    pub same_as: Option<String>,
+}
+
+impl Entry {
+    /// Ключ «настоящего» сервера: у повтора — ключ первого такого же.
+    pub fn exit_key(&self) -> &str {
+        self.same_as.as_deref().unwrap_or(&self.key)
+    }
+}
+
+/// Отпечаток выхода: сервер целиком, кроме названия. В нём ключи и пароли, поэтому
+/// наружу он не уходит — только сравнивается.
+fn exit_id(s: &Server) -> [u8; 32] {
+    let mut unnamed = s.clone();
+    unnamed.name.clear();
+    Sha256::digest(serde_json::to_vec(&unnamed).unwrap_or_default()).into()
 }
 
 #[derive(Clone, Serialize)]
@@ -163,9 +182,20 @@ pub(crate) fn build(store: &Store) -> (Vec<Group>, Vec<Entry>) {
     let mut groups = Vec::new();
     let mut entries = Vec::new();
     let mut taken = HashSet::new();
+    // Первый сервер с таким выходом — во всех подписках сразу.
+    let mut exits: HashMap<[u8; 32], String> = HashMap::new();
     for sub in &store.subscriptions {
         let content = parse_subscription_body(sub.body.expose());
         let keys = keys(&sub.id, &content.servers, &mut taken);
+        let same_as: Vec<Option<String>> = content
+            .servers
+            .iter()
+            .zip(&keys)
+            .map(|(s, k)| {
+                let first = exits.entry(exit_id(s)).or_insert_with(|| k.clone());
+                (first != k).then(|| first.clone())
+            })
+            .collect();
         groups.push(Group {
             id: sub.id.clone(),
             title: title(sub),
@@ -176,22 +206,20 @@ pub(crate) fn build(store: &Store) -> (Vec<Group>, Vec<Entry>) {
                 .servers
                 .iter()
                 .zip(&keys)
-                .map(|(s, k)| ServerSummary::new(s, k))
+                .zip(&same_as)
+                .map(|((s, k), same)| ServerSummary::new(s, k).same_as(same.clone()))
                 .collect(),
             info: content.info,
             errors: content.errors.len(),
         });
-        entries.extend(
-            content
-                .servers
-                .into_iter()
-                .zip(keys)
-                .map(|(server, key)| Entry {
-                    sub: sub.id.clone(),
-                    key,
-                    server,
-                }),
-        );
+        entries.extend(content.servers.into_iter().zip(keys).zip(same_as).map(
+            |((server, key), same_as)| Entry {
+                sub: sub.id.clone(),
+                key,
+                server,
+                same_as,
+            },
+        ));
     }
     (groups, entries)
 }
@@ -262,6 +290,28 @@ mod tests {
         let map = legacy_keys(&store, &entries);
         let old = legacy_key(&id, &server(A));
         assert_eq!(map.get(&old), Some(&entries[0].key));
+    }
+
+    #[test]
+    fn same_exit_under_other_flag_is_marked() {
+        let mut store = Store::load(std::env::temp_dir().join("kvt-catalog-same-none.json"));
+        store.subscriptions.clear();
+        let other_flag = A.replace("#A", "#%F0%9F%87%A9%F0%9F%87%AA%20DE");
+        let other_user = A.replace("b831381d", "c831381d");
+        let body = format!(
+            "{A}
+{other_flag}
+{other_user}"
+        );
+        store.add(None, body, Default::default(), 0);
+        let (_, entries) = build(&store);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].same_as, None);
+        // Тот же адрес, порт и UUID, другое название — тот же выход.
+        assert_eq!(entries[1].same_as.as_deref(), Some(entries[0].key.as_str()));
+        assert_eq!(entries[1].exit_key(), entries[0].key);
+        // Другой UUID — другой пользователь, отдельный сервер.
+        assert_eq!(entries[2].same_as, None);
     }
 
     #[test]

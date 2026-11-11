@@ -163,6 +163,7 @@
     tuic: "TUIC",
     anytls: "AnyTLS",
     socks: "SOCKS5",
+    http: "HTTP-прокси",
   };
   const protocolTitle = (p: string) => protocols[p] ?? p.toUpperCase();
 
@@ -392,6 +393,13 @@
         {/if}
         {#each s.info as line, i (i)}
           <p class="caption">{line}</p>
+        {/each}
+
+        <!-- Не прячем под «подробнее»: это про безопасность подключения. -->
+        {#each s.warnings as w (w.reason)}
+          <p class="caption warning">
+            {w.count > 1 ? `${w.count} ${plural(w.count, "сервер", "сервера", "серверов")}` : "Один сервер"}: {w.reason}
+          </p>
         {/each}
 
         {#if skipped > 0 || s.duplicates > 0}
@@ -767,6 +775,11 @@
     border-radius: var(--radius-s);
     background: var(--accent-subtle);
     white-space: pre-line;
+  }
+
+  .warning {
+    margin: 0;
+    color: var(--warn);
   }
 
   .skipped summary {

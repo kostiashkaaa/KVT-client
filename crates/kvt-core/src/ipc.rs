@@ -13,10 +13,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 /// Сколько адресов можно пингнуть одной командой `Ping`.
 pub const MAX_PING_TARGETS: usize = 1024;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
+/// Ответ на `Connect` / `StartZapret`, прерванные командой `Disconnect`. Окно не
+/// показывает его как ошибку: пользователь сам нажал «Отключить».
+pub const CANCELLED: &str = "Подключение отменено.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]

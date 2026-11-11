@@ -51,6 +51,11 @@ pub enum Protocol {
         /// ключи серверов и дубликаты считаются как раньше.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ports: Option<String>,
+        /// `pinSHA256` из ссылки — отпечаток сертификата сервера (hex). sing-box
+        /// сверять сертификат по отпечатку не умеет (только по ключу), поэтому пин
+        /// не применяется — об этом говорит `Server::warnings`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin_sha256: Option<String>,
     },
     /// VMess (только AEAD, `alterId` = 0). `cipher` — `auto`, `aes-128-gcm`,
     /// `chacha20-poly1305`, `none` или `zero`.
@@ -74,6 +79,11 @@ pub enum Protocol {
         username: Option<Secret>,
         password: Option<Secret>,
     },
+    /// HTTP-прокси (CONNECT), у `https://` — поверх TLS. Только sing-box.
+    Http {
+        username: Option<Secret>,
+        password: Option<Secret>,
+    },
 }
 
 impl Protocol {
@@ -87,12 +97,34 @@ impl Protocol {
             Protocol::Tuic { .. } => "tuic",
             Protocol::AnyTls { .. } => "anytls",
             Protocol::Socks { .. } => "socks",
+            Protocol::Http { .. } => "http",
         }
     }
 
     /// Работает поверх QUIC (UDP): TCP-пинг к такому серверу ничего не говорит.
     pub fn is_quic(&self) -> bool {
         matches!(self, Protocol::Hysteria2 { .. } | Protocol::Tuic { .. })
+    }
+}
+
+impl Server {
+    /// Что из ссылки сервера KVT не применяет — говорится при добавлении, а не
+    /// отбрасывается молча. Тексты без секретов: они уходят в окно.
+    pub fn warnings(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if let Protocol::Hysteria2 {
+            pin_sha256: Some(_),
+            ..
+        } = &self.protocol
+        {
+            let insecure = matches!(&self.security, Security::Tls(t) if t.allow_insecure);
+            out.push(if insecure {
+                "сертификат сервера не проверяется — VPN-ядро не умеет сверять отпечаток pinSHA256"
+            } else {
+                "отпечаток pinSHA256 не сверяется — сертификат проверяется обычным способом"
+            });
+        }
+        out
     }
 }
 
@@ -149,6 +181,10 @@ pub struct TlsSettings {
     pub fingerprint: Option<Fingerprint>,
     /// Отключённая проверка сертификата. Показывается в UI как предупреждение.
     pub allow_insecure: bool,
+    /// Encrypted Client Hello: готовый ECHConfigList в base64 (параметр `ech`
+    /// ссылки). Имя сервера в рукопожатии тогда скрыто от провайдера.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ech: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

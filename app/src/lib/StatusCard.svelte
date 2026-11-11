@@ -24,6 +24,8 @@
     telegram = false,
     onconnect,
     ondisconnect,
+    cancelable = false,
+    oncancel = () => {},
     onwhy,
     onstartservice,
     onreinstall,
@@ -46,6 +48,9 @@
     telegram?: boolean;
     onconnect: () => void;
     ondisconnect: () => void;
+    /** Идёт подключение, которое можно прервать нажатием на ту же кнопку. */
+    cancelable?: boolean;
+    oncancel?: () => void;
     onwhy: () => void;
     onstartservice?: () => void;
     onreinstall?: () => void;
@@ -124,7 +129,9 @@
   const power = $derived(busy ? "pending" : noData || blocked ? "on warn" : connected ? "on" : "off");
   /** Нажатие отключает: работает VPN или zapret, либо kill switch держит интернет. */
   const stops = $derived(connected || blocked);
-  const actionLabel = $derived(stops ? "Отключить" : busy ? "Подключение…" : "Подключить");
+  const actionLabel = $derived(
+    cancelable ? "Отменить подключение" : stops ? "Отключить" : busy ? "Подключение…" : "Подключить",
+  );
 
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
@@ -211,10 +218,10 @@
     {:else}
       <button
         class="power {power}"
-        disabled={busy || (!stops && !server && mode !== "zapret")}
+        disabled={cancelable ? false : busy || (!stops && !server && mode !== "zapret")}
         aria-label={actionLabel}
         title={actionLabel}
-        onclick={stops ? ondisconnect : onconnect}
+        onclick={cancelable ? oncancel : stops ? ondisconnect : onconnect}
       >
         <!-- В момент подключения от кнопки расходится зелёная волна (один раз). -->
         {#if power !== "off" && power !== "pending"}

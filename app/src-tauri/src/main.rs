@@ -200,6 +200,21 @@ fn load_choice(app: &AppHandle) -> settings::Loaded {
     }
 }
 
+/// Меняет выбор и сохраняет его, не отпуская блокировку. Окно, трей,
+/// автопереключение и профиль сети пишут выбор из разных потоков: если снимок
+/// сохранять после блокировки, два писателя могут записать файл в обратном порядке,
+/// и после перезапуска вернётся старый выбор. Возвращает новый выбор.
+pub(crate) fn update_choice(
+    app: &AppHandle,
+    f: impl FnOnce(&mut Choice),
+) -> Result<Choice, String> {
+    let state = app.state::<AppState>();
+    let mut choice = state.choice.lock().map_err(crate::errors::state)?;
+    f(&mut choice);
+    save_choice(app, &choice)?;
+    Ok(choice.clone())
+}
+
 fn save_choice(app: &AppHandle, choice: &Choice) -> Result<(), String> {
     let dir = app
         .path()
@@ -287,9 +302,16 @@ pub(crate) struct ServerSummary {
     security: &'static str,
     sni: Option<String>,
     core: CoreKind,
+    /// Тот же сервер, что у ключа выше в списке (другое только название).
+    same_as: Option<String>,
 }
 
 impl ServerSummary {
+    fn same_as(mut self, key: Option<String>) -> Self {
+        self.same_as = key;
+        self
+    }
+
     fn new(s: &Server, key: &str) -> Self {
         let transport = catalog::transport_kind(&s.transport);
         let security = match &s.security {
@@ -309,6 +331,7 @@ impl ServerSummary {
             security,
             sni: s.visible_sni().map(str::to_owned),
             core: select_core(s).core,
+            same_as: None,
         }
     }
 }
@@ -362,19 +385,21 @@ fn set_choice(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     {
-        let old = state.choice.lock().map_err(crate::errors::state)?;
-        choice.recent = old.recent.clone();
-        choice.autostart_offered = old.autostart_offered;
+        // Чтение, сохранение и замена — под одной блокировкой: иначе «Недавние» и
+        // выбор, которые тем временем поменяли трей или автопереключение, потерялись бы.
+        let mut current = state.choice.lock().map_err(crate::errors::state)?;
+        choice.recent = current.recent.clone();
+        choice.autostart_offered = current.autostart_offered;
         if let Some(key) = choice
             .server
             .clone()
-            .filter(|k| old.server.as_ref() != Some(k))
+            .filter(|k| current.server.as_ref() != Some(k))
         {
             choice.remember(&key);
         }
+        save_choice(&app, &choice)?;
+        *current = choice;
     }
-    save_choice(&app, &choice)?;
-    *state.choice.lock().map_err(crate::errors::state)? = choice;
     tray::invalidate(&app);
     tgproxy::kick(&app);
     Ok(())

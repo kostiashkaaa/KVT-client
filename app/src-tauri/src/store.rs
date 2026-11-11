@@ -8,7 +8,7 @@ use crate::dpapi;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use kvt_core::parser::CHUNK_SEPARATOR;
-use kvt_core::subscription::{next_update_delay, SubscriptionMeta};
+use kvt_core::subscription::{next_update_delay, SubscriptionMeta, Validators};
 use kvt_core::Secret;
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -31,6 +31,11 @@ pub struct Subscription {
     pub custom_title: Option<String>,
     /// Последнее обновление не удалось: когда и почему. Сбрасывается удачным.
     pub last_error: Option<RefreshError>,
+    /// Под каким клиентом провайдер отдал серверы (`fetch::user_agents`): с него
+    /// начинается следующее обновление, а не со всей очереди.
+    pub agent: Option<String>,
+    /// Метки версии сохранённого тела (ETag / Last-Modified) — для ответа 304.
+    pub validators: Option<Validators>,
 }
 
 /// Неудачное обновление подписки. Текст — из сообщений загрузчика, без ссылки и
@@ -53,6 +58,10 @@ struct StoredSubscription {
     custom_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_error: Option<RefreshError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    validators: Option<Validators>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -158,6 +167,8 @@ impl Store {
                 next_update: s.next_update,
                 custom_title: s.custom_title,
                 last_error: s.last_error,
+                agent: s.agent,
+                validators: s.validators,
             });
         }
         store.active = file
@@ -186,6 +197,8 @@ impl Store {
                     next_update: s.next_update,
                     custom_title: s.custom_title.clone(),
                     last_error: s.last_error.clone(),
+                    agent: s.agent.clone(),
+                    validators: s.validators.clone(),
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -254,16 +267,40 @@ impl Store {
             updated_at: now,
             custom_title: None,
             last_error: None,
+            agent: None,
+            validators: None,
         });
         self.active = Some(id.clone());
         id
     }
 
+    /// Новое тело подписки. Метки версии сбрасываются: они были у прежнего тела
+    /// (новые ставит `set_source`).
     pub fn update(&mut self, id: &str, body: String, meta: SubscriptionMeta, now: u64) {
         if let Some(s) = self.subscriptions.iter_mut().find(|s| s.id == id) {
             s.next_update = next_update(now, meta.update_interval);
             s.body = Secret::new(body);
             s.meta = meta;
+            s.updated_at = now;
+            s.last_error = None;
+            s.validators = None;
+        }
+    }
+
+    /// Каким клиентом пришло тело и его метки версии.
+    pub fn set_source(&mut self, id: &str, agent: &str, validators: Option<Validators>) {
+        if let Some(s) = self.subscriptions.iter_mut().find(|s| s.id == id) {
+            s.agent = Some(agent.to_owned());
+            s.validators = validators;
+        }
+    }
+
+    /// Сервер ответил «не изменилась» (304): тело прежнее, обновлены только
+    /// пришедшие метаданные и расписание.
+    pub fn not_modified(&mut self, id: &str, fresh: SubscriptionMeta, now: u64) {
+        if let Some(s) = self.subscriptions.iter_mut().find(|s| s.id == id) {
+            s.meta.refresh_from(fresh);
+            s.next_update = next_update(now, s.meta.update_interval);
             s.updated_at = now;
             s.last_error = None;
         }
@@ -456,6 +493,43 @@ mod tests {
     }
 
     #[test]
+    fn source_survives_reload_and_new_body_drops_validators() {
+        let path = tmp("source");
+        let mut store = Store::load(path.clone());
+        let id = store.add(
+            Some(Secret::new(URL)),
+            BODY.into(),
+            SubscriptionMeta::default(),
+            1,
+        );
+        let validators = Validators {
+            etag: Some("\"v1\"".into()),
+            last_modified: None,
+        };
+        store.set_source(&id, "happ", Some(validators.clone()));
+        store.postpone(&id, 2, Some("ошибка"));
+        store.save().unwrap();
+
+        let mut loaded = Store::load(path.clone());
+        let s = loaded.get(&id).unwrap();
+        assert_eq!(s.agent.as_deref(), Some("happ"));
+        assert_eq!(s.validators.as_ref(), Some(&validators));
+        // 304: тело и метки прежние, ошибка стёрта, время обновления новое.
+        loaded.not_modified(&id, SubscriptionMeta::default(), 50);
+        let s = loaded.get(&id).unwrap();
+        assert_eq!(s.body.expose(), BODY);
+        assert_eq!(s.updated_at, 50);
+        assert!(s.last_error.is_none());
+        assert!(s.validators.is_some());
+        // Новое тело — меток прежнего уже нет, клиент остаётся.
+        loaded.update(&id, BODY.into(), SubscriptionMeta::default(), 60);
+        let s = loaded.get(&id).unwrap();
+        assert!(s.validators.is_none());
+        assert_eq!(s.agent.as_deref(), Some("happ"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn old_file_without_new_fields_loads() {
         let path = tmp("old");
         let mut store = Store::load(path.clone());
@@ -463,6 +537,7 @@ mod tests {
         store.save().unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("custom_title") && !raw.contains("last_error"));
+        assert!(!raw.contains("agent") && !raw.contains("validators"));
         assert_eq!(Store::load(path.clone()).subscriptions.len(), 1);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

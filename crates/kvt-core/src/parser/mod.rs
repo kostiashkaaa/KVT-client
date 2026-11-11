@@ -2,6 +2,7 @@
 //! размер, ошибки не содержат секретов из исходной строки.
 
 mod anytls;
+mod http;
 mod hysteria2;
 mod shadowsocks;
 mod sing_box_json;
@@ -12,6 +13,8 @@ mod tuic;
 mod vless;
 mod vmess;
 mod xray_json;
+
+pub use http::is_proxy_link as is_http_proxy_link;
 
 use crate::model::Server;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
@@ -89,6 +92,9 @@ pub fn parse_uri(input: &str) -> Result<Entry, ParseError> {
         "tuic" => tuic::parse(input)?,
         "anytls" => anytls::parse(input)?,
         "socks" | "socks5" | "socks5h" | "socks4" | "socks4a" => socks::parse(input)?,
+        // Только ссылки вида прокси (логин и пустой путь); сайт или подписка — ошибка
+        // «неизвестная схема», как раньше.
+        "http" | "https" => http::parse(input)?,
         other => {
             let shown: String = other.chars().take(16).collect();
             return Err(ParseError::UnknownScheme(shown));

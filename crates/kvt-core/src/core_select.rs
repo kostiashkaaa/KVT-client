@@ -42,7 +42,8 @@ pub fn select_core(server: &Server) -> CoreChoice {
         | Protocol::Shadowsocks { .. }
         | Protocol::Tuic { .. }
         | Protocol::AnyTls { .. }
-        | Protocol::Socks { .. } => CoreKind::SingBox,
+        | Protocol::Socks { .. }
+        | Protocol::Http { .. } => CoreKind::SingBox,
     };
     CoreChoice {
         core,

@@ -129,7 +129,30 @@ fn outbound_uri(o: &Value) -> Result<String, ParseError> {
         "shadowtls" => return Err(ParseError::Unsupported("ShadowTLS")),
         "naive" => return Err(ParseError::Unsupported("NaiveProxy")),
         "ssh" => return Err(ParseError::Unsupported("SSH")),
-        "http" => return Err(ParseError::Unsupported("HTTP-прокси")),
+        "http" => {
+            // Прокси без логина ссылкой не отличить от адреса сайта — не берём.
+            let user = required(o, "username")
+                .map_err(|_| ParseError::Unsupported("HTTP-прокси без логина"))?;
+            let auth = match str_at(o, "password") {
+                Some(p) => format!("{}:{}@", encode(user), encode(p)),
+                None => format!("{}@", encode(user)),
+            };
+            let tls = o["tls"]["enabled"].as_bool() == Some(true);
+            if tls {
+                tls_query(&o["tls"], &mut q, false);
+            }
+            if o["tls"]["reality"]["enabled"].as_bool() == Some(true) {
+                return Err(ParseError::Unsupported("HTTP-прокси с REALITY"));
+            }
+            let query = q.finish();
+            return Ok(format!(
+                "{}://{auth}{host}:{port}/{}{}#{}",
+                if tls { "https" } else { "http" },
+                if query.is_empty() { "" } else { "?" },
+                query,
+                encode(name)
+            ));
+        }
         _ => return Err(ParseError::Unsupported("тип подключения")),
     };
 
@@ -236,6 +259,33 @@ fn tls_query(tls: &Value, q: &mut Serializer<'_, String>, with_security: bool) {
     }
     if tls["insecure"].as_bool() == Some(true) {
         q.append_pair("insecure", "1");
+    }
+    let ech = &tls["ech"];
+    if ech["enabled"].as_bool() == Some(true) {
+        // PEM из строк массива → base64 ECHConfigList. Без готового конфига (его
+        // ищут DNS-запросом) — значение, которое разбор отвергнет с причиной: иначе
+        // сервер подключился бы без ECH молча.
+        let config: String = ech["config"]
+            .as_array()
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .flat_map(str::lines)
+                    .filter(|l| !l.starts_with("-----"))
+                    .map(str::trim)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // «:» в base64 не бывает — разбор ответит «ECH с запросом конфига через DNS».
+        q.append_pair(
+            "ech",
+            if config.is_empty() {
+                "dns:query"
+            } else {
+                &config
+            },
+        );
     }
 }
 
@@ -345,6 +395,7 @@ mod tests {
             password,
             obfs,
             ports,
+            ..
         } = &hy2.protocol
         else {
             panic!("ожидался Hysteria2")
@@ -372,6 +423,55 @@ mod tests {
             got[5].as_ref().unwrap().protocol,
             Protocol::Socks { .. }
         ));
+    }
+
+    #[test]
+    fn ech_config_survives_dns_query_is_refused() {
+        let ech = "AEX+DQBBpQAgACB/qtKXQOgnyY4kyw6jZ3Zt0ZNy1PtoE6OdBMsyqF4tPQAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=";
+        let text = serde_json::json!({ "outbounds": [
+            { "type": "trojan", "tag": "a", "server": "t.example.com", "server_port": 443, "password": "p",
+              "tls": { "enabled": true, "server_name": "t.example.com",
+                "ech": { "enabled": true, "config": ["-----BEGIN ECH CONFIGS-----", ech, "-----END ECH CONFIGS-----"] } } },
+            { "type": "trojan", "tag": "b", "server": "t.example.com", "server_port": 443, "password": "p",
+              "tls": { "enabled": true, "server_name": "t.example.com", "ech": { "enabled": true } } }
+        ]})
+        .to_string();
+        let got = servers(&text);
+        let Security::Tls(tls) = &got[0].as_ref().unwrap().security else {
+            panic!("ожидался TLS")
+        };
+        assert_eq!(tls.ech.as_deref(), Some(ech));
+        assert_eq!(
+            got[1],
+            Err(ParseError::Unsupported("ECH с запросом конфига через DNS"))
+        );
+    }
+
+    #[test]
+    fn http_proxy_outbounds() {
+        let text = serde_json::json!({ "outbounds": [
+            { "type": "http", "tag": "h", "server": "px.example.com", "server_port": 8080,
+              "username": "u", "password": "p@ss" },
+            { "type": "http", "tag": "hs", "server": "px.example.com", "server_port": 8443,
+              "username": "u", "password": "p",
+              "tls": { "enabled": true, "server_name": "front.example.com" } },
+            { "type": "http", "tag": "open", "server": "px.example.com", "server_port": 3128 }
+        ]})
+        .to_string();
+        let got = servers(&text);
+        let plain = got[0].as_ref().unwrap();
+        assert!(matches!(plain.protocol, Protocol::Http { .. }));
+        assert_eq!((plain.port, &plain.security), (8080, &Security::None));
+        assert_eq!(plain.name, "h");
+        let tls = got[1].as_ref().unwrap();
+        let Security::Tls(t) = &tls.security else {
+            panic!("ожидался TLS")
+        };
+        assert_eq!(t.sni.as_deref(), Some("front.example.com"));
+        assert_eq!(
+            got[2],
+            Err(ParseError::Unsupported("HTTP-прокси без логина"))
+        );
     }
 
     #[test]

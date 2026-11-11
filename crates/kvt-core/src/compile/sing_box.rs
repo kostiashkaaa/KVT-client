@@ -168,6 +168,7 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
             password,
             obfs,
             ports,
+            ..
         } => {
             o.insert("type".into(), "hysteria2".into());
             o.insert("password".into(), password.expose().into());
@@ -212,6 +213,15 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
         Protocol::Socks { username, password } => {
             o.insert("type".into(), "socks".into());
             o.insert("version".into(), "5".into());
+            if let Some(u) = username {
+                o.insert("username".into(), u.expose().into());
+            }
+            if let Some(p) = password {
+                o.insert("password".into(), p.expose().into());
+            }
+        }
+        Protocol::Http { username, password } => {
+            o.insert("type".into(), "http".into());
             if let Some(u) = username {
                 o.insert("username".into(), u.expose().into());
             }
@@ -290,6 +300,15 @@ fn tls(s: &Server) -> Option<Value> {
             }
             if let Some(fp) = t.fingerprint {
                 v = with(v, "utls", json!({ "enabled": true, "fingerprint": fp }));
+            }
+            if let Some(ech) = &t.ech {
+                v = with(
+                    v,
+                    "ech",
+                    json!({ "enabled": true, "config": [
+                        "-----BEGIN ECH CONFIGS-----", ech, "-----END ECH CONFIGS-----"
+                    ] }),
+                );
             }
             Some(v)
         }
@@ -395,6 +414,29 @@ mod tests {
             (Some("u"), Some("p"))
         );
         assert!(p.get("tls").is_none());
+    }
+
+    #[test]
+    fn http_proxy_and_ech_outbounds() {
+        let c = build("http://u:p@px.example.com:8080#h");
+        let p = &c.config["outbounds"][0];
+        assert_eq!(
+            (p["type"].as_str(), p["username"].as_str()),
+            (Some("http"), Some("u"))
+        );
+        assert!(p.get("tls").is_none());
+
+        let ech = "AEX%2BDQBBpQAgACB%2FqtKXQOgnyY4kyw6jZ3Zt0ZNy1PtoE6OdBMsyqF4tPQAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA%3D";
+        let c = build(&format!(
+            "https://u:p@px.example.com:8443/?sni=front.example.com&ech={ech}"
+        ));
+        let tls = &c.config["outbounds"][0]["tls"];
+        assert_eq!(tls["server_name"], "front.example.com");
+        assert_eq!(tls["ech"]["enabled"], true);
+        assert_eq!(tls["ech"]["config"][0], "-----BEGIN ECH CONFIGS-----");
+        assert!(tls["ech"]["config"][1]
+            .as_str()
+            .is_some_and(|c| c.starts_with("AEX+")));
     }
 
     #[test]

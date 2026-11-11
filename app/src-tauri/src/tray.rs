@@ -13,10 +13,7 @@
 //! Закрытое окно уничтожается вместе с WebView, поэтому в фоне KVT почти не
 //! занимает память.
 
-use crate::{
-    connect_current, disconnect_service, display_name, query_status, save_choice, watchdog,
-    AppState,
-};
+use crate::{connect_current, disconnect_service, display_name, query_status, watchdog, AppState};
 use kvt_core::ipc::{Request, Response, ServiceStatus, Session};
 use kvt_core::routing::Action;
 use kvt_core::tester::Outcome;
@@ -676,7 +673,8 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
             None::<&str>,
         )?
     } else if connecting {
-        MenuItem::with_id(app, "toggle", "Подключение…", false, None::<&str>)?
+        // Служба прерывает долгий запуск по «Отключить».
+        MenuItem::with_id(app, "toggle", "Отменить подключение", true, None::<&str>)?
     } else {
         let label = if zapret_only {
             "Включить zapret"
@@ -928,8 +926,12 @@ fn on_menu(app: &AppHandle, id: &str) {
         _ if id.starts_with("all:") => open_page(&app, "home"),
         _ => {
             tauri::async_runtime::spawn(async move {
-                if let Err(message) = act(&app, &id).await {
-                    crate::notify::error(&app, &message);
+                match act(&app, &id).await {
+                    // Подключение прервали «Отключить» — это не ошибка.
+                    Err(message) if message != kvt_core::ipc::CANCELLED => {
+                        crate::notify::error(&app, &message)
+                    }
+                    _ => {}
                 }
                 invalidate(&app);
             });
@@ -939,6 +941,8 @@ fn on_menu(app: &AppHandle, id: &str) {
 
 /// Работает VPN, zapret, и держит ли kill switch интернет закрытым после сбоя
 /// (по последнему статусу).
+/// VPN подключён, работает только zapret, kill switch держит интернет закрытым
+/// (или идёт подключение — тогда «Отключить» его отменяет).
 fn active(app: &AppHandle) -> (bool, bool, bool) {
     let status = app
         .try_state::<Tray>()
@@ -946,19 +950,16 @@ fn active(app: &AppHandle) -> (bool, bool, bool) {
     (
         matches!(status, Some(ServiceStatus::Connected { .. })),
         matches!(status, Some(ServiceStatus::Zapret { .. })),
-        matches!(status, Some(ServiceStatus::Failed { blocked: true, .. })),
+        matches!(
+            status,
+            Some(ServiceStatus::Failed { blocked: true, .. } | ServiceStatus::Connecting)
+        ),
     )
 }
 
 /// Меняет выбор, сохраняет и сообщает окну. Возвращает новый выбор.
 fn change(app: &AppHandle, f: impl FnOnce(&mut crate::Choice)) -> Result<crate::Choice, String> {
-    let state = app.state::<AppState>();
-    let choice = {
-        let mut c = state.choice.lock().map_err(crate::errors::state)?;
-        f(&mut c);
-        c.clone()
-    };
-    save_choice(app, &choice)?;
+    let choice = crate::update_choice(app, f)?;
     let _ = app.emit(watchdog::CHOICE_EVENT, ());
     Ok(choice)
 }

@@ -101,6 +101,16 @@ struct Running {
     _job: Job,
 }
 
+/// Файл, который удаляется при выходе из области видимости — в том числе когда
+/// запуск брошен на `.await` (отмена подключения).
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 pub struct Supervisor {
     paths: Paths,
     running: Option<Running>,
@@ -263,14 +273,16 @@ impl Supervisor {
 
         let spec = CoreSpec::new(plan.core, &self.paths);
         let config_path = self.paths.run.join(spec.config_name);
-        std::fs::write(&config_path, config)
+        // Секреты на диске не задерживаются: файл удаляется, как только ядро его
+        // прочитало (или не запустилось), — и когда запуск отменён на полпути.
+        let config_file = RemoveOnDrop(config_path);
+        std::fs::write(&config_file.0, config)
             .map_err(|e| format!("не удалось записать конфиг: {e}"))?;
         if let Ok(mut issues) = self.issues.lock() {
             *issues = None;
         }
-        let result = self.check_and_spawn(&spec, &config_path).await;
-        // Секреты на диске не задерживаются: ядро уже прочитало конфиг (или не запустилось).
-        let _ = std::fs::remove_file(&config_path);
+        let result = self.check_and_spawn(&spec, &config_file.0).await;
+        drop(config_file);
         let (child, job) = result?;
         self.running = Some(Running { child, _job: job });
 

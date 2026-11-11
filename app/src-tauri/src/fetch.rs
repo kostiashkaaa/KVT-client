@@ -4,7 +4,7 @@
 use kvt_core::governor::{Decision, NetGovernor};
 use kvt_core::netlog::{self, Origin, Purpose, Route};
 use kvt_core::parser::parse_subscription_body;
-use kvt_core::subscription::{parse_headers, SubscriptionMeta, MAX_BODY_BYTES};
+use kvt_core::subscription::{parse_headers, SubscriptionMeta, Validators, MAX_BODY_BYTES};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -12,6 +12,39 @@ use url::Url;
 pub struct Fetched {
     pub meta: SubscriptionMeta,
     pub body: String,
+    /// Под каким клиентом пришли серверы (ключ из `user_agents`) — с него начнём
+    /// в следующий раз.
+    pub agent: &'static str,
+    /// Метки версии ответа: при следующем обновлении сервер может ответить 304.
+    pub validators: Option<Validators>,
+}
+
+/// Итог загрузки подписки, которая уже есть.
+pub enum Loaded {
+    Fresh(Fetched),
+    /// 304: подписка не изменилась, тела нет. Метаданные — из заголовков ответа
+    /// (часто пустые), их надо наложить на прежние.
+    NotModified(SubscriptionMeta),
+}
+
+/// Что известно с прошлой удачной загрузки.
+#[derive(Default)]
+pub struct Hints<'a> {
+    /// Клиент, под которым провайдер отдал серверы.
+    pub agent: Option<&'a str>,
+    /// Метки версии сохранённого тела. Только для запроса под тем же клиентом:
+    /// другому клиенту провайдер отдаёт другой формат.
+    pub validators: Option<&'a Validators>,
+}
+
+/// Ответ на один запрос.
+enum Reply {
+    Body {
+        meta: SubscriptionMeta,
+        body: String,
+        validators: Option<Validators>,
+    },
+    NotModified(SubscriptionMeta),
 }
 
 pub fn validate_url(raw: &str) -> Result<Url, String> {
@@ -85,9 +118,19 @@ fn settle(host: &str, decision: Decision, now: Instant) -> Result<(), String> {
     }
 }
 
+/// Новая подписка: условного запроса нет, ответ всегда с телом.
 pub async fn fetch(url: &Url) -> Result<Fetched, String> {
+    match load(url, &Hints::default()).await? {
+        Loaded::Fresh(fetched) => Ok(fetched),
+        Loaded::NotModified(_) => Err(crate::errors::UNEXPECTED.into()),
+    }
+}
+
+/// Обновление подписки: начинаем с клиента, который сработал в прошлый раз, и при
+/// метках версии спрашиваем «изменилась ли».
+pub async fn load(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
     let start = Instant::now();
-    let result = fetch_inner(url).await;
+    let result = fetch_inner(url, hints).await;
     let outcome = if result.is_ok() {
         netlog::Outcome::Ok
     } else {
@@ -101,8 +144,10 @@ pub async fn fetch(url: &Url) -> Result<Fetched, String> {
         outcome,
     )
     .ms(start.elapsed());
-    if let Err(e) = &result {
-        event = event.detail(e);
+    match &result {
+        Err(e) => event = event.detail(e),
+        Ok(Loaded::NotModified(_)) => event = event.detail("не изменилась"),
+        Ok(Loaded::Fresh(_)) => {}
     }
     netlog::record(event);
     result
@@ -113,29 +158,52 @@ pub async fn fetch(url: &Url) -> Result<Fetched, String> {
 /// v2rayNG и Happ получают конфиги Xray в JSON — в них бывают серверы, которых нет в
 /// списке ссылок (у провайдера из беты — все серверы Hysteria2); v2rayN 6 и Hiddify —
 /// обычный список ссылок. Своё имя в строке остаётся — провайдер видит, кто пришёл.
-/// Пробуем по очереди, пока в ответе не найдутся серверы.
-fn user_agents() -> [String; 5] {
+/// Пробуем по очереди, пока в ответе не найдутся серверы; подписка запоминает, кто
+/// сработал (ключ — без версии, чтобы смена версии в строке его не сбрасывала).
+fn user_agents() -> [(&'static str, String); 5] {
     let kvt = concat!("KVT/", env!("CARGO_PKG_VERSION"));
     [
-        format!("v2rayNG/1.10.5 {kvt}"),
-        format!("v2rayN/6.60 {kvt}"),
-        format!("Hiddify/2.5.7 {kvt}"),
+        ("v2rayng", format!("v2rayNG/1.10.5 {kvt}")),
+        ("v2rayn", format!("v2rayN/6.60 {kvt}")),
+        ("hiddify", format!("Hiddify/2.5.7 {kvt}")),
         // Часть провайдеров отдаёт серверы только «своему» клиенту Happ.
-        format!("Happ/3.6.1 {kvt}"),
-        kvt.to_owned(),
+        ("happ", format!("Happ/3.6.1 {kvt}")),
+        ("kvt", kvt.to_owned()),
     ]
 }
 
-async fn fetch_inner(url: &Url) -> Result<Fetched, String> {
+/// Очередь клиентов: запомненный — первым, остальные в обычном порядке.
+fn agent_order(remembered: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut agents = user_agents().to_vec();
+    if let Some(i) = agents.iter().position(|(key, _)| Some(*key) == remembered) {
+        let first = agents.remove(i);
+        agents.insert(0, first);
+    }
+    agents
+}
+
+async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
     let mut first_error = None;
-    for agent in user_agents() {
-        match fetch_as(url, &agent).await {
-            Ok(fetched) if !parse_subscription_body(&fetched.body).servers.is_empty() => {
-                return Ok(fetched)
-            }
-            // Ответ есть, но не в понятном KVT формате — пробуем следующего клиента.
-            Ok(fetched) => {
-                first_error.get_or_insert(Ok(fetched));
+    for (key, agent) in agent_order(hints.agent) {
+        let conditional = hints.validators.filter(|_| hints.agent == Some(key));
+        match fetch_as(url, &agent, conditional).await {
+            Ok(Reply::NotModified(meta)) => return Ok(Loaded::NotModified(meta)),
+            Ok(Reply::Body {
+                meta,
+                body,
+                validators,
+            }) => {
+                let fetched = Fetched {
+                    meta,
+                    body,
+                    agent: key,
+                    validators,
+                };
+                if !parse_subscription_body(&fetched.body).servers.is_empty() {
+                    return Ok(Loaded::Fresh(fetched));
+                }
+                // Ответ есть, но не в понятном KVT формате — пробуем следующего клиента.
+                first_error.get_or_insert(Ok(Loaded::Fresh(fetched)));
             }
             Err(e) => {
                 first_error.get_or_insert(Err(e));
@@ -147,7 +215,11 @@ async fn fetch_inner(url: &Url) -> Result<Fetched, String> {
     first_error.unwrap_or_else(|| Err("Не удалось загрузить подписку".into()))
 }
 
-async fn fetch_as(url: &Url, agent: &str) -> Result<Fetched, String> {
+async fn fetch_as(
+    url: &Url,
+    agent: &str,
+    conditional: Option<&Validators>,
+) -> Result<Reply, String> {
     let client = reqwest::Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::limited(3))
@@ -157,7 +229,31 @@ async fn fetch_as(url: &Url, agent: &str) -> Result<Fetched, String> {
         .build()
         .map_err(describe)?;
 
-    let mut resp = client.get(url.clone()).send().await.map_err(describe)?;
+    let mut request = client.get(url.clone());
+    if let Some(v) = conditional {
+        if let Some(etag) = &v.etag {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        if let Some(date) = &v.last_modified {
+            request = request.header(reqwest::header::IF_MODIFIED_SINCE, date);
+        }
+    }
+    let mut resp = request.send().await.map_err(describe)?;
+    let headers: Vec<(String, String)> = resp
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_owned(), v.to_owned()))
+        })
+        .collect();
+    let pairs = || headers.iter().map(|(k, v)| (k.as_str(), v.as_str()));
+    let meta = parse_headers(pairs());
+    // 304 принимаем, только если сами спрашивали «изменилась ли».
+    if conditional.is_some() && resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(Reply::NotModified(meta));
+    }
     if !resp.status().is_success() {
         return Err(format!(
             "Сервер подписки ответил ошибкой {}",
@@ -171,17 +267,6 @@ async fn fetch_as(url: &Url, agent: &str) -> Result<Fetched, String> {
         return Err("Подписка слишком большая".into());
     }
 
-    let headers: Vec<(String, String)> = resp
-        .headers()
-        .iter()
-        .filter_map(|(k, v)| {
-            v.to_str()
-                .ok()
-                .map(|v| (k.as_str().to_owned(), v.to_owned()))
-        })
-        .collect();
-    let meta = parse_headers(headers.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(describe)? {
         if body.len() + chunk.len() > MAX_BODY_BYTES {
@@ -189,9 +274,10 @@ async fn fetch_as(url: &Url, agent: &str) -> Result<Fetched, String> {
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(Fetched {
+    Ok(Reply::Body {
         meta,
         body: String::from_utf8_lossy(&body).into_owned(),
+        validators: Validators::from_headers(pairs()),
     })
 }
 
@@ -217,8 +303,25 @@ mod tests {
     #[test]
     fn known_clients_first_own_name_kept() {
         let agents = user_agents();
-        assert!(agents[0].starts_with("v2rayNG/"));
-        assert!(agents.iter().all(|a| a.contains("KVT/")));
+        assert!(agents[0].1.starts_with("v2rayNG/"));
+        assert!(agents.iter().all(|(_, a)| a.contains("KVT/")));
+    }
+
+    #[test]
+    fn remembered_client_goes_first() {
+        let keys = |r| {
+            agent_order(r)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(Some("happ")),
+            ["happ", "v2rayng", "v2rayn", "hiddify", "kvt"]
+        );
+        assert_eq!(keys(None), ["v2rayng", "v2rayn", "hiddify", "happ", "kvt"]);
+        // Ключ, которого больше нет, — обычный порядок.
+        assert_eq!(keys(Some("clash")), keys(None));
     }
 
     /// Настоящая подписка: `KVT_SUB_URL=https://… cargo test -p kvt-app real_subscription -- --ignored`.
@@ -226,7 +329,7 @@ mod tests {
     #[ignore = "ходит в сеть по ссылке из KVT_SUB_URL"]
     async fn real_subscription() {
         let url = validate_url(&std::env::var("KVT_SUB_URL").unwrap()).unwrap();
-        let fetched = fetch_inner(&url).await.unwrap();
+        let fetched = fetch(&url).await.unwrap();
         let n = parse_subscription_body(&fetched.body).servers.len();
         println!("серверов: {n}");
         assert!(n > 0);

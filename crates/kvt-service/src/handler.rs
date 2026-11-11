@@ -159,6 +159,35 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
     }
 }
 
+/// Команда, которую можно прервать: `Connect` и `StartZapret` качают списки и ждут
+/// адаптер десятки секунд, и «Отключить» не должно ждать их конца. Когда `cancel`
+/// завершается, недоделанный запуск бросается (дочерние процессы закрываются вместе
+/// с ним — `kill_on_drop` и job object), а всё запущенное останавливается.
+pub async fn handle_or_cancel(
+    state: &mut State,
+    request: Request,
+    cancel: impl std::future::Future<Output = ()>,
+) -> Response {
+    let done = tokio::select! {
+        // Отмена — первой: «Отключить», пришедшее раньше, не даёт начать запуск.
+        biased;
+        () = cancel => None,
+        response = handle(state, request) => Some(response),
+    };
+    match done {
+        Some(response) => response,
+        None => {
+            tracing::info!("подключение отменено");
+            state.supervisor.stop().await;
+            state.status = ServiceStatus::Disconnected;
+            state.session = None;
+            Response::Error {
+                message: kvt_core::ipc::CANCELLED.into(),
+            }
+        }
+    }
+}
+
 async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
     // Служба не доверяет приложению: план проверяется повторно.
     if let Err(e) = plan.routing.validate() {
@@ -343,6 +372,33 @@ mod tests {
         };
         assert!(message.contains("DNS"));
         assert_eq!(st.status, ServiceStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn cancelled_start_leaves_service_disconnected() {
+        let mut st = state();
+        let plan = ZapretPlan {
+            strategy: "general".into(),
+            game_filter: Default::default(),
+            tcp_timestamps: false,
+            domains: vec![],
+            exclude_domains: vec![],
+            ipset: false,
+        };
+        // «Отключить» уже пришло: запуск не начинается вовсе.
+        let resp = handle_or_cancel(&mut st, Request::StartZapret(Box::new(plan)), async {}).await;
+        assert_eq!(
+            resp,
+            Response::Error {
+                message: kvt_core::ipc::CANCELLED.into()
+            }
+        );
+        assert_eq!(st.status, ServiceStatus::Disconnected);
+        assert!(st.session.is_none());
+
+        // Без отмены команда отвечает как обычно.
+        let resp = handle_or_cancel(&mut st, Request::Status, std::future::pending()).await;
+        assert!(matches!(resp, Response::Status { .. }));
     }
 
     #[tokio::test]

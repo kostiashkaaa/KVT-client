@@ -32,6 +32,7 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
         status: ServiceStatus::Disconnected,
         session: None,
     }));
+    let cancel: Cancel = Arc::new(watch::channel(0).0);
     // Первый экземпляр: имя уже занято — значит, работает другая служба KVT.
     let mut server = win::create_pipe(PIPE_NAME, true).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -70,8 +71,9 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
                 tracing::debug!(image = %image.display(), "клиент принят");
                 let state = Arc::clone(&state);
                 let snapshot = Arc::clone(&snapshot);
+                let cancel = Arc::clone(&cancel);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_client(client, state, snapshot).await {
+                    if let Err(e) = handle_client(client, state, snapshot, cancel).await {
                         tracing::warn!(error = %e, "клиент отключён с ошибкой");
                     }
                 });
@@ -125,10 +127,14 @@ fn set_snapshot(snapshot: &Snapshot, response: Response) {
     }
 }
 
+/// Счётчик команд «Отключить»: запуск следит, не выросло ли число с его прихода.
+type Cancel = Arc<watch::Sender<u64>>;
+
 async fn handle_client(
     mut pipe: NamedPipeServer,
     state: Arc<Mutex<State>>,
     snapshot: Snapshot,
+    cancel: Cancel,
 ) -> anyhow::Result<()> {
     loop {
         let mut header = [0u8; 4];
@@ -160,7 +166,8 @@ async fn handle_client(
                     }),
             },
             Ok(request) => {
-                if matches!(request, Request::Connect(_) | Request::StartZapret(_)) {
+                let starts = matches!(request, Request::Connect(_) | Request::StartZapret(_));
+                if starts {
                     set_snapshot(
                         &snapshot,
                         Response::Status {
@@ -169,8 +176,23 @@ async fn handle_client(
                         },
                     );
                 }
+                // «Отключить» прерывает запуск, начатый до него, — ещё до блокировки,
+                // которую запуск держит. Запуск, пришедший позже, не отменяется.
+                if matches!(request, Request::Disconnect) {
+                    cancel.send_modify(|n| *n = n.wrapping_add(1));
+                }
+                let issued = *cancel.borrow();
+                let mut cancelled = cancel.subscribe();
                 let mut guard = state.lock().await;
-                let response = handler::handle(&mut guard, request).await;
+                let response = if starts {
+                    let cancel = async move {
+                        // Ошибка — отправитель закрыт, служба останавливается.
+                        let _ = cancelled.wait_for(|n| *n != issued).await;
+                    };
+                    handler::handle_or_cancel(&mut guard, request, cancel).await
+                } else {
+                    handler::handle(&mut guard, request).await
+                };
                 set_snapshot(&snapshot, guard.status_response());
                 response
             }

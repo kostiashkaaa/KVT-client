@@ -153,6 +153,9 @@ fn hysteria_uri(o: &Value, name: &str) -> Result<String, ParseError> {
     if tls["allowInsecure"].as_bool() == Some(true) {
         q.append_pair("insecure", "1");
     }
+    if let Some(ech) = str_at(tls, "echConfigList").filter(|v| !v.is_empty()) {
+        q.append_pair("ech", ech);
+    }
     Ok(format!(
         "hysteria2://{}@{host}:{port}?{}#{}",
         encode(auth),
@@ -206,7 +209,11 @@ fn stream_query(stream: &Value, q: &mut Serializer<'_, String>) {
     let (settings, keys): (&Value, &[(&str, &str)]) = match security {
         "tls" => (
             &stream["tlsSettings"],
-            &[("serverName", "sni"), ("fingerprint", "fp")],
+            &[
+                ("serverName", "sni"),
+                ("fingerprint", "fp"),
+                ("echConfigList", "ech"),
+            ],
         ),
         "reality" => (
             &stream["realitySettings"],

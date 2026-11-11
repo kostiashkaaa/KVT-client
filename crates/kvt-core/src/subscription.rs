@@ -52,6 +52,68 @@ impl SubscriptionMeta {
             (u, d) => Some(u.unwrap_or(0).saturating_add(d.unwrap_or(0))),
         }
     }
+
+    /// Ответ «не изменилась» (304): тела нет, но заголовки бывают. Что пришло —
+    /// обновляет прежнее, чего нет — остаётся. Трафик и срок меняются вместе: они из
+    /// одного заголовка. Интервал не трогаем — без заголовка в `fresh` он по умолчанию.
+    pub fn refresh_from(&mut self, fresh: SubscriptionMeta) {
+        if fresh.upload.is_some()
+            || fresh.download.is_some()
+            || fresh.total.is_some()
+            || fresh.expire.is_some()
+        {
+            self.upload = fresh.upload;
+            self.download = fresh.download;
+            self.total = fresh.total;
+            self.expire = fresh.expire;
+        }
+        for (old, new) in [
+            (&mut self.title, fresh.title),
+            (&mut self.support_url, fresh.support_url),
+            (&mut self.web_page_url, fresh.web_page_url),
+            (&mut self.announce, fresh.announce),
+        ] {
+            if new.is_some() {
+                *old = new;
+            }
+        }
+    }
+}
+
+/// Метки версии ответа (`ETag`, `Last-Modified`) для условного запроса: если
+/// подписка не изменилась, сервер отвечает коротким 304 без тела. Значения
+/// недоверенные и уходят обратно в заголовки — только видимый ASCII и короткие.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Validators {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<String>,
+}
+
+const MAX_VALIDATOR_LEN: usize = 200;
+
+impl Validators {
+    /// `None` — сервер не дал ни одной годной метки.
+    pub fn from_headers<'a>(headers: impl IntoIterator<Item = (&'a str, &'a str)>) -> Option<Self> {
+        let mut v = Validators::default();
+        for (name, value) in headers {
+            match name.to_ascii_lowercase().as_str() {
+                "etag" => v.etag = header_token(value),
+                "last-modified" => v.last_modified = header_token(value),
+                _ => {}
+            }
+        }
+        (v.etag.is_some() || v.last_modified.is_some()).then_some(v)
+    }
+}
+
+fn header_token(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= MAX_VALIDATOR_LEN
+        && value.chars().all(|c| (' '..='~').contains(&c)))
+    .then(|| value.to_owned())
 }
 
 /// Разбирает заголовки ответа подписки (имена без учёта регистра).
@@ -271,7 +333,8 @@ fn starts_with_server_scheme(line: &str) -> bool {
 fn is_subscription_address(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
     if lower.starts_with("https://") || lower.starts_with("http://") {
-        return lower.len() > "https://".len();
+        // `https://логин:пароль@адрес:порт` — HTTP-прокси, а не подписка.
+        return lower.len() > "https://".len() && !crate::parser::is_http_proxy_link(token);
     }
     lower
         .split_once("://")
@@ -281,6 +344,17 @@ fn is_subscription_address(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_proxy_link_is_a_key_not_a_subscription() {
+        let got =
+            split_input("https://sub.example.com/abc\nhttp://u:p@proxy.example.com:8080#Прокси");
+        assert_eq!(got.urls, ["https://sub.example.com/abc"]);
+        assert_eq!(got.rest, "http://u:p@proxy.example.com:8080#Прокси");
+        // Одна прокси-ссылка — подписок нет, вся вставка уходит в ключи.
+        let got = split_input("https://u:p@proxy.example.com:8443");
+        assert!(got.urls.is_empty());
+    }
 
     #[test]
     fn single_url_stays_url() {
@@ -413,5 +487,63 @@ mod tests {
         assert_eq!(unwrap_app_link("vless://id@h:1"), Ok(None));
         assert!(unwrap_app_link("happ://crypt3/AbCd").is_err());
         assert!(unwrap_app_link("happ://add/not-a-url").is_err());
+    }
+
+    #[test]
+    fn validators_from_headers_reject_bad_values() {
+        let v = Validators::from_headers([
+            ("ETag", "W/\"abc-123\""),
+            ("Last-Modified", " Wed, 11 Nov 2026 10:00:00 GMT "),
+        ])
+        .unwrap();
+        assert_eq!(v.etag.as_deref(), Some("W/\"abc-123\""));
+        assert_eq!(
+            v.last_modified.as_deref(),
+            Some("Wed, 11 Nov 2026 10:00:00 GMT")
+        );
+
+        // Переводы строк, не-ASCII и слишком длинное — не берём: уйдёт обратно в заголовок.
+        let long = "x".repeat(MAX_VALIDATOR_LEN + 1);
+        assert_eq!(
+            Validators::from_headers([(
+                "etag",
+                "\"a\"
+X-Evil: 1"
+            )]),
+            None
+        );
+        assert_eq!(Validators::from_headers([("etag", "\"тег\"")]), None);
+        assert_eq!(Validators::from_headers([("etag", long.as_str())]), None);
+        assert_eq!(Validators::from_headers([("etag", "  ")]), None);
+        assert_eq!(
+            Validators::from_headers([("content-type", "text/plain")]),
+            None
+        );
+    }
+
+    #[test]
+    fn not_modified_keeps_what_was_not_sent() {
+        let mut meta = parse_headers([
+            ("profile-title", "Провайдер"),
+            (
+                "subscription-userinfo",
+                "upload=1; download=2; total=100; expire=1767225600",
+            ),
+            ("profile-update-interval", "24"),
+        ]);
+        // 304 без заголовков — всё как было.
+        meta.refresh_from(SubscriptionMeta::default());
+        assert_eq!(meta.title.as_deref(), Some("Провайдер"));
+        assert_eq!(meta.used_bytes(), Some(3));
+        assert_eq!(meta.update_interval, Duration::from_secs(24 * 3600));
+        // 304 со свежим трафиком — трафик новый, остальное прежнее.
+        meta.refresh_from(parse_headers([(
+            "subscription-userinfo",
+            "upload=5; download=5; total=100",
+        )]));
+        assert_eq!(meta.used_bytes(), Some(10));
+        assert_eq!(meta.expire, None);
+        assert_eq!(meta.title.as_deref(), Some("Провайдер"));
+        assert_eq!(meta.update_interval, Duration::from_secs(24 * 3600));
     }
 }

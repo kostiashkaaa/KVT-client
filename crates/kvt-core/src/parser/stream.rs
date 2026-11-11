@@ -73,6 +73,7 @@ pub(crate) fn parse_security(q: &Query, default_security: &str) -> Result<Securi
                 .unwrap_or_default(),
             fingerprint,
             allow_insecure: is_truthy(q, "allowinsecure") || is_truthy(q, "insecure"),
+            ech: parse_ech(q)?,
         }),
         "reality" => {
             let sni = non_empty(q, "sni").ok_or(ParseError::MissingField("sni"))?;
@@ -92,6 +93,34 @@ pub(crate) fn parse_security(q: &Query, default_security: &str) -> Result<Securi
         }
         _ => return Err(ParseError::Unsupported("тип шифрования")),
     })
+}
+
+/// Самый длинный ECHConfigList, который принимаем (у Cloudflare — около 70 байт).
+const MAX_ECH_BYTES: usize = 4096;
+
+/// Параметр `ech`: готовый ECHConfigList в base64. Вариант «имя+DoH» (конфиг
+/// узнаётся DNS-запросом при подключении) ядра в этом виде не принимают — сервер
+/// пропускается с причиной, а не подключается без ECH молча.
+pub(crate) fn parse_ech(q: &Query) -> Result<Option<String>, ParseError> {
+    let Some(value) = non_empty(q, "ech") else {
+        return Ok(None);
+    };
+    let bytes = decode_base64_lenient(&value)
+        .ok_or(ParseError::Unsupported("ECH с запросом конфига через DNS"))?;
+    // ECHConfigList начинается с длины остатка (2 байта).
+    let declared = bytes
+        .get(..2)
+        .map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])));
+    if bytes.len() < 4 || bytes.len() > MAX_ECH_BYTES || declared != Some(bytes.len() - 2) {
+        return Err(ParseError::InvalidField {
+            field: "ech",
+            reason: "не похоже на конфиг ECH",
+        });
+    }
+    use base64::Engine as _;
+    Ok(Some(
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+    ))
 }
 
 fn is_truthy(q: &Query, key: &str) -> bool {

@@ -181,6 +181,12 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
                 feature: "SOCKS5 (используйте sing-box)",
             })
         }
+        Protocol::Http { .. } => {
+            return Err(CompileError::Unsupported {
+                core: CORE,
+                feature: "HTTP-прокси (используйте sing-box)",
+            })
+        }
     };
     Ok(json!({
         "tag": TAG_PROXY,
@@ -247,6 +253,9 @@ fn stream_settings(s: &Server) -> Result<Value, CompileError> {
             }
             if tls.allow_insecure {
                 t.insert("allowInsecure".into(), true.into());
+            }
+            if let Some(ech) = &tls.ech {
+                t.insert("echConfigList".into(), ech.clone().into());
             }
             stream.insert("security".into(), "tls".into());
             stream.insert("tlsSettings".into(), t.into());

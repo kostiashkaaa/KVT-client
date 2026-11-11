@@ -18,6 +18,9 @@ export interface ServerSummary {
   security: string;
   sni: string | null;
   core: "xray" | "sing-box";
+  /** Тот же сервер, что у ключа выше в списке: провайдер повторил его под другим
+   *  названием. Автопереключение такой повтор не перебирает. */
+  sameAs: string | null;
 }
 
 export interface SubscriptionInfo {
@@ -68,7 +71,7 @@ export const inApp = inTauri;
 export async function addSubscription(input: string): Promise<Added> {
   if (!inTauri) {
     if (
-      /(^|\s)https?:\/\//i.test(input) &&
+      /(^|\s)https?:\/\/(?![^\s/@]+@[^\s/?#]+\/?([?#\s]|$))/i.test(input) &&
       !/(vless|vmess|trojan|ss|hy2|hysteria2|tuic|anytls|socks5?):\/\//i.test(
         input,
       )
@@ -384,6 +387,8 @@ function previewServer(name: string, i: number, group: string): ServerSummary {
     security: "reality",
     sni: "www.microsoft.com",
     core: "xray",
+    // В превью пятый сервер группы повторяет первый — видно пометку «тот же сервер».
+    sameAs: i === 4 ? `${group}-0` : null,
   };
 }
 
@@ -542,6 +547,8 @@ export interface SubscriptionItem {
   skipped: { reason: string; count: number }[];
   /** Выброшенные точные повторы. */
   duplicates: number;
+  /** Что KVT у части серверов не применяет (например, pinSHA256): текст и число серверов. */
+  warnings: { reason: string; count: number }[];
   /** Ключи группы «Добавлено вручную» (у подписок по ссылке пусто). */
   keys: ManualKey[];
 }
@@ -569,6 +576,13 @@ const previewExtras: Record<string, Partial<SubscriptionItem>> = {
       "Плановые работы на серверах в Германии 20 ноября с 03:00 до 04:00 МСК.",
     skipped: [{ reason: "не поддерживается: WireGuard", count: 2 }],
     duplicates: 1,
+    warnings: [
+      {
+        reason:
+          "сертификат сервера не проверяется — VPN-ядро не умеет сверять отпечаток pinSHA256",
+        count: 2,
+      },
+    ],
   },
   c: {
     lastError:
@@ -606,6 +620,7 @@ export async function listSubscriptions(): Promise<SubscriptionItem[]> {
         .sort((a, b) => b.count - a.count),
       skipped: [],
       duplicates: 0,
+      warnings: [],
       ...previewExtras[g.id],
       keys: g.byUrl
         ? []
