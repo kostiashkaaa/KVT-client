@@ -67,12 +67,21 @@ fn parse_latest(body: &[u8]) -> Result<String, String> {
     struct Raw {
         tag_name: String,
     }
-    let raw: Raw = serde_json::from_slice(body).map_err(|_| "GitHub ответил непонятно")?;
+    let raw: Raw = serde_json::from_slice(body).map_err(|_| {
+        kvt_core::i18n::tr(
+            "GitHub ответил непонятно",
+            "GitHub sent an unexpected answer",
+        )
+    })?;
     let version = raw.tag_name.trim_start_matches('v');
     if valid_version(version) {
         Ok(version.to_owned())
     } else {
-        Err("GitHub ответил непонятно".into())
+        Err(kvt_core::i18n::tr(
+            "GitHub ответил непонятно",
+            "GitHub sent an unexpected answer",
+        )
+        .into())
     }
 }
 
@@ -92,7 +101,11 @@ async fn fetch_latest() -> Result<String, String> {
             .await
             .map_err(describe)?;
         if !resp.status().is_success() {
-            return Err(format!("GitHub ответил ошибкой {}", resp.status().as_u16()));
+            return Err(kvt_core::trf!(
+                "GitHub ответил ошибкой {}",
+                "GitHub returned error {}",
+                resp.status().as_u16()
+            ));
         }
         resp.bytes().await.map_err(describe)
     }
@@ -110,19 +123,23 @@ async fn fetch_latest() -> Result<String, String> {
             },
         )
         .ms(start.elapsed())
-        .detail(body.as_ref().err().map_or("версия KVT", String::as_str)),
+        .detail(body.as_ref().err().map_or(
+            kvt_core::i18n::tr("версия KVT", "KVT version"),
+            String::as_str,
+        )),
     );
     parse_latest(&body?)
 }
 
 /// Ошибка запроса — по-русски, без адреса (он и так известен).
 fn describe(e: reqwest::Error) -> String {
+    use kvt_core::i18n::tr;
     if e.is_timeout() {
-        "GitHub не ответил вовремя".into()
+        tr("GitHub не ответил вовремя", "GitHub didn't respond in time").into()
     } else if e.is_connect() {
-        "нет связи с GitHub".into()
+        tr("нет связи с GitHub", "can't reach GitHub").into()
     } else {
-        "запрос к GitHub не прошёл".into()
+        tr("запрос к GitHub не прошёл", "the GitHub request failed").into()
     }
 }
 
@@ -157,8 +174,12 @@ async fn check(app: &AppHandle) -> UpdateStatus {
         notify::show(
             app,
             notify::Notice {
-                title: format!("Вышла KVT {version}"),
-                body: "Скачайте её на странице загрузки — настройки и подписки сохранятся.".into(),
+                title: kvt_core::trf!("Вышла KVT {version}", "KVT {version} is out"),
+                body: kvt_core::i18n::tr(
+                    "Скачайте её на странице загрузки — настройки и подписки сохранятся.",
+                    "Download it from the download page — your settings and subscriptions will be kept.",
+                )
+                .into(),
                 page: Some("settings".into()),
                 force: false,
             },

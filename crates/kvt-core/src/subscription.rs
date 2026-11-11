@@ -190,14 +190,18 @@ fn filter_words(text: &str) -> Result<Vec<String>, String> {
             continue;
         }
         if w.chars().count() > MAX_FILTER_WORD || w.chars().any(char::is_control) {
-            return Err(format!(
-                "Слово фильтра длиннее {MAX_FILTER_WORD} символов или с непечатаемыми символами."
+            return Err(crate::trf!(
+                "Слово фильтра длиннее {MAX_FILTER_WORD} символов или с непечатаемыми символами.",
+                "A filter word is longer than {MAX_FILTER_WORD} characters or has non-printable characters."
             ));
         }
         words.push(w);
     }
     if words.len() > MAX_FILTER_WORDS {
-        return Err(format!("В фильтре больше {MAX_FILTER_WORDS} слов."));
+        return Err(crate::trf!(
+            "В фильтре больше {MAX_FILTER_WORDS} слов.",
+            "The filter has more than {MAX_FILTER_WORDS} words."
+        ));
     }
     Ok(words)
 }
@@ -305,7 +309,7 @@ pub fn unwrap_app_link(raw: &str) -> Result<Option<String>, &'static str> {
         return Ok(None);
     }
     if rest.to_ascii_lowercase().starts_with("crypt") {
-        return Err("Это зашифрованная ссылка Happ — её может прочитать только Happ. Попросите у провайдера обычную ссылку на подписку (https://…).");
+        return Err(crate::i18n::tr("Это зашифрованная ссылка Happ — её может прочитать только Happ. Попросите у провайдера обычную ссылку на подписку (https://…).", "This is an encrypted Happ link — only Happ can read it. Ask your provider for a regular subscription link (https://…)."));
     }
     let decode = |s: &str| {
         percent_encoding::percent_decode_str(s)
@@ -337,7 +341,7 @@ pub fn unwrap_app_link(raw: &str) -> Result<Option<String>, &'static str> {
         });
     match url {
         Some(u) => Ok(Some(u)),
-        None => Err("Не удалось достать адрес подписки из ссылки приложения. Скопируйте обычную ссылку (https://…) в личном кабинете провайдера."),
+        None => Err(crate::i18n::tr("Не удалось достать адрес подписки из ссылки приложения. Скопируйте обычную ссылку (https://…) в личном кабинете провайдера.", "Couldn't get the subscription address from the app link. Copy the regular link (https://…) from your provider's account page.")),
     }
 }
 

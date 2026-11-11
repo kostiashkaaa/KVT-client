@@ -10,13 +10,16 @@ pub const RCODE_REFUSED: u8 = 5;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum WireError {
-    #[error("некорректное имя")]
+    #[error("{}", crate::i18n::tr("некорректное имя", "invalid name"))]
     BadName,
-    #[error("ответ обрезан")]
+    #[error("{}", crate::i18n::tr("ответ обрезан", "truncated answer"))]
     Short,
-    #[error("ответ на чужой запрос")]
+    #[error(
+        "{}",
+        crate::i18n::tr("ответ на чужой запрос", "answer to another query")
+    )]
     IdMismatch,
-    #[error("это не ответ")]
+    #[error("{}", crate::i18n::tr("это не ответ", "not an answer"))]
     NotResponse,
 }
 

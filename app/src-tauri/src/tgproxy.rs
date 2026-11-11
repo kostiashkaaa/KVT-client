@@ -137,16 +137,22 @@ fn exe_path() -> Option<PathBuf> {
 
 fn verify(exe: &Path) -> Result<(), String> {
     let bytes = std::fs::read(exe).map_err(|_| {
-        "Не найден прокси для Telegram. Переустановите KVT (для разработки: scripts\\fetch-tgproxy.ps1).".to_owned()
+        kvt_core::i18n::tr(
+            "Не найден прокси для Telegram. Переустановите KVT (для разработки: scripts\\fetch-tgproxy.ps1).",
+            "The Telegram proxy wasn't found. Reinstall KVT (for development: scripts\\fetch-tgproxy.ps1).",
+        )
+        .to_owned()
     })?;
     let hash: String = Sha256::digest(&bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
     if hash != EXE_SHA256 {
-        return Err(
-            "Файл прокси для Telegram изменён — KVT его не запустит. Переустановите KVT.".into(),
-        );
+        return Err(kvt_core::i18n::tr(
+            "Файл прокси для Telegram изменён — KVT его не запустит. Переустановите KVT.",
+            "The Telegram proxy file was modified — KVT won't run it. Reinstall KVT.",
+        )
+        .into());
     }
     Ok(())
 }
@@ -167,7 +173,11 @@ fn random_secret() -> Result<String, String> {
         )
     };
     if status != 0 {
-        return Err("Не удалось создать ключ прокси для Telegram.".into());
+        return Err(kvt_core::i18n::tr(
+            "Не удалось создать ключ прокси для Telegram.",
+            "Couldn't create the Telegram proxy key.",
+        )
+        .into());
     }
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
@@ -175,10 +185,13 @@ fn random_secret() -> Result<String, String> {
 /// Секрет прокси: создаётся один раз и хранится под DPAPI (только этот пользователь
 /// Windows). Telegram запоминает его вместе с адресом прокси, поэтому он не меняется.
 fn secret(app: &AppHandle) -> Result<String, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|_| "Не найдена папка настроек Windows.".to_owned())?;
+    let dir = app.path().app_config_dir().map_err(|_| {
+        kvt_core::i18n::tr(
+            "Не найдена папка настроек Windows.",
+            "The Windows settings folder wasn't found.",
+        )
+        .to_owned()
+    })?;
     let path = dir.join(SECRET_FILE);
     if let Some(s) = std::fs::read(&path)
         .ok()
@@ -273,7 +286,11 @@ async fn fetch_domains() -> Result<Vec<String>, String> {
             .await
             .map_err(|e| e.without_url().to_string())?;
         if !resp.status().is_success() {
-            return Err(format!("GitHub ответил ошибкой {}", resp.status().as_u16()));
+            return Err(kvt_core::trf!(
+                "GitHub ответил ошибкой {}",
+                "GitHub returned error {}",
+                resp.status().as_u16()
+            ));
         }
         // Список — пара десятков строк; больше 64 КБ — не он.
         let bytes = resp
@@ -281,7 +298,7 @@ async fn fetch_domains() -> Result<Vec<String>, String> {
             .await
             .map_err(|e| e.without_url().to_string())?;
         if bytes.len() > 64 * 1024 {
-            return Err("слишком большой ответ".into());
+            return Err(kvt_core::i18n::tr("слишком большой ответ", "response too large").into());
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
@@ -297,15 +314,17 @@ async fn fetch_domains() -> Result<Vec<String>, String> {
             if ok { Outcome::Ok } else { Outcome::Failed },
         )
         .ms(start.elapsed())
-        .detail(
-            body.as_ref()
-                .err()
-                .map_or("домены медиа для прокси Telegram", String::as_str),
-        ),
+        .detail(body.as_ref().err().map_or(
+            kvt_core::i18n::tr(
+                "домены медиа для прокси Telegram",
+                "media domains for the Telegram proxy",
+            ),
+            String::as_str,
+        )),
     );
     match list {
         Ok(l) if !l.is_empty() => Ok(l),
-        Ok(_) => Err("пустой список".into()),
+        Ok(_) => Err(kvt_core::i18n::tr("пустой список", "empty list").into()),
         Err(e) => Err(e.clone()),
     }
 }
@@ -395,11 +414,15 @@ static LOG_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 const EARLY_EXIT: Duration = Duration::from_secs(15);
 
 async fn start(app: &AppHandle) -> Result<Running, String> {
-    let exe = exe_path().ok_or("Не найден каталог программы.")?;
+    let exe = exe_path().ok_or(kvt_core::i18n::tr(
+        "Не найден каталог программы.",
+        "The app folder wasn't found.",
+    ))?;
     verify(&exe)?;
     if port_busy() {
-        return Err(format!(
+        return Err(kvt_core::trf!(
             "Порт {} занят другой программой — скорее всего, уже запущен другой прокси для Telegram (например, tg-ws-proxy Flowseal). Закройте его: адрес у прокси KVT тот же, Telegram перенастраивать не нужно.",
+            "Port {} is taken by another app — most likely another Telegram proxy is running (e.g. Flowseal's tg-ws-proxy). Close it: KVT's proxy has the same address, so Telegram needs no reconfiguring.",
             tgproxy::PORT
         ));
     }
@@ -410,7 +433,10 @@ async fn start(app: &AppHandle) -> Result<Running, String> {
             let _ = std::fs::create_dir_all(d);
         })
         .map(|d| d.join("tgproxy.log"))
-        .ok_or("Не найдена папка данных.")?;
+        .ok_or(kvt_core::i18n::tr(
+            "Не найдена папка данных.",
+            "The data folder wasn't found.",
+        ))?;
     // Прокси дописывает журнал без ограничений — при запуске больше 1 МБ не держим.
     if std::fs::metadata(&log).is_ok_and(|m| m.len() > 1024 * 1024) {
         let old = log.with_extension("log.1");
@@ -430,7 +456,12 @@ async fn start(app: &AppHandle) -> Result<Running, String> {
         .creation_flags(CREATE_NO_WINDOW)
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("Прокси для Telegram не запустился: {e}"))?;
+        .map_err(|e| {
+            kvt_core::trf!(
+                "Прокси для Telegram не запустился: {e}",
+                "The Telegram proxy didn't start: {e}"
+            )
+        })?;
     let job = Job::kill_on_close().map_err(|e| e.to_string())?;
     if let Some(handle) = child.raw_handle() {
         job.assign(handle as HANDLE).map_err(|e| e.to_string())?;
@@ -493,7 +524,7 @@ pub async fn sync(app: &AppHandle, status: Option<&ServiceStatus>) {
             // Повтор через минуту, а не каждые 5 секунд.
             inner.error = Some((
                 Instant::now(),
-                "Прокси для Telegram завершился сразу после запуска. Возможно, его остановил антивирус — добавьте папку KVT в исключения. Подробности — в экспорте диагностики (tgproxy.log).".into(),
+                kvt_core::i18n::tr("Прокси для Telegram завершился сразу после запуска. Возможно, его остановил антивирус — добавьте папку KVT в исключения. Подробности — в экспорте диагностики (tgproxy.log).", "The Telegram proxy exited right after starting. Antivirus may have stopped it — add the KVT folder to exclusions. Details are in the diagnostics export (tgproxy.log).").into(),
             ));
         }
     }
@@ -555,7 +586,11 @@ pub async fn tg_proxy_status() -> TgProxyStatus {
 pub fn tg_proxy_open(app: AppHandle) -> Result<(), String> {
     let link = tgproxy::link(&secret(&app)?);
     crate::about::shell_open(&link).map_err(|_| {
-        "Не удалось открыть Telegram — установите Telegram Desktop или скопируйте ссылку.".into()
+        kvt_core::i18n::tr(
+            "Не удалось открыть Telegram — установите Telegram Desktop или скопируйте ссылку.",
+            "Couldn't open Telegram — install Telegram Desktop or copy the link.",
+        )
+        .into()
     })
 }
 

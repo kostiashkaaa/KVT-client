@@ -34,9 +34,12 @@ pub fn hwid(dir: &Path, host: &str) -> io::Result<String> {
 }
 
 fn secret(dir: &Path) -> io::Result<[u8; 32]> {
-    let mut cached = SECRET
-        .lock()
-        .map_err(|_| io::Error::other("состояние приложения повреждено"))?;
+    let mut cached = SECRET.lock().map_err(|_| {
+        io::Error::other(kvt_core::i18n::tr(
+            "состояние приложения повреждено",
+            "app state is damaged",
+        ))
+    })?;
     if let Some(s) = *cached {
         return Ok(s);
     }

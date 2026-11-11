@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { count, t } from "./i18n";
   import Icon from "./Icon.svelte";
 
   let {
@@ -34,39 +35,39 @@
   const found = $derived.by(() => {
     const text = value.trim();
     if (!text) return { urls: 0, text: "" };
-    if (/^[[{]/.test(text)) return { urls: 0, text: "Похоже на конфиг в JSON" };
-    if (!text.includes("://")) return { urls: 0, text: "Похоже на подписку в base64" };
+    if (/^[[{]/.test(text)) return { urls: 0, text: t("Похоже на конфиг в JSON", "Looks like a JSON config") };
+    if (!text.includes("://")) return { urls: 0, text: t("Похоже на подписку в base64", "Looks like a base64 subscription") };
     let urls = 0;
     let keys = 0;
     for (const line of text.split(/\r?\n/)) {
       const l = line.trim();
       if (KEY.test(l) || HTTP_PROXY.test(l)) keys++;
       else
-        for (const t of l.split(/\s+/)) {
-          const token = t.replace(/^["'«<(\[]+/, "");
+        for (const word of l.split(/\s+/)) {
+          const token = word.replace(/^["'«<(\[]+/, "");
           if (/^https?:\/\/\S/i.test(token) || APP.test(token)) urls++;
         }
     }
     const parts = [];
-    if (urls) parts.push(plural(urls, "ссылка на подписку", "ссылки на подписки", "ссылок на подписки"));
-    if (keys) parts.push(plural(keys, "ключ", "ключа", "ключей"));
-    return { urls, text: parts.length ? `Найдено: ${parts.join(", ")}` : "Не вижу ни ссылки на подписку, ни ключей" };
+    if (urls)
+      parts.push(
+        count(urls, ["ссылка на подписку", "ссылки на подписки", "ссылок на подписки"], ["subscription link", "subscription links"]),
+      );
+    if (keys) parts.push(count(keys, ["ключ", "ключа", "ключей"], ["key", "keys"]));
+    return {
+      urls,
+      text: parts.length
+        ? `${t("Найдено", "Found")}: ${parts.join(", ")}`
+        : t("Не вижу ни ссылки на подписку, ни ключей", "No subscription link or keys found"),
+    };
   });
-
-  function plural(n: number, one: string, few: string, many: string): string {
-    const d = n % 10;
-    const dd = n % 100;
-    const word = d === 1 && dd !== 11 ? one : d >= 2 && d <= 4 && (dd < 12 || dd > 14) ? few : many;
-    return `${n} ${word}`;
-  }
 </script>
 
 <section class="card empty" class:dialog={!!oncancel}>
   <div class="icon" aria-hidden="true"><Icon name="shield" size={32} /></div>
-  <h2 id="add-title">{oncancel ? "Добавить подписку или ключ" : "Добавьте подписку"}</h2>
+  <h2 id="add-title">{oncancel ? t("Добавить подписку или ключ", "Add a subscription or key") : t("Добавьте подписку", "Add a subscription")}</h2>
   <p class="muted">
-    Ссылка на подписку (https://…), ключи серверов или конфиг Xray / sing-box. Можно несколько сразу и вместе с
-    текстом из письма провайдера — KVT найдёт нужное.
+    {t("Ссылка на подписку (https://…), ключи серверов или конфиг Xray / sing-box. Можно несколько сразу и вместе с текстом из письма провайдера — KVT найдёт нужное.", "A subscription link (https://…), server keys or an Xray / sing-box config. You can paste several at once, even with the text of your provider's email — KVT will find what it needs.")}
   </p>
 
   <textarea
@@ -74,9 +75,9 @@
     rows="3"
     spellcheck="false"
     autocomplete="off"
-    placeholder="https://… или vless://…"
+    placeholder={t("https://… или vless://…", "https://… or vless://…")}
     disabled={busy}
-    aria-label="Ссылки или подписка"
+    aria-label={t("Ссылки или подписка", "Links or subscription")}
     use:focus
     onkeydown={(e) => {
       if (e.key === "Escape" && oncancel) oncancel();
@@ -86,19 +87,19 @@
 
   <p class="caption found" aria-live="polite">
     {#if busy && found.urls > 1}
-      Загружаю подписки по очереди — к одному провайдеру KVT ходит с паузой, это может занять минуту.
+      {t("Загружаю подписки по очереди — к одному провайдеру KVT ходит с паузой, это может занять минуту.", "Loading subscriptions one by one — KVT pauses between requests to the same provider, this may take a minute.")}
     {:else if found.text}
       {found.text}
     {:else}
-      VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP-прокси
+      {t("VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP-прокси", "VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP proxy")}
     {/if}
   </p>
 
   <div class="actions">
     {#if oncancel}
-      <button class="btn" disabled={busy} onclick={oncancel}>Отмена</button>
+      <button class="btn" disabled={busy} onclick={oncancel}>{t("Отмена", "Cancel")}</button>
     {/if}
-    <button class="btn" disabled={busy} onclick={paste}><Icon name="paste" size={16} />Вставить из буфера</button>
+    <button class="btn" disabled={busy} onclick={paste}><Icon name="paste" size={16} />{t("Вставить из буфера", "Paste from clipboard")}</button>
     <button
       class="btn btn-primary"
       class:busy
@@ -106,7 +107,7 @@
       title="Ctrl+Enter"
       onclick={() => onadd(value)}
     >
-      <Icon name="plus" size={16} />Добавить
+      <Icon name="plus" size={16} />{t("Добавить", "Add")}
     </button>
   </div>
 </section>

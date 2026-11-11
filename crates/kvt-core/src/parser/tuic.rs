@@ -11,12 +11,15 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
     if uuid::Uuid::parse_str(&uuid).is_err() {
         return Err(ParseError::InvalidField {
             field: "uuid",
-            reason: "не UUID",
+            reason: crate::i18n::tr("не UUID", "not a UUID"),
         });
     }
     let password = url.password().map(decode_component).unwrap_or_default();
     if password.is_empty() {
-        return Err(ParseError::MissingField("пароль"));
+        return Err(ParseError::MissingField(crate::i18n::tr(
+            "пароль",
+            "password",
+        )));
     }
     let address = host_of(&url)?;
     let port = port_of(&url)?;
@@ -32,14 +35,20 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
         .as_deref()
         .is_some_and(|c| !matches!(c, "cubic" | "new_reno" | "bbr"))
     {
-        return Err(ParseError::Unsupported("алгоритм перегрузки TUIC"));
+        return Err(ParseError::Unsupported(crate::i18n::tr(
+            "алгоритм перегрузки TUIC",
+            "TUIC congestion algorithm",
+        )));
     }
     let udp_relay_mode = get("udp_relay_mode");
     if udp_relay_mode
         .as_deref()
         .is_some_and(|m| !matches!(m, "native" | "quic"))
     {
-        return Err(ParseError::Unsupported("режим UDP TUIC"));
+        return Err(ParseError::Unsupported(crate::i18n::tr(
+            "режим UDP TUIC",
+            "TUIC UDP mode",
+        )));
     }
     let alpn: Vec<String> = get("alpn")
         .map(|a| {

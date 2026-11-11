@@ -7,7 +7,10 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
     let url = parse_url(input)?;
     let password = decode_component(url.username());
     if password.is_empty() {
-        return Err(ParseError::MissingField("пароль"));
+        return Err(ParseError::MissingField(crate::i18n::tr(
+            "пароль",
+            "password",
+        )));
     }
     let address = host_of(&url)?;
     let port = port_of(&url)?;

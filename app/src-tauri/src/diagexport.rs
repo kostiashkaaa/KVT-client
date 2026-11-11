@@ -73,7 +73,7 @@ async fn collect(state: &AppState) -> Vec<DiagFile> {
     let status = query_status().await;
     let (service_log, core_log) = match crate::service_client::call(Request::ServiceLog).await {
         Ok(Response::ServiceLog { log, core }) => (log, core),
-        Ok(_) => (errors::UNEXPECTED.to_owned(), String::new()),
+        Ok(_) => (errors::unexpected().to_owned(), String::new()),
         Err(e) => (format!("Служба не ответила: {e}"), String::new()),
     };
     let choice = state.choice.lock().map(|c| c.clone()).ok();
@@ -184,7 +184,11 @@ pub async fn diag_preview(state: State<'_, AppState>) -> Result<Vec<DiagFile>, S
 pub async fn diag_save(state: State<'_, AppState>) -> Result<bool, String> {
     let files = state.diag_files.lock().map_err(errors::state)?.clone();
     if files.is_empty() {
-        return Err("Сначала откройте предпросмотр диагностики.".into());
+        return Err(kvt_core::i18n::tr(
+            "Сначала откройте предпросмотр диагностики.",
+            "Open the diagnostics preview first.",
+        )
+        .into());
     }
     let name = format!(
         "kvt-diagnostics-{}.zip",
@@ -194,17 +198,30 @@ pub async fn diag_save(state: State<'_, AppState>) -> Result<bool, String> {
     );
     let picked = tokio::task::spawn_blocking(move || {
         rfd::FileDialog::new()
-            .set_title("Сохранить диагностику KVT")
+            .set_title(kvt_core::i18n::tr(
+                "Сохранить диагностику KVT",
+                "Save KVT diagnostics",
+            ))
             .set_file_name(name)
-            .add_filter("Архив ZIP", &["zip"])
+            .add_filter(kvt_core::i18n::tr("Архив ZIP", "ZIP archive"), &["zip"])
             .save_file()
     })
     .await
-    .map_err(|_| "Окно сохранения закрылось с ошибкой. Повторите.")?;
+    .map_err(|_| {
+        kvt_core::i18n::tr(
+            "Окно сохранения закрылось с ошибкой. Повторите.",
+            "The save dialog closed with an error. Try again.",
+        )
+    })?;
     let Some(path) = picked else {
         return Ok(false);
     };
-    write_zip(&path, &files).map_err(|e| errors::io("Не удалось сохранить архив", &e))?;
+    write_zip(&path, &files).map_err(|e| {
+        errors::io(
+            kvt_core::i18n::tr("Не удалось сохранить архив", "Couldn't save the archive"),
+            &e,
+        )
+    })?;
     tracing::info!("диагностика сохранена");
     Ok(true)
 }

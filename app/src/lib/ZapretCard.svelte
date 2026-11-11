@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "./i18n";
   import Icon from "./Icon.svelte";
   import {
     currentNetwork,
@@ -80,17 +81,17 @@
       <h2>Zapret</h2>
       <p class="caption">
         {#if pick.running}
-          Подбор стратегии…
+          {t("Подбор стратегии…", "Picking a strategy…")}
         {:else}
-          {pickedForNetwork ? "Подобрана для этой сети" : "Выбрана вручную"}{#if check.last}
-            · проверка: {check.last.check.passed} из {check.last.check.max}{/if}
+          {pickedForNetwork ? t("Подобрана для этой сети", "Picked for this network") : t("Выбрана вручную", "Chosen manually")}{#if check.last}
+            {t(`· проверка: ${check.last.check.passed} из ${check.last.check.max}`, `· check: ${check.last.check.passed} of ${check.last.check.max}`)}{/if}
         {/if}
       </p>
     </div>
     <div class="controls">
       <select
         id="zapret-strategy"
-        aria-label="Стратегия zapret"
+        aria-label={t("Стратегия zapret", "zapret strategy")}
         value={current}
         disabled={pick.running || strategies.length === 0}
         onchange={(e) => choose(e.currentTarget.value)}
@@ -99,24 +100,24 @@
           <option value={current}>{strategyTitle(current)}</option>
         {/if}
         {#each strategies as s (s.id)}
-          <option value={s.id}>{s.title}{s.recommended ? "" : " (не рекомендуется)"}</option>
+          <option value={s.id}>{s.title}{s.recommended ? "" : t(" (не рекомендуется)", "(not recommended)")}</option>
         {/each}
       </select>
       {#if pick.running}
-        <button class="btn" onclick={() => void zapretAutoselectCancel()}>Остановить</button>
+        <button class="btn" onclick={() => void zapretAutoselectCancel()}>{t("Остановить", "Stop")}</button>
       {:else}
         <button
           class="btn"
           disabled={vpnConnected}
           title={vpnConnected
-            ? "Отключите VPN: подбор проверяет сайты напрямую"
-            : "Перебирает стратегии и проверяет Discord и YouTube (TLS 1.2, TLS 1.3, загрузка больше 32 КБ). До трёх минут"}
+            ? t("Отключите VPN: подбор проверяет сайты напрямую", "Disconnect the VPN: picking checks sites directly")
+            : t("Перебирает стратегии и проверяет Discord и YouTube (TLS 1.2, TLS 1.3, загрузка больше 32 КБ). До трёх минут", "Tries strategies and checks Discord and YouTube (TLS 1.2, TLS 1.3, a download over 32 KB). Up to three minutes")}
           onclick={startAutoselect}
         >
-          Подобрать
+          {t("Подобрать", "Pick")}
         </button>
       {/if}
-      <button class="btn ghost square" title="Все настройки zapret" aria-label="Все настройки zapret" onclick={onopen}>
+      <button class="btn ghost square" title={t("Все настройки zapret", "All zapret settings")} aria-label={t("Все настройки zapret", "All zapret settings")} onclick={onopen}>
         <Icon name="chevron" size={16} />
       </button>
     </div>
@@ -130,11 +131,11 @@
       <span class="caption">
         {#if pick.progress}
           {pick.progress.index === 0
-            ? "Проверка без zapret…"
-            : `Стратегия ${pick.progress.title} (${pick.progress.index} из ${pick.progress.total})`}
-          {#if pick.progress.score !== null}· {pick.progress.score} из {pick.progress.max}{/if}
+            ? t("Проверка без zapret…", "Checking without zapret…")
+            : t(`Стратегия ${pick.progress.title} (${pick.progress.index} из ${pick.progress.total})`, `Strategy ${pick.progress.title} (${pick.progress.index} of ${pick.progress.total})`)}
+          {#if pick.progress.score !== null}{t(`· ${pick.progress.score} из ${pick.progress.max}`, `· ${pick.progress.score} of ${pick.progress.max}`)}{/if}
         {:else}
-          Подготовка…
+          {t("Подготовка…", "Preparing…")}
         {/if}
       </span>
     </div>
@@ -142,7 +143,7 @@
 
   {#if currentInfo?.needsTimestamps && !zapret.tcpTimestamps}
     <p class="note">
-      Этой стратегии нужны TCP timestamps, а включать их запрещено в настройках — она может не сработать.
+      {t("Этой стратегии нужны TCP timestamps, а включать их запрещено в настройках — она может не сработать.", "This strategy needs TCP timestamps, but turning them on is disallowed in settings — it may not work.")}
     </p>
   {/if}
   {#if loadError}
@@ -153,13 +154,12 @@
     <div class="conflict appear" role="alert">
       <Icon name="warning" size={16} />
       <div>
-        <strong>Работает другой обход блокировок</strong>
+        <strong>{t("Работает другой обход блокировок", "Another block bypass is running")}</strong>
         <p>
-          {conflicts.map((c) => c.name).join(", ")} — вместе с zapret KVT пакеты обрабатываются дважды и ничего не
-          открывается. KVT может остановить их; удалять ничего не будет.
+          {t(`${conflicts.map((c) => c.name).join(", ")} — вместе с zapret KVT пакеты обрабатываются дважды и ничего не открывается. KVT может остановить их; удалять ничего не будет.`, `${conflicts.map((c) => c.name).join(", ")} — together with KVT's zapret packets get processed twice and nothing opens. KVT can stop them; nothing will be deleted.`)}
         </p>
       </div>
-      <button class="btn" class:busy={stopping} disabled={stopping} onclick={stopConflicts}>Остановить</button>
+      <button class="btn" class:busy={stopping} disabled={stopping} onclick={stopConflicts}>{t("Остановить", "Stop")}</button>
     </div>
   {/if}
 
@@ -169,14 +169,13 @@
     {@const r = pick.result}
     <p class="result appear" class:good={r.best !== null || r.baseline === r.max}>
       {#if r.cancelled && !r.best}
-        Подбор остановлен.
+        {t("Подбор остановлен.", "Picking stopped.")}
       {:else if r.best}
-        Лучше всего работает {r.bestTitle}: {r.score} из {r.max} проверок (без zapret — {r.baseline}). Стратегия
-        выбрана для этой сети.
+        {t(`Лучше всего работает ${r.bestTitle}: ${r.score} из ${r.max} проверок (без zapret — ${r.baseline}). Стратегия выбрана для этой сети.`, `${r.bestTitle} works best: ${r.score} of ${r.max} checks (without zapret — ${r.baseline}). The strategy is chosen for this network.`)}
       {:else if r.baseline === r.max}
-        YouTube и Discord открываются и без zapret — в этой сети он не нужен.
+        {t("YouTube и Discord открываются и без zapret — в этой сети он не нужен.", "YouTube and Discord open even without zapret — it isn't needed on this network.")}
       {:else}
-        Ни одна стратегия не помогла ({r.baseline} из {r.max} без zapret). Попробуйте режим «Гибрид» или VPN.
+        {t(`Ни одна стратегия не помогла (${r.baseline} из ${r.max} без zapret). Попробуйте режим «Гибрид» или VPN.`, `No strategy helped (${r.baseline} of ${r.max} without zapret). Try Hybrid or VPN mode.`)}
       {/if}
     </p>
   {/if}

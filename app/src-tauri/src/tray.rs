@@ -14,9 +14,11 @@
 //! занимает память.
 
 use crate::{connect_current, disconnect_service, display_name, query_status, watchdog, AppState};
+use kvt_core::i18n::tr;
 use kvt_core::ipc::{Request, Response, ServiceStatus, Session};
 use kvt_core::routing::Action;
 use kvt_core::tester::Outcome;
+use kvt_core::trf;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -65,7 +67,7 @@ struct View {
     tooltip: String,
 }
 
-struct Tray {
+pub(crate) struct Tray {
     /// Меню нужно перестроить (выбор, подписки, итоги проверок, статус).
     dirty: AtomicBool,
     /// Перестройка уже запланирована: события идут пачками (итоги проверки — сотнями).
@@ -81,6 +83,19 @@ struct Tray {
     status: Mutex<Option<ServiceStatus>>,
     /// Перестройки идут по одной.
     building: Mutex<()>,
+}
+
+impl Tray {
+    /// Язык сменился: статус и названия стратегий перечитать заново.
+    pub(crate) fn forget_texts(&self) {
+        if let Ok(mut shown) = self.shown.lock() {
+            *shown = Default::default();
+        }
+        if let Ok(mut s) = self.strategies.lock() {
+            s.clear();
+        }
+        self.dirty.store(true, Ordering::SeqCst);
+    }
 }
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
@@ -343,14 +358,14 @@ fn strategy_title(id: &str) -> String {
         .and_then(|s| s.strip_suffix(')'))
     {
         Some(inner) => inner.to_owned(),
-        None if id == "general" => "Основная".into(),
+        None if id == "general" => tr("Основная", "Main").into(),
         None => id.to_owned(),
     }
 }
 
 fn mode_title(mode: &str) -> &'static str {
     match mode {
-        "hybrid" => "Гибрид",
+        "hybrid" => tr("Гибрид", "Hybrid"),
         "zapret" => "Zapret",
         _ => "VPN",
     }
@@ -360,29 +375,37 @@ fn mode_title(mode: &str) -> &'static str {
 pub(crate) fn elapsed_text(secs: u64) -> String {
     let (h, m) = (secs / 3600, secs % 3600 / 60);
     match (h, m) {
-        (0, 0) => "меньше минуты".into(),
-        (0, m) => format!("{m} мин"),
-        (h, 0) => format!("{h} ч"),
-        (h, m) => format!("{h} ч {m} мин"),
+        (0, 0) => tr("меньше минуты", "under a minute").into(),
+        (0, m) => trf!("{m} мин", "{m} min"),
+        (h, 0) => trf!("{h} ч", "{h} h"),
+        (h, m) => trf!("{h} ч {m} мин", "{h} h {m} min"),
     }
 }
 
 /// 84 МБ, 1,2 ГБ — коротко, для меню и подсказки.
 pub(crate) fn bytes_text(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+    const RU: [&str; 5] = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+    const EN: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let en = kvt_core::i18n::is_en();
+    let units = if en { EN } else { RU };
     #[allow(clippy::cast_precision_loss)]
     let mut value = bytes as f64;
     let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
+    while value >= 1000.0 && unit < units.len() - 1 {
         value /= 1024.0;
         unit += 1;
     }
     let text = if unit == 0 || value >= 10.0 {
         format!("{value:.0}")
     } else {
-        format!("{value:.1}").replace('.', ",")
+        let text = format!("{value:.1}");
+        if en {
+            text
+        } else {
+            text.replace('.', ",")
+        }
     };
-    format!("{text} {}", UNITS[unit])
+    format!("{text} {}", units[unit])
 }
 
 /// Укорачивает название и экранирует `&` (в меню Windows это мнемоника).
@@ -423,7 +446,7 @@ fn describe(
         })
         .unwrap_or_else(|_| ("vpn".into(), false));
     let server = state.selected().map(|e| display_name(&e.server));
-    let server_text = server.unwrap_or_else(|| "сервер не выбран".into());
+    let server_text = server.unwrap_or_else(|| tr("сервер не выбран", "no server selected").into());
     // «VPN · 1 ч 12 мин · ↓ 84 МБ»: что работает и сколько.
     let with_session = |head: String| {
         let mut t = head;
@@ -440,48 +463,58 @@ fn describe(
     let (kind, title, detail, hint, tone) = match status {
         Some(ServiceStatus::Connected { .. }) if tunnel == Some(false) => (
             "connected",
-            "Сайты не открываются".to_owned(),
-            format!("{server_text} не пропускает данные"),
-            format!("{server_text} не пропускает данные"),
+            tr("Сайты не открываются", "Sites don't open").to_owned(),
+            trf!(
+                "{server_text} не пропускает данные",
+                "{server_text} passes no data"
+            ),
+            trf!(
+                "{server_text} не пропускает данные",
+                "{server_text} passes no data"
+            ),
             Tone::Warn,
         ),
         Some(ServiceStatus::Connected { .. }) => (
             "connected",
-            format!("Подключено — {server_text}"),
+            trf!("Подключено — {server_text}", "Connected — {server_text}"),
             with_session(mode_title(&mode).to_owned()),
             format!("{} · {server_text}", mode_title(&mode)),
             Tone::Vpn,
         ),
         Some(ServiceStatus::Zapret { strategy }) => {
-            let strategy = format!("стратегия {}", strategy_title(strategy));
+            let strategy = trf!("стратегия {}", "strategy {}", strategy_title(strategy));
             (
                 "zapret",
-                "Zapret работает".to_owned(),
-                with_session(format!("Без VPN · {strategy}")),
-                format!("Без VPN · {strategy}"),
+                tr("Zapret работает", "Zapret is on").to_owned(),
+                with_session(trf!("Без VPN · {strategy}", "No VPN · {strategy}")),
+                trf!("Без VPN · {strategy}", "No VPN · {strategy}"),
                 Tone::Zapret,
             )
         }
         Some(ServiceStatus::Connecting) => {
             let detail = if mode == "zapret" {
-                "Zapret · без VPN".to_owned()
+                tr("Zapret · без VPN", "Zapret · no VPN").to_owned()
             } else {
                 format!("{} · {server_text}", mode_title(&mode))
             };
             (
                 "connecting",
-                "Подключение…".to_owned(),
+                tr("Подключение…", "Connecting…").to_owned(),
                 detail.clone(),
                 detail,
                 Tone::Connecting,
             )
         }
         Some(ServiceStatus::Failed { reason, blocked }) => {
-            if *blocked || (ks && reason.contains("Kill switch")) {
-                let detail = "VPN остановился, kill switch не выпускает трафик".to_owned();
+            if *blocked || (ks && reason.to_lowercase().contains("kill switch")) {
+                let detail = tr(
+                    "VPN остановился, kill switch не выпускает трафик",
+                    "VPN stopped, the kill switch is blocking traffic",
+                )
+                .to_owned();
                 (
                     "failed",
-                    "Интернет закрыт".to_owned(),
+                    tr("Интернет закрыт", "Internet blocked").to_owned(),
                     detail.clone(),
                     detail,
                     Tone::Error,
@@ -495,7 +528,7 @@ fn describe(
                 };
                 (
                     "failed",
-                    "Ошибка подключения".to_owned(),
+                    tr("Ошибка подключения", "Connection error").to_owned(),
                     detail.clone(),
                     detail,
                     Tone::Error,
@@ -504,13 +537,13 @@ fn describe(
         }
         Some(ServiceStatus::Disconnected) => {
             let detail = if mode == "zapret" {
-                "Zapret · без VPN".to_owned()
+                tr("Zapret · без VPN", "Zapret · no VPN").to_owned()
             } else {
                 format!("{} · {server_text}", mode_title(&mode))
             };
             (
                 "disconnected",
-                "Отключено".to_owned(),
+                tr("Отключено", "Disconnected").to_owned(),
                 detail.clone(),
                 detail,
                 Tone::Off,
@@ -518,16 +551,24 @@ fn describe(
         }
         None if crate::service_client::version_mismatch() => (
             "mismatch",
-            "Окно и служба KVT разных версий".to_owned(),
-            "Установите KVT заново — настройки сохранятся".to_owned(),
-            "Установите KVT заново".to_owned(),
+            tr(
+                "Окно и служба KVT разных версий",
+                "KVT window and service versions differ",
+            )
+            .to_owned(),
+            tr(
+                "Установите KVT заново — настройки сохранятся",
+                "Reinstall KVT — your settings will be kept",
+            )
+            .to_owned(),
+            tr("Установите KVT заново", "Reinstall KVT").to_owned(),
             Tone::Error,
         ),
         None => (
             "no_service",
-            "Служба KVT не запущена".to_owned(),
-            "Откройте KVT, чтобы запустить её".to_owned(),
-            "Откройте KVT, чтобы запустить её".to_owned(),
+            tr("Служба KVT не запущена", "KVT service isn't running").to_owned(),
+            tr("Откройте KVT, чтобы запустить её", "Open KVT to start it").to_owned(),
+            tr("Откройте KVT, чтобы запустить её", "Open KVT to start it").to_owned(),
             Tone::Error,
         ),
     };
@@ -552,9 +593,13 @@ fn describe(
 /// Статус для подсказки: без названия сервера, оно во второй строке.
 fn tooltip_title(kind: &str, tone: Tone, title: &str) -> String {
     match kind {
-        "connected" if tone == Tone::Vpn => "подключено".to_owned(),
-        "no_service" => "служба не запущена".to_owned(),
-        "mismatch" => "окно и служба разных версий".to_owned(),
+        "connected" if tone == Tone::Vpn => tr("подключено", "connected").to_owned(),
+        "no_service" => tr("служба не запущена", "service isn't running").to_owned(),
+        "mismatch" => tr(
+            "окно и служба разных версий",
+            "window and service versions differ",
+        )
+        .to_owned(),
         _ => {
             let mut chars = title.chars();
             chars
@@ -589,9 +634,11 @@ fn menu_servers<'a>(
                 0,
                 latency_ms.unwrap_or(u64::MAX),
                 i,
-                latency_ms.map(|ms| format!("{ms} мс")),
+                latency_ms.map(|ms| trf!("{ms} мс", "{ms} ms")),
             ),
-            Some(Outcome::Checked { .. }) => (2, 0, i, Some("не работает".into())),
+            Some(Outcome::Checked { .. }) => {
+                (2, 0, i, Some(tr("не работает", "not working").into()))
+            }
             _ => (1, 0, i, None),
         })
         .collect();
@@ -659,29 +706,38 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
         matches!(status, Some(ServiceStatus::Zapret { .. })) || (!active && mode == "zapret");
     let toggle = if active {
         let label = if zapret_only {
-            "Выключить zapret"
+            tr("Выключить zapret", "Turn off zapret")
         } else {
-            "Отключить"
+            tr("Отключить", "Disconnect")
         };
         MenuItem::with_id(app, "toggle", label, true, None::<&str>)?
     } else if blocked {
         MenuItem::with_id(
             app,
             "toggle",
-            "Отключить и вернуть интернет",
+            tr(
+                "Отключить и вернуть интернет",
+                "Disconnect and restore internet",
+            ),
             true,
             None::<&str>,
         )?
     } else if connecting {
         // Служба прерывает долгий запуск по «Отключить».
-        MenuItem::with_id(app, "toggle", "Отменить подключение", true, None::<&str>)?
+        MenuItem::with_id(
+            app,
+            "toggle",
+            tr("Отменить подключение", "Cancel connection"),
+            true,
+            None::<&str>,
+        )?
     } else {
         let label = if zapret_only {
-            "Включить zapret"
+            tr("Включить zapret", "Turn on zapret")
         } else if service && !can_connect {
-            "Подключить — выберите сервер"
+            tr("Подключить — выберите сервер", "Connect — pick a server")
         } else {
-            "Подключить"
+            tr("Подключить", "Connect")
         };
         MenuItem::with_id(app, "toggle", label, can_connect, None::<&str>)?
     };
@@ -690,7 +746,7 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
         menu.append(&MenuItem::with_id(
             app,
             "reconnect",
-            "Переподключить",
+            tr("Переподключить", "Reconnect"),
             true,
             None::<&str>,
         )?)?;
@@ -701,8 +757,12 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
     let groups = state.groups.lock().map(|g| g.clone()).unwrap_or_default();
     let outcomes = state.outcomes.lock().map(|o| o.clone()).unwrap_or_default();
     let server_title = match state.selected() {
-        Some(e) => format!("Сервер: {}", menu_text_short(&display_name(&e.server))),
-        None => "Сервер".to_owned(),
+        Some(e) => trf!(
+            "Сервер: {}",
+            "Server: {}",
+            menu_text_short(&display_name(&e.server))
+        ),
+        None => tr("Сервер", "Server").to_owned(),
     };
     let servers_menu = Submenu::with_id(app, "servers", server_title, true)?;
     let names: HashMap<&str, &crate::ServerSummary> = groups
@@ -718,7 +778,7 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
         servers_menu.append(&MenuItem::with_id(
             app,
             "recent-title",
-            "Недавние",
+            tr("Недавние", "Recent"),
             false,
             None::<&str>,
         )?)?;
@@ -751,7 +811,11 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
             target.append(&MenuItem::with_id(
                 app,
                 format!("all:{}", group.id),
-                format!("Все серверы ({})…", group.servers.len()),
+                trf!(
+                    "Все серверы ({})…",
+                    "All servers ({})…",
+                    group.servers.len()
+                ),
                 true,
                 None::<&str>,
             )?)?;
@@ -762,7 +826,7 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
         [] => servers_menu.append(&MenuItem::with_id(
             app,
             "add",
-            "Добавить подписку…",
+            tr("Добавить подписку…", "Add subscription…"),
             true,
             None::<&str>,
         )?)?,
@@ -782,11 +846,22 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
     menu.append(&servers_menu)?;
 
     // Режим.
-    let modes = Submenu::with_id(app, "modes", format!("Режим: {}", mode_title(&mode)), true)?;
+    let modes = Submenu::with_id(
+        app,
+        "modes",
+        trf!("Режим: {}", "Mode: {}", mode_title(&mode)),
+        true,
+    )?;
     for (id, label) in [
         ("vpn", "VPN"),
-        ("hybrid", "Гибрид — YouTube и Discord через zapret"),
-        ("zapret", "Zapret — без VPN"),
+        (
+            "hybrid",
+            tr(
+                "Гибрид — YouTube и Discord через zapret",
+                "Hybrid — YouTube and Discord via zapret",
+            ),
+        ),
+        ("zapret", tr("Zapret — без VPN", "Zapret — no VPN")),
     ] {
         modes.append(&CheckMenuItem::with_id(
             app,
@@ -806,16 +881,22 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
             app,
             "route",
             if proxy_all {
-                "Через VPN: всё, кроме российского"
+                tr(
+                    "Через VPN: всё, кроме российского",
+                    "Via VPN: everything except Russian sites",
+                )
             } else {
-                "Через VPN: только заблокированное"
+                tr(
+                    "Через VPN: только заблокированное",
+                    "Via VPN: only blocked sites",
+                )
             },
             true,
         )?;
         route.append(&CheckMenuItem::with_id(
             app,
             "route:proxy",
-            "Всё, кроме российского",
+            tr("Всё, кроме российского", "Everything except Russian sites"),
             true,
             proxy_all,
             None::<&str>,
@@ -823,7 +904,7 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
         route.append(&CheckMenuItem::with_id(
             app,
             "route:direct",
-            "Только заблокированное",
+            tr("Только заблокированное", "Only blocked sites"),
             true,
             !proxy_all,
             None::<&str>,
@@ -846,8 +927,9 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
         let strategies = Submenu::with_id(
             app,
             "strategies",
-            format!(
+            trf!(
                 "Стратегия zapret: {}",
+                "zapret strategy: {}",
                 menu_text_short(&strategy_title(&current))
             ),
             true,
@@ -866,7 +948,7 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
         strategies.append(&MenuItem::with_id(
             app,
             "strat-pick",
-            "Подобрать заново…",
+            tr("Подобрать заново…", "Pick again…"),
             true,
             None::<&str>,
         )?)?;
@@ -885,18 +967,24 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
     menu.append(&CheckMenuItem::with_id(
         app,
         "auto",
-        "Автопереключение сервера",
+        tr("Автопереключение сервера", "Auto-switch server"),
         true,
         choice.auto_switch,
         None::<&str>,
     )?)?;
     menu.append(&sep()?)?;
 
-    let tools = Submenu::with_id(app, "tools", "Инструменты", true)?;
+    let tools = Submenu::with_id(app, "tools", tr("Инструменты", "Tools"), true)?;
     let tool_items: [(&str, &str); 3] = [
-        ("tool:refresh", "Обновить подписки"),
-        ("tool:why", "Почему не работает?"),
-        ("tool:journal", "Журнал запросов"),
+        (
+            "tool:refresh",
+            tr("Обновить подписки", "Update subscriptions"),
+        ),
+        (
+            "tool:why",
+            tr("Почему не работает?", "Why isn't it working?"),
+        ),
+        ("tool:journal", tr("Журнал запросов", "Request log")),
     ];
     for (id, label) in tool_items {
         tools.append(&MenuItem::with_id(app, id, label, true, None::<&str>)?)?;
@@ -905,8 +993,14 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::R
     menu.append(&sep()?)?;
 
     let items: [&dyn IsMenuItem<Wry>; 2] = [
-        &MenuItem::with_id(app, "open", "Открыть KVT", true, None::<&str>)?,
-        &MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?,
+        &MenuItem::with_id(
+            app,
+            "open",
+            tr("Открыть KVT", "Open KVT"),
+            true,
+            None::<&str>,
+        )?,
+        &MenuItem::with_id(app, "quit", tr("Выход", "Quit"), true, None::<&str>)?,
     ];
     for item in items {
         menu.append(item)?;
@@ -928,7 +1022,7 @@ fn on_menu(app: &AppHandle, id: &str) {
             tauri::async_runtime::spawn(async move {
                 match act(&app, &id).await {
                     // Подключение прервали «Отключить» — это не ошибка.
-                    Err(message) if message != kvt_core::ipc::CANCELLED => {
+                    Err(message) if !kvt_core::ipc::is_cancelled(&message) => {
                         crate::notify::error(&app, &message)
                     }
                     _ => {}
@@ -1049,8 +1143,9 @@ async fn act(app: &AppHandle, id: &str) -> Result<(), String> {
         "tool:refresh" => {
             let failed = crate::subs::refresh_all(app).await?;
             if failed > 0 {
-                return Err(format!(
-                    "Не обновилось подписок: {failed}. Откройте KVT — у подписки будет видна причина."
+                return Err(trf!(
+                    "Не обновилось подписок: {failed}. Откройте KVT — у подписки будет видна причина.",
+                    "Subscriptions not updated: {failed}. Open KVT — the reason is shown on the subscription."
                 ));
             }
         }
@@ -1074,8 +1169,12 @@ async fn quit(app: &AppHandle) {
         crate::notify::show(
             app,
             crate::notify::Notice {
-                title: "KVT закрыт".into(),
-                body: "VPN и kill switch выключены: интернет идёт напрямую.".into(),
+                title: tr("KVT закрыт", "KVT closed").into(),
+                body: tr(
+                    "VPN и kill switch выключены: интернет идёт напрямую.",
+                    "VPN and kill switch are off: the internet goes direct.",
+                )
+                .into(),
                 page: None,
                 force: true,
             },
@@ -1097,6 +1196,16 @@ mod tests {
         assert_eq!(bytes_text(512), "512 Б");
         assert_eq!(bytes_text(84 * 1024 * 1024), "84 МБ");
         assert_eq!(bytes_text(1_331_000_000), "1,2 ГБ");
+    }
+
+    #[test]
+    fn elapsed_and_bytes_in_english() {
+        use kvt_core::i18n::{with, Lang};
+        with(Lang::En, || {
+            assert_eq!(elapsed_text(42), "under a minute");
+            assert_eq!(elapsed_text(4320), "1 h 12 min");
+            assert_eq!(bytes_text(1_331_000_000), "1.2 GB");
+        });
     }
 
     #[test]

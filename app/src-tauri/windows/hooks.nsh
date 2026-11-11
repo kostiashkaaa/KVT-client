@@ -8,32 +8,47 @@
 ; ($UpdateMode = 1): тогда служба только останавливается, а настройки,
 ; ProgramData и автозапуск остаются.
 
+!define KVT_LANG_RU 1049
+
+; Строка на языке установщика.
+!macro KvtDetail RU EN
+  ${If} $LANGUAGE == ${KVT_LANG_RU}
+    DetailPrint "${RU}"
+  ${Else}
+    DetailPrint "${EN}"
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   ${If} ${FileExists} "$INSTDIR\kvt-service.exe"
-    DetailPrint "Остановка службы KVT…"
+    !insertmacro KvtDetail "Остановка службы KVT…" "Stopping the KVT service…"
     nsExec::ExecToLog '"$INSTDIR\kvt-service.exe" stop'
     Pop $0
   ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  DetailPrint "Регистрация службы KVT…"
+  !insertmacro KvtDetail "Регистрация службы KVT…" "Registering the KVT service…"
   nsExec::ExecToLog '"$INSTDIR\kvt-service.exe" install'
   Pop $0
   ${If} $0 != 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "Служба KVT не зарегистрировалась (код $0). Без неё подключение не заработает. Запустите установку ещё раз; если не поможет — напишите в GitHub Issues проекта." /SD IDOK
+    ${If} $LANGUAGE == ${KVT_LANG_RU}
+      MessageBox MB_ICONEXCLAMATION|MB_OK "Служба KVT не зарегистрировалась (код $0). Без неё подключение не заработает. Запустите установку ещё раз; если не поможет — напишите в GitHub Issues проекта." /SD IDOK
+    ${Else}
+      MessageBox MB_ICONEXCLAMATION|MB_OK "The KVT service wasn't registered (code $0). Connecting won't work without it. Run the installer again; if that doesn't help, report it in the project's GitHub Issues." /SD IDOK
+    ${EndIf}
   ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
   ${If} $UpdateMode = 1
-    DetailPrint "Остановка службы KVT…"
+    !insertmacro KvtDetail "Остановка службы KVT…" "Stopping the KVT service…"
     nsExec::ExecToLog '"$INSTDIR\kvt-service.exe" stop'
     Pop $0
   ${Else}
     ; Служба удаляется; фильтры WFP (kill switch) снимаются вместе с ней,
     ; драйвер WinDivert — если им не пользуется чужой zapret.
-    DetailPrint "Удаление службы KVT…"
+    !insertmacro KvtDetail "Удаление службы KVT…" "Removing the KVT service…"
     nsExec::ExecToLog '"$INSTDIR\kvt-service.exe" uninstall'
     Pop $0
   ${EndIf}

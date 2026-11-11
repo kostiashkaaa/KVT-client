@@ -37,8 +37,9 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!(
+        Err(kvt_core::trf!(
             "{program} завершился с кодом {}",
+            "{program} exited with code {}",
             status.code().unwrap_or(-1)
         ))
     }
@@ -51,7 +52,12 @@ fn facts() -> Result<audit::Facts, String> {
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .output()
-        .map_err(|e| format!("не удалось запустить PowerShell: {e}"))?;
+        .map_err(|e| {
+            kvt_core::trf!(
+                "не удалось запустить PowerShell: {e}",
+                "couldn't start PowerShell: {e}"
+            )
+        })?;
     audit::parse_facts(&String::from_utf8_lossy(&out.stdout))
 }
 
@@ -69,7 +75,10 @@ pub fn fix(request: &ServiceFix) -> Result<(), String> {
                 .services
                 .iter()
                 .find(|s| s.name == *name && audit::is_foreign_zapret_service(s, &own))
-                .ok_or("Служба не найдена или не относится к zapret")?;
+                .ok_or(kvt_core::i18n::tr(
+                    "Служба не найдена или не относится к zapret",
+                    "The service wasn't found or isn't part of zapret",
+                ))?;
             // Сначала ручной запуск — тогда служба не поднимется снова после остановки.
             run("sc.exe", &["config", &service.name, "start=", "demand"])?;
             if service.state.eq_ignore_ascii_case("running") {
@@ -82,7 +91,10 @@ pub fn fix(request: &ServiceFix) -> Result<(), String> {
             let facts = facts()?;
             let entry = audit::zapret_autostart_by_id(&facts, id, &own())
                 .filter(|a| a.location.machine_wide())
-                .ok_or("Запись автозагрузки не найдена — возможно, её уже убрали")?;
+                .ok_or(kvt_core::i18n::tr(
+                    "Запись автозагрузки не найдена — возможно, её уже убрали",
+                    "The autostart entry wasn't found — it may have been removed already",
+                ))?;
             match entry.location.approved_key() {
                 Some(key) => run(
                     "reg.exe",
@@ -101,7 +113,11 @@ pub fn fix(request: &ServiceFix) -> Result<(), String> {
                 None if entry.location == Location::Task => {
                     run("schtasks.exe", &["/Change", "/TN", &entry.name, "/Disable"])
                 }
-                None => Err("Эту запись нельзя отключить".into()),
+                None => Err(kvt_core::i18n::tr(
+                    "Эту запись нельзя отключить",
+                    "This entry can't be disabled",
+                )
+                .into()),
             }
         }
     }

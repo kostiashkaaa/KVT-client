@@ -3,6 +3,7 @@
 </script>
 
 <script lang="ts">
+  import { t } from "./i18n";
   import Icon, { type IconName } from "./Icon.svelte";
   import { update } from "./update.svelte";
   import { tapSettings } from "./theme.svelte";
@@ -10,16 +11,16 @@
   let { current = $bindable() }: { current: Page } = $props();
 
   const items: { id: Page; label: string; icon: IconName }[] = [
-    { id: "home", label: "Главная", icon: "home" },
-    { id: "subscriptions", label: "Подписки", icon: "list" },
-    { id: "routing", label: "Маршрутизация", icon: "route" },
+    { id: "home", label: t("Главная", "Home"), icon: "home" },
+    { id: "subscriptions", label: t("Подписки", "Subscriptions"), icon: "list" },
+    { id: "routing", label: t("Маршрутизация", "Routing"), icon: "route" },
     { id: "zapret", label: "Zapret", icon: "bolt" },
-    { id: "diagnostics", label: "Проверка", icon: "pulse" },
-    { id: "journal", label: "Журнал", icon: "log" },
+    { id: "diagnostics", label: t("Проверка", "Check"), icon: "pulse" },
+    { id: "journal", label: t("Журнал", "Log"), icon: "log" },
   ];
 </script>
 
-<nav aria-label="Разделы">
+<nav aria-label={t("Разделы", "Sections")}>
   <div class="brand">
     <!-- Тот же знак, что и app-icon.svg. -->
     <svg viewBox="0 0 1024 1024" width="28" height="28" role="img" aria-label="KVT">
@@ -54,7 +55,7 @@
     class="settings"
     class:active={current === "settings"}
     aria-current={current === "settings" ? "page" : undefined}
-    title={update.version ? `Настройки · вышла KVT ${update.version}` : "Настройки"}
+    title={update.version ? t(`Настройки · вышла KVT ${update.version}`, `Settings · KVT ${update.version} is out`) : t("Настройки", "Settings")}
     onclick={() => {
       current = "settings";
       tapSettings();
@@ -64,7 +65,7 @@
       <Icon name="settings" />
       {#if update.version}<i class="badge" aria-hidden="true"></i>{/if}
     </span>
-    <span>Настройки{#if update.version}<b class="sr"> — вышла новая версия</b>{/if}</span>
+    <span>{t("Настройки", "Settings")}{#if update.version}<b class="sr"> {t("— вышла новая версия", "— a new version is out")}</b>{/if}</span>
   </button>
 </nav>
 

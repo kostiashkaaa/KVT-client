@@ -12,6 +12,9 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::i18n::tr;
+use crate::trf;
+
 /// Скрипт сбора фактов. Ничего не меняет; вывод — одна строка JSON ([`Facts`]).
 /// Значения берутся из реестра, CIM и командлетов, а не из текста, поэтому от
 /// языка Windows не зависят.
@@ -205,9 +208,11 @@ impl Location {
 
     fn title(self) -> &'static str {
         match self {
-            Location::HkcuRun | Location::HklmRun => "автозагрузка",
-            Location::HkcuStartup | Location::CommonStartup => "папка автозагрузки",
-            Location::Task => "планировщик заданий",
+            Location::HkcuRun | Location::HklmRun => tr("автозагрузка", "Startup"),
+            Location::HkcuStartup | Location::CommonStartup => {
+                tr("папка автозагрузки", "Startup folder")
+            }
+            Location::Task => tr("планировщик заданий", "Task Scheduler"),
         }
     }
 }
@@ -287,8 +292,12 @@ pub struct BrowserDns {
 }
 
 pub fn parse_facts(json: &str) -> Result<Facts, String> {
-    serde_json::from_str(json.trim().trim_start_matches('\u{feff}'))
-        .map_err(|e| format!("не удалось разобрать сведения о системе: {e}"))
+    serde_json::from_str(json.trim().trim_start_matches('\u{feff}')).map_err(|e| {
+        trf!(
+            "не удалось разобрать сведения о системе: {e}",
+            "couldn't read the system information: {e}"
+        )
+    })
 }
 
 /// Адрес прокси из `WinHttpSettings` (структура WINHTTP_PROXY_INFO в реестре):
@@ -530,17 +539,20 @@ fn leaks(facts: &Facts, out: &mut Vec<Finding>) {
         let target = if p.enable != 0 && !p.server.trim().is_empty() {
             p.server.trim().to_owned()
         } else {
-            format!("сценарий {pac}")
+            trf!("сценарий {pac}", "script {pac}")
         };
         out.push(
             Finding::new(
                 Leaks,
                 Level::Warning,
-                "Включён системный прокси",
-                format!(
+                tr("Включён системный прокси", "System proxy is on"),
+                trf!(
                     "Браузеры и другие программы отправляют трафик на {target} — обычно это остаток \
                      другого VPN-клиента. Если та программа закрыта, сайты не открываются; если \
-                     запущена — трафик идёт через неё, а не через KVT."
+                     запущена — трафик идёт через неё, а не через KVT.",
+                    "Browsers and other apps send traffic to {target} — usually a leftover from \
+                     another VPN client. If that app is closed, sites won't open; if it's running, \
+                     traffic goes through it instead of KVT."
                 ),
             )
             .fix(Fix::DisableSystemProxy),
@@ -549,8 +561,11 @@ fn leaks(facts: &Facts, out: &mut Vec<Finding>) {
         out.push(Finding::new(
             Leaks,
             Level::Ok,
-            "Системный прокси",
-            "Не задан: программы выходят в сеть обычным путём, через туннель KVT.",
+            tr("Системный прокси", "System proxy"),
+            tr(
+                "Не задан: программы выходят в сеть обычным путём, через туннель KVT.",
+                "Not set: apps reach the internet the normal way, through the KVT tunnel.",
+            ),
         ));
     }
 
@@ -559,10 +574,12 @@ fn leaks(facts: &Facts, out: &mut Vec<Finding>) {
             Finding::new(
                 Leaks,
                 Level::Warning,
-                "Прокси WinHTTP",
-                format!(
+                tr("Прокси WinHTTP", "WinHTTP proxy"),
+                trf!(
                     "Службы Windows (обновления, Microsoft Store) ходят в сеть через {proxy}. \
-                     Обычно это остаток другого VPN-клиента."
+                     Обычно это остаток другого VPN-клиента.",
+                    "Windows services (updates, Microsoft Store) go online through {proxy}. \
+                     This is usually a leftover from another VPN client."
                 ),
             )
             .fix(Fix::Service(ServiceFix::ResetWinHttpProxy)),
@@ -570,8 +587,8 @@ fn leaks(facts: &Facts, out: &mut Vec<Finding>) {
         None => out.push(Finding::new(
             Leaks,
             Level::Ok,
-            "Прокси WinHTTP",
-            "Не задан.",
+            tr("Прокси WinHTTP", "WinHTTP proxy"),
+            tr("Не задан.", "Not set."),
         )),
     }
 
@@ -582,9 +599,13 @@ fn leaks(facts: &Facts, out: &mut Vec<Finding>) {
             Finding::new(
                 Leaks,
                 Level::Warning,
-                "Включён Teredo",
-                "Teredo даёт компьютеру адрес IPv6 через туннель поверх IPv4. Через него сайты \
-                 могут увидеть настоящий адрес мимо VPN. Он нужен только старым играм и Xbox Live.",
+                tr("Включён Teredo", "Teredo is on"),
+                tr(
+                    "Teredo даёт компьютеру адрес IPv6 через туннель поверх IPv4. Через него сайты \
+                     могут увидеть настоящий адрес мимо VPN. Он нужен только старым играм и Xbox Live.",
+                    "Teredo gives the computer an IPv6 address through a tunnel over IPv4. Sites can \
+                     see your real address through it, bypassing the VPN. Only old games and Xbox Live need it.",
+                ),
             )
             .fix(Fix::Service(ServiceFix::DisableTeredo)),
         );
@@ -593,7 +614,7 @@ fn leaks(facts: &Facts, out: &mut Vec<Finding>) {
             Leaks,
             Level::Ok,
             "Teredo",
-            "Выключен или не используется.",
+            tr("Выключен или не используется.", "Off or not in use."),
         ));
     }
 
@@ -616,17 +637,22 @@ fn leaks(facts: &Facts, out: &mut Vec<Finding>) {
         out.push(Finding::new(
             Leaks,
             Level::Ok,
-            "DNS сетевых адаптеров",
-            "Получается автоматически от роутера.",
+            tr("DNS сетевых адаптеров", "Network adapter DNS"),
+            tr(
+                "Получается автоматически от роутера.",
+                "Obtained automatically from the router.",
+            ),
         ));
     } else {
         out.push(Finding::new(
             Leaks,
             Level::Info,
-            "DNS прописан вручную",
-            format!(
+            tr("DNS прописан вручную", "DNS is set manually"),
+            trf!(
                 "{}. При подключённом VPN это не мешает: KVT шифрует DNS и отправляет его в \
                  туннель. Без VPN эти серверы видят, какие сайты вы открываете.",
+                "{}. This is fine while the VPN is on: KVT encrypts DNS and sends it through the \
+                 tunnel. Without the VPN, these servers see which sites you open.",
                 manual.join("; ")
             ),
         ));
@@ -653,18 +679,24 @@ fn leaks(facts: &Facts, out: &mut Vec<Finding>) {
         out.push(Finding::new(
             Leaks,
             Level::Ok,
-            "DNS в браузерах",
-            "Браузеры используют DNS системы — его настраивает KVT.",
+            tr("DNS в браузерах", "DNS in browsers"),
+            tr(
+                "Браузеры используют DNS системы — его настраивает KVT.",
+                "Browsers use the system DNS, which KVT configures.",
+            ),
         ));
     } else {
         out.push(Finding::new(
             Leaks,
             Level::Info,
-            "Браузер использует свой DNS",
-            format!(
+            tr("Браузер использует свой DNS", "A browser uses its own DNS"),
+            trf!(
                 "{}: защищённый DNS включён в настройках браузера. Запросы зашифрованы, но \
                  идут мимо DNS KVT — если сайты из списков маршрутизации открываются не так, \
                  выключите «Безопасный DNS» в настройках браузера.",
+                "{}: secure DNS is on in the browser settings. Queries are encrypted but bypass \
+                 KVT's DNS — if sites from the routing lists open the wrong way, turn off \
+                 “Secure DNS” in the browser settings.",
                 own_doh.join(", ")
             ),
         ));
@@ -675,7 +707,7 @@ fn browser_title(id: &str) -> &str {
     match id {
         "chrome" => "Google Chrome",
         "edge" => "Microsoft Edge",
-        "yandex" => "Яндекс Браузер",
+        "yandex" => tr("Яндекс Браузер", "Yandex Browser"),
         "brave" => "Brave",
         "firefox" => "Firefox",
         other => other,
@@ -726,8 +758,8 @@ fn conflicts(facts: &Facts, own: &OwnDirs, out: &mut Vec<Finding>) {
         out.push(Finding::new(
             Conflicts,
             Level::Ok,
-            "Другие VPN-клиенты",
-            "Не запущены.",
+            tr("Другие VPN-клиенты", "Other VPN clients"),
+            tr("Не запущены.", "Not running."),
         ));
     }
     for (title, pid) in clients {
@@ -735,9 +767,13 @@ fn conflicts(facts: &Facts, own: &OwnDirs, out: &mut Vec<Finding>) {
             Finding::new(
                 Conflicts,
                 Level::Warning,
-                format!("Запущен {title}"),
-                "Два VPN одновременно спорят за маршруты и DNS: часть трафика уходит не туда, \
-                 подключение обрывается. Закройте другой клиент, пока работает KVT.",
+                trf!("Запущен {title}", "{title} is running"),
+                tr(
+                    "Два VPN одновременно спорят за маршруты и DNS: часть трафика уходит не туда, \
+                     подключение обрывается. Закройте другой клиент, пока работает KVT.",
+                    "Two VPNs at once fight over routes and DNS: some traffic goes the wrong way and \
+                     the connection drops. Close the other client while KVT is running.",
+                ),
             )
             .fix(Fix::CloseProcess { pid, name: title }),
         );
@@ -754,8 +790,8 @@ fn conflicts(facts: &Facts, own: &OwnDirs, out: &mut Vec<Finding>) {
         out.push(Finding::new(
             Conflicts,
             Level::Ok,
-            "Туннели других VPN",
-            "Активных нет.",
+            tr("Туннели других VPN", "Other VPN tunnels"),
+            tr("Активных нет.", "None active."),
         ));
     } else {
         let names: Vec<String> = adapters
@@ -765,9 +801,10 @@ fn conflicts(facts: &Facts, own: &OwnDirs, out: &mut Vec<Finding>) {
         out.push(Finding::new(
             Conflicts,
             Level::Warning,
-            "Активен туннель другого VPN",
-            format!(
+            tr("Активен туннель другого VPN", "Another VPN's tunnel is active"),
+            trf!(
                 "{}. Пока он подключён, трафик может идти через него. Отключите VPN в той программе.",
+                "{}. While it's connected, traffic may go through it. Disconnect the VPN in that app.",
                 names.join(", ")
             ),
         ));
@@ -785,19 +822,25 @@ fn conflicts(facts: &Facts, own: &OwnDirs, out: &mut Vec<Finding>) {
         out.push(Finding::new(
             Conflicts,
             Level::Ok,
-            "Антивирус",
-            "Антивирусов, которые перехватывают HTTPS, не найдено.",
+            tr("Антивирус", "Antivirus"),
+            tr(
+                "Антивирусов, которые перехватывают HTTPS, не найдено.",
+                "No antivirus that intercepts HTTPS was found.",
+            ),
         ));
     } else {
         let names: Vec<&str> = scanners.iter().map(|s| s.as_str()).collect();
         out.push(Finding::new(
             Conflicts,
             Level::Info,
-            "Антивирус проверяет HTTPS",
-            format!(
+            tr("Антивирус проверяет HTTPS", "Antivirus scans HTTPS"),
+            trf!(
                 "{} может перехватывать защищённые соединения. Если подписки не загружаются или \
                  проверка серверов ошибается, добавьте папку KVT в исключения или выключите \
                  «Проверку защищённых соединений».",
+                "{} may intercept secure connections. If subscriptions don't load or server \
+                 checks go wrong, add the KVT folder to exclusions or turn off encrypted \
+                 connection scanning.",
                 names.join(", ")
             ),
         ));
@@ -829,8 +872,11 @@ fn zapret(facts: &Facts, own: &OwnDirs, out: &mut Vec<Finding>) {
         out.push(Finding::new(
             Zapret,
             Level::Ok,
-            "Другие сборки zapret",
-            "Не найдены: ни служб, ни запущенных winws, ни автозапуска.",
+            tr("Другие сборки zapret", "Other zapret builds"),
+            tr(
+                "Не найдены: ни служб, ни запущенных winws, ни автозапуска.",
+                "None found: no services, no running winws, no autostart.",
+            ),
         ));
         return;
     }
@@ -847,17 +893,22 @@ fn zapret(facts: &Facts, own: &OwnDirs, out: &mut Vec<Finding>) {
             services
                 .iter()
                 .filter(|s| s.state.eq_ignore_ascii_case("running"))
-                .map(|s| format!("служба {}", s.name)),
+                .map(|s| trf!("служба {}", "service {}", s.name)),
         );
         names.dedup();
         out.push(
             Finding::new(
                 Zapret,
                 Level::Warning,
-                "Работает другая сборка zapret",
-                format!(
+                tr(
+                    "Работает другая сборка zapret",
+                    "Another zapret build is running",
+                ),
+                trf!(
                     "{}. Два обхода DPI одновременно перехватывают одни и те же пакеты — \
                      режимы «Гибрид» и «Zapret» в KVT работают неправильно.",
+                    "{}. Two DPI bypasses intercept the same packets at once — \
+                     KVT's Hybrid and Zapret modes don't work right.",
                     names.join(", ")
                 ),
             )
@@ -873,10 +924,16 @@ fn zapret(facts: &Facts, own: &OwnDirs, out: &mut Vec<Finding>) {
             Finding::new(
                 Zapret,
                 Level::Warning,
-                format!("Служба {} запускается вместе с Windows", s.name),
-                format!(
+                trf!(
+                    "Служба {} запускается вместе с Windows",
+                    "Service {} starts with Windows",
+                    s.name
+                ),
+                trf!(
                     "{} стартует при каждом включении компьютера и мешает zapret в KVT. \
                      Исправление остановит её и переведёт в ручной запуск — ничего не удаляется.",
+                    "{} starts every time the computer turns on and interferes with zapret in KVT. \
+                     The fix stops it and sets it to manual start — nothing is deleted.",
                     if s.display_name.is_empty() {
                         &s.name
                     } else {
@@ -901,10 +958,12 @@ fn zapret(facts: &Facts, own: &OwnDirs, out: &mut Vec<Finding>) {
             Finding::new(
                 Zapret,
                 Level::Warning,
-                format!("Автозапуск zapret: {}", a.name),
-                format!(
+                trf!("Автозапуск zapret: {}", "zapret autostart: {}", a.name),
+                trf!(
                     "Запись в разделе «{}» запускает другую сборку zapret при входе в Windows. \
                      Исправление отключит её так же, как «Отключить» в «Диспетчере задач».",
+                    "An entry in “{}” starts another zapret build when you sign in to Windows. \
+                     The fix disables it the same way as “Disable” in Task Manager.",
                     a.location.title()
                 ),
             )

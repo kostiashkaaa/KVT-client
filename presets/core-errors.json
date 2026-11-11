@@ -1,10 +1,11 @@
 {
-  "_comment": "Ошибки ядер как данные. match — подстроки в нижнем регистре (достаточно одной). action: log — только записать в журнал; stop — остановить подключение и показать текст; reconnect — один раз переподключиться. count и window (секунды): сколько совпадений за окно нужно, чтобы сработало действие. cores — для каких ядер правило (пусто — для всех). Новый случай — новая запись здесь, без изменения кода. Обрывы соединений (connection_reset) — только в журнал: ядро пишет так про любое оборванное соединение через туннель, в том числе закрытое программой на этом компьютере, и переподключение по ним рвало VPN по кругу (Telegram через прокси, 2026-11-06). Мёртвый туннель ловит проверка связи (автопереключение).",
+  "_comment": "Ошибки ядер как данные. text — по-русски, text_en — по-английски. match — подстроки в нижнем регистре (достаточно одной). action: log — только записать в журнал; stop — остановить подключение и показать текст; reconnect — один раз переподключиться. count и window (секунды): сколько совпадений за окно нужно, чтобы сработало действие. cores — для каких ядер правило (пусто — для всех). Новый случай — новая запись здесь, без изменения кода. Обрывы соединений (connection_reset) — только в журнал: ядро пишет так про любое оборванное соединение через туннель, в том числе закрытое программой на этом компьютере, и переподключение по ним рвало VPN по кругу (Telegram через прокси, 2026-11-06). Мёртвый туннель ловит проверка связи (автопереключение).",
   "rules": [
     {
       "code": "auth_rejected",
       "match": ["authentication failed", "auth failed", "invalid user", "unauthorized"],
       "text": "Сервер не принял ключ — возможно, подписка закончилась или ключ сменился. Обновите подписку или выберите другой сервер.",
+      "text_en": "The server didn't accept the key — the subscription may have expired or the key changed. Update the subscription or pick another server.",
       "action": "stop",
       "count": 3,
       "window": 60
@@ -14,6 +15,7 @@
       "cores": ["xray"],
       "match": ["reality: received real certificate", "reality: failed to verify", "reality: processed invalid connection"],
       "text": "Сервер ответил не так, как ждёт REALITY: ключ в подписке устарел или соединение подменяют. Обновите подписку или выберите другой сервер.",
+      "text_en": "The server didn't answer the way REALITY expects: the key in the subscription is outdated or the connection is being tampered with. Update the subscription or pick another server.",
       "action": "stop",
       "count": 3,
       "window": 60
@@ -22,6 +24,7 @@
       "code": "pin_mismatch",
       "match": ["pinsha256", "pinned certificate", "pinned sha256", "certificate pin"],
       "text": "Сертификат сервера не совпал с закреплённым в ключе — соединение могут подменять. Подключение остановлено; выберите другой сервер.",
+      "text_en": "The server certificate doesn't match the one pinned in the key — the connection may be tampered with. Connection stopped; pick another server.",
       "action": "stop",
       "count": 1,
       "window": 60
@@ -30,6 +33,7 @@
       "code": "bad_certificate",
       "match": ["x509:", "certificate signed by unknown authority", "certificate is valid for", "failed to verify certificate", "certificate has expired", "bad certificate"],
       "text": "Сертификат сервера не прошёл проверку: он просрочен, выдан на другое имя или соединение подменяют. Обновите подписку или выберите другой сервер.",
+      "text_en": "The server certificate failed verification: it's expired, issued for another name, or the connection is being tampered with. Update the subscription or pick another server.",
       "action": "stop",
       "count": 3,
       "window": 60
@@ -38,6 +42,7 @@
       "code": "port_busy",
       "match": ["only one usage of each socket address", "address already in use", "обычно разрешается только одно использование адреса сокета"],
       "text": "Нужный ядру порт занят другой программой. Закройте другие VPN-клиенты и подключитесь снова.",
+      "text_en": "A port the core needs is taken by another app. Close other VPN clients and connect again.",
       "action": "stop",
       "count": 1,
       "window": 60
@@ -46,6 +51,7 @@
       "code": "tun_ipv6",
       "match": ["unable to set routes > element not found", "unable to set ips > element not found", "configure tun interface: element not found"],
       "text": "Windows не дала настроить сетевой адаптер KVT (IPv6).",
+      "text_en": "Windows didn't let KVT configure its network adapter (IPv6).",
       "action": "reconnect",
       "count": 2,
       "window": 10
@@ -54,6 +60,7 @@
       "code": "tun_not_configured",
       "match": ["failed to start proxy > element not found"],
       "text": "Windows не дала настроить сетевой адаптер KVT. Так бывает, если сетевые настройки меняла программа-«оптимизатор» или другой VPN-клиент. Перезагрузите компьютер и подключитесь снова; если не поможет — сохраните диагностику.",
+      "text_en": "Windows didn't let KVT configure its network adapter. This happens when an “optimizer” or another VPN client changed network settings. Restart the computer and connect again; if that doesn't help, save diagnostics.",
       "action": "stop",
       "count": 1,
       "window": 60
@@ -62,6 +69,7 @@
       "code": "tun_busy",
       "match": ["cannot create a file when that file already exists", "failed to create adapter", "configure tun interface"],
       "text": "Сетевой адаптер KVT не создался — Windows ещё не убрала прежний. Подключитесь снова через несколько секунд.",
+      "text_en": "KVT's network adapter wasn't created — Windows hasn't removed the old one yet. Connect again in a few seconds.",
       "action": "reconnect",
       "count": 1,
       "window": 60
@@ -70,6 +78,7 @@
       "code": "connection_reset",
       "match": ["connection reset by peer", "forcibly closed by the remote host", "удаленный хост принудительно разорвал существующее подключение", "wsarecv"],
       "text": "Соединения часто обрываются.",
+      "text_en": "Connections drop often.",
       "action": "log",
       "count": 20,
       "window": 60
@@ -78,6 +87,7 @@
       "code": "timeout",
       "match": ["i/o timeout", "context deadline exceeded", "handshake timeout", "operation timed out"],
       "text": "Сервер отвечает с задержкой или не отвечает.",
+      "text_en": "The server responds slowly or not at all.",
       "action": "log",
       "count": 1,
       "window": 60
@@ -86,6 +96,7 @@
       "code": "dns_failed",
       "match": ["lookup ", "no such host", "dns: exchange failed", "failed to resolve"],
       "text": "Не удалось узнать адрес по DNS.",
+      "text_en": "Couldn't resolve the address via DNS.",
       "action": "log",
       "count": 1,
       "window": 60

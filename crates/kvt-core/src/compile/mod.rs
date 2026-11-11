@@ -130,14 +130,14 @@ pub struct Compiled {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CompileError {
-    #[error("{core:?} не поддерживает {feature}")]
+    #[error("{}", crate::trf!("{:?} не поддерживает {}", "{:?} doesn't support {}", .core, .feature))]
     Unsupported {
         core: CoreKind,
         feature: &'static str,
     },
     #[error(transparent)]
     Routing(#[from] crate::routing::RoutingError),
-    #[error("DNS-сервер «{0}» не из списка KVT")]
+    #[error("{}", crate::trf!("DNS-сервер «{}» не из списка KVT", "DNS server “{}” isn't in KVT's list", .0))]
     Dns(String),
 }
 

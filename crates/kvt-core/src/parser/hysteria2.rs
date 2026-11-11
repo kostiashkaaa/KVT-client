@@ -23,7 +23,10 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
         None => decode_component(url.username()),
     };
     if password.is_empty() {
-        return Err(ParseError::MissingField("пароль"));
+        return Err(ParseError::MissingField(crate::i18n::tr(
+            "пароль",
+            "password",
+        )));
     }
     let address = host_of(&url)?;
     let q = query_of(&url);
@@ -115,13 +118,16 @@ fn split_port_ranges(input: &str) -> Result<(String, Option<String>), ParseError
 /// `443,20000-30000` или `20000:30000` → `443,20000-30000`. Порты 1–65535, начало
 /// диапазона не больше конца.
 fn normalize_ranges(spec: &str) -> Result<String, ParseError> {
-    const BAD: ParseError = ParseError::InvalidField {
-        field: "порты",
-        reason: "ожидается список вида 443,20000-30000",
+    let bad = || ParseError::InvalidField {
+        field: crate::i18n::tr("порты", "ports"),
+        reason: crate::i18n::tr(
+            "ожидается список вида 443,20000-30000",
+            "expected a list like 443,20000-30000",
+        ),
     };
     let parts: Vec<&str> = spec.split(',').map(str::trim).collect();
     if parts.is_empty() || parts.len() > MAX_PORT_RANGES {
-        return Err(BAD);
+        return Err(bad());
     }
     let port = |s: &str| s.trim().parse::<u16>().ok().filter(|p| *p > 0);
     parts
@@ -134,7 +140,7 @@ fn normalize_ranges(spec: &str) -> Result<String, ParseError> {
             match (port(a), port(b)) {
                 (Some(a), Some(b)) if a == b => Ok(a.to_string()),
                 (Some(a), Some(b)) if a < b => Ok(format!("{a}-{b}")),
-                _ => Err(BAD),
+                _ => Err(bad()),
             }
         })
         .collect::<Result<Vec<_>, _>>()
@@ -151,7 +157,7 @@ fn normalize_pin(pin: &str) -> Result<String, ParseError> {
     if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ParseError::InvalidField {
             field: "pinSHA256",
-            reason: "не отпечаток SHA-256",
+            reason: crate::i18n::tr("не отпечаток SHA-256", "not a SHA-256 fingerprint"),
         });
     }
     Ok(hex)

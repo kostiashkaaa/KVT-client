@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { lang, t, type LangChoice } from "./i18n";
   import Icon from "./Icon.svelte";
   import Banner from "./Banner.svelte";
   import { update as newVersion, checkUpdateNow } from "./update.svelte";
@@ -20,6 +21,8 @@
     type NetworkView,
     type OnJoin,
     type Resolver,
+    getLanguage,
+    setLanguage,
   } from "./api";
 
   let {
@@ -151,24 +154,58 @@
     networks = networks.filter((p) => p.key !== key);
   }
 
-  const kinds = { wifi: "Wi-Fi", ethernet: "Кабель", mobile: "Мобильная сеть", other: "Сеть" } as const;
+  const kinds = { wifi: "Wi-Fi", ethernet: t("Кабель", "Cable"), mobile: t("Мобильная сеть", "Mobile network"), other: t("Сеть", "Network") } as const;
   const onJoinOptions: { id: OnJoin; label: string }[] = [
-    { id: "nothing", label: "Не трогать VPN" },
-    { id: "connect", label: "Включать VPN" },
-    { id: "disconnect", label: "Выключать VPN" },
+    { id: "nothing", label: t("Не трогать VPN", "Leave the VPN as is") },
+    { id: "connect", label: t("Включать VPN", "Turn the VPN on") },
+    { id: "disconnect", label: t("Выключать VPN", "Turn the VPN off") },
   ];
   const modeOptions: { id: Mode | ""; label: string }[] = [
-    { id: "", label: "Не менять режим" },
-    { id: "vpn", label: "Режим VPN" },
-    { id: "hybrid", label: "Режим «Гибрид»" },
-    { id: "zapret", label: "Режим Zapret" },
+    { id: "", label: t("Не менять режим", "Keep the mode") },
+    { id: "vpn", label: t("Режим VPN", "VPN mode") },
+    { id: "hybrid", label: t("Режим «Гибрид»", "Hybrid mode") },
+    { id: "zapret", label: t("Режим Zapret", "Zapret mode") },
   ];
 
   const themes: { id: ThemeChoice; label: string }[] = [
-    { id: "auto", label: "Как в Windows" },
-    { id: "light", label: "Светлая" },
-    { id: "dark", label: "Тёмная" },
+    { id: "auto", label: t("Как в Windows", "Same as Windows") },
+    { id: "light", label: t("Светлая", "Light") },
+    { id: "dark", label: t("Тёмная", "Dark") },
   ];
+
+  // Язык: названия языков — на самих языках, чтобы найти свой в любом интерфейсе.
+  const languages: { id: LangChoice; label: string }[] = [
+    { id: "auto", label: t("Как в Windows", "Same as Windows") },
+    { id: "ru", label: "Русский" },
+    { id: "en", label: "English" },
+  ];
+  let langChoice = $state<LangChoice>("auto");
+  let langError = $state<string | null>(null);
+  void getLanguage()
+    .then((info) => (langChoice = info.choice))
+    .catch(() => {});
+
+  /** Трей и уведомления меняют язык сразу; окно перезагружается и остаётся в «Настройках». */
+  async function pickLanguage(choice: LangChoice) {
+    if (choice === langChoice) return;
+    const prev = langChoice;
+    langChoice = choice;
+    langError = null;
+    try {
+      const info = await setLanguage(choice);
+      if (info.lang !== lang()) {
+        try {
+          sessionStorage.setItem("kvt.page", "settings");
+        } catch {
+          // Без хранилища окно откроется на главной — не страшно.
+        }
+        location.reload();
+      }
+    } catch (e) {
+      langChoice = prev;
+      langError = String(e);
+    }
+  }
 </script>
 
 <div class="page">
@@ -177,8 +214,7 @@
     <div>
       <h2>Kill switch</h2>
       <p class="muted">
-        Если VPN оборвётся, интернет будет закрыт, пока вы не нажмёте «Отключить». Ни один запрос не уйдёт мимо
-        туннеля. Если сама служба KVT остановится, Windows снимет блокировку автоматически.
+        {t("Если VPN оборвётся, интернет будет закрыт, пока вы не нажмёте «Отключить». Ни один запрос не уйдёт мимо туннеля. Если сама служба KVT остановится, Windows снимет блокировку автоматически.", "If the VPN drops, the internet stays blocked until you press “Disconnect”. Not a single request leaves outside the tunnel. If the KVT service itself stops, Windows lifts the block automatically.")}
       </p>
     </div>
     <label class="switch">
@@ -187,32 +223,31 @@
       <span class="sr">Kill switch</span>
     </label>
   </div>
-  <p class="caption">Действует в режимах «VPN» и «Гибрид».</p>
+  <p class="caption">{t("Действует в режимах «VPN» и «Гибрид».", "Works in VPN and Hybrid modes.")}</p>
 </section>
 
 <section class="card block">
   <div class="row">
     <div>
-      <h2>Автопереключение сервера</h2>
+      <h2>{t("Автопереключение сервера", "Auto-switch server")}</h2>
       <p class="muted">
-        Раз в минуту KVT проверяет одним маленьким запросом, идут ли данные через туннель. Если сервер перестал
-        отвечать, KVT подключится к следующему рабочему серверу подписки — не чаще трёх раз за полчаса.
+        {t("Раз в минуту KVT проверяет одним маленьким запросом, идут ли данные через туннель. Если сервер перестал отвечать, KVT подключится к следующему рабочему серверу подписки — не чаще трёх раз за полчаса.", "Once a minute KVT checks with one small request whether data goes through the tunnel. If the server stops responding, KVT connects to the next working server in the subscription — at most three times per half hour.")}
       </p>
     </div>
     <label class="switch">
       <input type="checkbox" role="switch" bind:checked={autoSwitch} />
       <span aria-hidden="true"></span>
-      <span class="sr">Автопереключение сервера</span>
+      <span class="sr">{t("Автопереключение сервера", "Auto-switch server")}</span>
     </label>
   </div>
 </section>
 
 <section class="card block">
-  <h2>Работа в фоне</h2>
+  <h2>{t("Работа в фоне", "Background")}</h2>
   <div class="row">
     <div>
-      <h3>Запускать вместе с Windows</h3>
-      <p class="muted">KVT стартует свёрнутым в трей — окно не появляется.</p>
+      <h3>{t("Запускать вместе с Windows", "Start with Windows")}</h3>
+      <p class="muted">{t("KVT стартует свёрнутым в трей — окно не появляется.", "KVT starts minimized to the tray — no window appears.")}</p>
     </div>
     <label class="switch">
       <input
@@ -222,44 +257,42 @@
         onchange={(e) => void toggleAutostart(e.currentTarget)}
       />
       <span aria-hidden="true"></span>
-      <span class="sr">Запускать вместе с Windows</span>
+      <span class="sr">{t("Запускать вместе с Windows", "Start with Windows")}</span>
     </label>
   </div>
   {#if autostartError}
     <p class="caption error-text">{autostartError}</p>
   {:else if autostartNow === "blocked"}
     <p class="caption error-text">
-      Автозапуск KVT выключен в Windows («Диспетчер задач» → «Автозагрузка»). Включите переключатель — запрет
-      снимется.
+      {t("Автозапуск KVT выключен в Windows («Диспетчер задач» → «Автозагрузка»). Включите переключатель — запрет снимется.", "KVT autostart is disabled in Windows (Task Manager → Startup apps). Turn the switch on to lift the block.")}
     </p>
   {:else if autostartNow === "other"}
     <p class="caption error-text">
-      В автозагрузке другая копия KVT. Включите переключатель, чтобы при входе в Windows запускалась эта.
+      {t("В автозагрузке другая копия KVT. Включите переключатель, чтобы при входе в Windows запускалась эта.", "Another copy of KVT is in autostart. Turn the switch on so this one starts when you sign in to Windows.")}
     </p>
   {/if}
   <div class="row">
     <div>
-      <h3>Подключаться при запуске</h3>
-      <p class="muted">К выбранному серверу, в выбранном режиме — как кнопка «Подключить».</p>
+      <h3>{t("Подключаться при запуске", "Connect on startup")}</h3>
+      <p class="muted">{t("К выбранному серверу, в выбранном режиме — как кнопка «Подключить».", "To the selected server, in the selected mode — like the “Connect” button.")}</p>
     </div>
     <label class="switch">
       <input type="checkbox" role="switch" bind:checked={connectOnStart} />
       <span aria-hidden="true"></span>
-      <span class="sr">Подключаться при запуске</span>
+      <span class="sr">{t("Подключаться при запуске", "Connect on startup")}</span>
     </label>
   </div>
   <div class="row">
     <div>
-      <h3>Уведомления Windows</h3>
+      <h3>{t("Уведомления Windows", "Windows notifications")}</h3>
       <p class="muted">
-        Пока окно закрыто: сервер заменён, соединение прервано, zapret перестал справляться. Без звука. Когда окно
-        открыто, сообщения видны в нём.
+        {t("Пока окно закрыто: сервер заменён, соединение прервано, zapret перестал справляться. Без звука. Когда окно открыто, сообщения видны в нём.", "While the window is closed: server switched, connection lost, zapret stopped working. No sound. When the window is open, messages appear in it.")}
       </p>
     </div>
     <label class="switch">
       <input type="checkbox" role="switch" bind:checked={notifications} />
       <span aria-hidden="true"></span>
-      <span class="sr">Уведомления Windows</span>
+      <span class="sr">{t("Уведомления Windows", "Windows notifications")}</span>
     </label>
   </div>
 </section>
@@ -268,8 +301,8 @@
   <h2>DNS</h2>
   <div class="field">
     <label for="dns-local">
-      <span>Для сайтов, которые открываются напрямую</span>
-      <span class="caption">Обычный DNS. Российский резолвер отдаёт ближайшие узлы российских CDN.</span>
+      <span>{t("Для сайтов, которые открываются напрямую", "For sites that open directly")}</span>
+      <span class="caption">{t("Обычный DNS. Российский резолвер отдаёт ближайшие узлы российских CDN.", "Plain DNS. A Russian resolver returns the nearest nodes of Russian CDNs.")}</span>
     </label>
     <select id="dns-local" value={dns.local} onchange={(e) => (dns = { ...dns, local: e.currentTarget.value })}>
       {#each resolvers as r (r.id)}
@@ -279,8 +312,8 @@
   </div>
   <div class="field">
     <label for="dns-remote">
-      <span>Для всего остального</span>
-      <span class="caption">Зашифрованный DoH внутри туннеля: провайдер не видит, какие сайты вы открываете.</span>
+      <span>{t("Для всего остального", "For everything else")}</span>
+      <span class="caption">{t("Зашифрованный DoH внутри туннеля: провайдер не видит, какие сайты вы открываете.", "Encrypted DoH inside the tunnel: your ISP can't see which sites you open.")}</span>
     </label>
     <select id="dns-remote" value={dns.remote} onchange={(e) => (dns = { ...dns, remote: e.currentTarget.value })}>
       {#each tunnelResolvers as r (r.id)}
@@ -288,24 +321,24 @@
       {/each}
     </select>
   </div>
-  <p class="caption">Какой DNS быстрее в вашей сети, подскажет «Проверка DNS» в разделе «Проверка».</p>
+  <p class="caption">{t("Какой DNS быстрее в вашей сети, подскажет «Проверка DNS» в разделе «Проверка».", "The “DNS check” in the “Check” section shows which DNS is faster on your network.")}</p>
 </section>
 
 <section class="card block">
-  <h2>Сети</h2>
+  <h2>{t("Сети", "Networks")}</h2>
   <p class="muted intro">
-    KVT узнаёт сеть по роутеру и может сам включать VPN дома, выключать его в доверенной сети или менять режим.
+    {t("KVT узнаёт сеть по роутеру и может сам включать VPN дома, выключать его в доверенной сети или менять режим.", "KVT recognizes a network by its router and can turn the VPN on at home, off on a trusted network, or change the mode.")}
   </p>
 
   <div class="here">
     <Icon name="wifi" size={16} />
     {#if here.network}
-      <span>Сейчас: <strong>{here.network.label}</strong> <span class="caption">· {kinds[here.network.kind]}</span></span>
+      <span>{t("Сейчас:", "Now:")} <strong>{here.network.label}</strong> <span class="caption">· {kinds[here.network.kind]}</span></span>
       {#if !known}
-        <button class="btn" onclick={remember}>Запомнить эту сеть</button>
+        <button class="btn" onclick={remember}>{t("Запомнить эту сеть", "Remember this network")}</button>
       {/if}
     {:else}
-      <span class="muted">Нет подключения к сети</span>
+      <span class="muted">{t("Нет подключения к сети", "No network connection")}</span>
     {/if}
   </div>
 
@@ -315,13 +348,13 @@
         <li class:current={p.key === here.network?.key}>
           <input
             class="name"
-            aria-label="Название сети"
+            aria-label={t("Название сети", "Network name")}
             value={p.name}
             maxlength="40"
             onchange={(e) => rename(p, e.currentTarget)}
           />
           <select
-            aria-label="При подключении к сети"
+            aria-label={t("При подключении к сети", "When connecting to the network")}
             value={p.onJoin}
             onchange={(e) => update(p.key, { onJoin: e.currentTarget.value as OnJoin })}
           >
@@ -330,7 +363,7 @@
             {/each}
           </select>
           <select
-            aria-label="Режим в этой сети"
+            aria-label={t("Режим в этой сети", "Mode on this network")}
             value={p.mode ?? ""}
             onchange={(e) => update(p.key, { mode: (e.currentTarget.value || null) as Mode | null })}
           >
@@ -338,31 +371,31 @@
               <option value={o.id}>{o.label}</option>
             {/each}
           </select>
-          <button class="btn forget" aria-label="Забыть сеть «{p.name}»" onclick={() => forget(p.key)}>Забыть</button>
+          <button class="btn forget" aria-label={t(`Забыть сеть «${p.name}»`, `Forget network “${p.name}”`)} onclick={() => forget(p.key)}>{t("Забыть", "Forget")}</button>
         </li>
       {/each}
     </ul>
-    <p class="caption">Действие срабатывает, когда компьютер подключается к сети.</p>
+    <p class="caption">{t("Действие срабатывает, когда компьютер подключается к сети.", "The action fires when the computer connects to the network.")}</p>
   {/if}
 </section>
 
 <section class="card block">
   <div class="field">
     <div class="label">
-      <h2 id="theme-title">Тема</h2>
-      <span class="caption">«Как в Windows» меняется вместе с системой.</span>
+      <h2 id="theme-title">{t("Тема", "Theme")}</h2>
+      <span class="caption">{t("«Как в Windows» меняется вместе с системой.", "“Same as Windows” follows the system.")}</span>
     </div>
     <div class="segmented" role="radiogroup" aria-labelledby="theme-title">
-      {#each themes as t (t.id)}
-        <label class:checked={theme.choice === t.id}>
+      {#each themes as opt (opt.id)}
+        <label class:checked={theme.choice === opt.id}>
           <input
             type="radio"
             name="theme"
-            value={t.id}
-            checked={theme.choice === t.id}
-            onclick={() => setTheme(t.id)}
+            value={opt.id}
+            checked={theme.choice === opt.id}
+            onclick={() => setTheme(opt.id)}
           />
-          {t.label}
+          {opt.label}
         </label>
       {/each}
     </div>
@@ -370,7 +403,33 @@
 </section>
 
 <section class="card block">
-  <h2>О программе</h2>
+  <div class="field">
+    <div class="label">
+      <h2 id="lang-title">{t("Язык", "Language")}</h2>
+      <span class="caption">{t("Окно перезапустится на выбранном языке.", "The window will reload in the chosen language.")}</span>
+    </div>
+    <div class="segmented" role="radiogroup" aria-labelledby="lang-title">
+      {#each languages as opt (opt.id)}
+        <label class:checked={langChoice === opt.id}>
+          <input
+            type="radio"
+            name="language"
+            value={opt.id}
+            checked={langChoice === opt.id}
+            onclick={() => void pickLanguage(opt.id)}
+          />
+          {opt.label}
+        </label>
+      {/each}
+    </div>
+  </div>
+  {#if langError}
+    <p class="caption error-text">{langError}</p>
+  {/if}
+</section>
+
+<section class="card block">
+  <h2>{t("О программе", "About")}</h2>
   {#if about}
     <dl class="versions">
       <dt>KVT</dt>
@@ -387,46 +446,44 @@
   {/if}
   {#if release?.available}
     <Banner tone="info">
-      Вышла KVT {release.latest}. Скачайте её на странице загрузки — настройки и подписки сохранятся.
+      {t(`Вышла KVT ${release.latest}. Скачайте её на странице загрузки — настройки и подписки сохранятся.`, `KVT ${release.latest} is out. Download it from the download page — your settings and subscriptions will be kept.`)}
       {#snippet action()}
-        <button class="btn btn-primary" onclick={() => void open("latest")}>Скачать</button>
+        <button class="btn btn-primary" onclick={() => void open("latest")}>{t("Скачать", "Download")}</button>
       {/snippet}
     </Banner>
   {/if}
   <div class="row">
     <div>
-      <h3>Сообщать о новой версии</h3>
+      <h3>{t("Сообщать о новой версии", "Notify about new versions")}</h3>
       <p class="muted">
-        Раз в 12 часов KVT спрашивает у GitHub номер последней версии. Скачиваете и устанавливаете её вы сами: KVT
-        ничего не загружает.
+        {t("Раз в 12 часов KVT спрашивает у GitHub номер последней версии. Скачиваете и устанавливаете её вы сами: KVT ничего не загружает.", "Every 12 hours KVT asks GitHub for the latest version number. You download and install it yourself: KVT downloads nothing.")}
       </p>
       <p class="caption">
         {#if checking}
-          Проверяем…
+          {t("Проверяем…", "Checking…")}
         {:else if release?.error}
-          Не удалось проверить: {release.error}
+          {t(`Не удалось проверить: ${release.error}`, `Couldn't check: ${release.error}`)}
         {:else if release?.latest && !release.available}
-          Установлена последняя версия
+          {t("Установлена последняя версия", "You have the latest version")}
         {/if}
-        <button class="btn ghost" onclick={() => void checkNow()} disabled={checking}>Проверить сейчас</button>
+        <button class="btn ghost" onclick={() => void checkNow()} disabled={checking}>{t("Проверить сейчас", "Check now")}</button>
       </p>
     </div>
     <label class="switch">
       <input type="checkbox" role="switch" bind:checked={checkUpdates} />
       <span aria-hidden="true"></span>
-      <span class="sr">Сообщать о новой версии</span>
+      <span class="sr">{t("Сообщать о новой версии", "Notify about new versions")}</span>
     </label>
   </div>
   <p class="muted">
-    KVT — свободная программа под лицензией GPL-3.0. В составе: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert
-    (LGPL-3.0), zapret и Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0).
+    {t("KVT — свободная программа под лицензией GPL-3.0. В составе: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret и Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0).", "KVT is free software under the GPL-3.0 license. Includes: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret and Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0).")}
   </p>
   <div class="links">
-    <button class="btn" onclick={onrestartonboarding}>Подсказки первого запуска</button>
-    <button class="btn" onclick={() => void open("releases")}>Страница загрузки</button>
-    <button class="btn" onclick={() => void open("source")}>Исходники</button>
+    <button class="btn" onclick={onrestartonboarding}>{t("Подсказки первого запуска", "First-run tips")}</button>
+    <button class="btn" onclick={() => void open("releases")}>{t("Страница загрузки", "Download page")}</button>
+    <button class="btn" onclick={() => void open("source")}>{t("Исходники", "Source code")}</button>
     {#if about?.licenses}
-      <button class="btn" onclick={() => void open("licenses")}>Тексты лицензий</button>
+      <button class="btn" onclick={() => void open("licenses")}>{t("Тексты лицензий", "License texts")}</button>
     {/if}
   </div>
   {#if linkError}
@@ -437,13 +494,13 @@
 {#if pending}
   <div class="apply card appear" role="status">
     <Icon name="info" size={16} />
-    <span>Kill switch и DNS заработают после переподключения.</span>
+    <span>{t("Kill switch и DNS заработают после переподключения.", "The kill switch and DNS take effect after reconnecting.")}</span>
     <button class="btn btn-primary" class:busy disabled={busy} onclick={onapply}>
-      <Icon name="refresh" size={16} />Переподключить
+      <Icon name="refresh" size={16} />{t("Переподключить", "Reconnect")}
     </button>
   </div>
 {:else if connected}
-  <p class="caption hint">Kill switch и DNS применяются при переподключении — кнопка появится здесь.</p>
+  <p class="caption hint">{t("Kill switch и DNS применяются при переподключении — кнопка появится здесь.", "The kill switch and DNS apply on reconnect — the button will appear here.")}</p>
 {/if}
 </div>
 

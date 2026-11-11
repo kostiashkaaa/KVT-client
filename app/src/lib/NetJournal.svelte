@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { count, locale, t } from "./i18n";
   import Icon from "./Icon.svelte";
   import { netLog, netLogClear, type NetEvent, type NetJournal, type NetPurpose } from "./api";
 
@@ -18,40 +19,40 @@
   let clearing = $state(false);
 
   const filters: [Filter, string][] = [
-    ["all", "Все запросы"],
-    ["problems", "Ошибки и отложенные"],
-    ["subscription", "Подписки"],
-    ["servers", "Проверки серверов"],
-    ["tunnel", "Проверка туннеля"],
-    ["network", "Проверка сети"],
+    ["all", t("Все запросы", "All requests")],
+    ["problems", t("Ошибки и отложенные", "Errors and postponed")],
+    ["subscription", t("Подписки", "Subscriptions")],
+    ["servers", t("Проверки серверов", "Server checks")],
+    ["tunnel", t("Проверка туннеля", "Tunnel check")],
+    ["network", t("Проверка сети", "Network check")],
     ["dns", "DNS"],
     ["zapret", "Zapret"],
-    ["lists", "Списки и обновления"],
+    ["lists", t("Списки и обновления", "Lists and updates")],
   ];
 
   const purposeTitle: Record<NetPurpose, string> = {
-    subscription: "Подписка",
-    server_ping: "Пинг сервера",
-    server_check: "Проверка сервера",
-    tunnel: "Туннель",
+    subscription: t("Подписка", "Subscription"),
+    server_ping: t("Пинг сервера", "Server ping"),
+    server_check: t("Проверка сервера", "Server check"),
+    tunnel: t("Туннель", "Tunnel"),
     dns: "DNS",
     zapret: "Zapret",
-    rules: "Списки",
-    update: "Обновление",
-    captive: "Проверка сети",
+    rules: t("Списки", "Lists"),
+    update: t("Обновление", "Update"),
+    captive: t("Проверка сети", "Network check"),
   };
 
   const routeTitle: Record<NetEvent["route"], string> = {
-    direct: "напрямую",
-    tunnel: "через VPN",
-    test_core: "тестовое ядро",
+    direct: t("напрямую", "direct"),
+    tunnel: t("через VPN", "via VPN"),
+    test_core: t("тестовое ядро", "test core"),
   };
 
   const outcomeTitle: Record<NetEvent["outcome"], string> = {
-    ok: "успешно",
-    failed: "ошибка",
-    deferred: "отложено",
-    frozen: "заморожено",
+    ok: t("успешно", "success"),
+    failed: t("ошибка", "error"),
+    deferred: t("отложено", "postponed"),
+    frozen: t("заморожено", "frozen"),
   };
 
   function matches(e: NetEvent, f: Filter): boolean {
@@ -135,24 +136,16 @@
 
   function time(at: number): string {
     const d = new Date(at);
-    const t = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const time = d.toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     // Окно работает сутками: у записей не за сегодня — ещё и дата.
-    if (d.toDateString() === new Date().toDateString()) return t;
-    return `${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" })} ${t}`;
-  }
-
-  function plural(n: number, one: string, few: string, many: string): string {
-    const d = n % 10;
-    const dd = n % 100;
-    if (d === 1 && dd !== 11) return one;
-    if (d >= 2 && d <= 4 && (dd < 12 || dd > 14)) return few;
-    return many;
+    if (d.toDateString() === new Date().toDateString()) return time;
+    return `${d.toLocaleDateString(locale(), { day: "numeric", month: "short" })} ${time}`;
   }
 
   function ago(at: number): string {
     const s = Math.max(0, Math.round((Date.now() - at) / 1000));
-    if (s < 60) return `${s} с назад`;
-    return `${Math.floor(s / 60)} мин назад`;
+    if (s < 60) return t(`${s} с назад`, `${s} s ago`);
+    return t(`${Math.floor(s / 60)} мин назад`, `${Math.floor(s / 60)} min ago`);
   }
 </script>
 
@@ -165,16 +158,15 @@
   <section class="card block" aria-labelledby="journal-title">
     <div class="row">
       <div>
-        <h2 id="journal-title">Сетевые запросы</h2>
+        <h2 id="journal-title">{t("Сетевые запросы", "Network requests")}</h2>
         <p class="muted">
-          Куда и зачем KVT выходит в сеть. Записывается только адрес — без ссылок и ключей. Журнал живёт в памяти и
-          пропадает после перезапуска.
+          {t("Куда и зачем KVT выходит в сеть. Записывается только адрес — без ссылок и ключей. Журнал живёт в памяти и пропадает после перезапуска.", "Where and why KVT goes online. Only the address is recorded — no links or keys. The log lives in memory and is gone after a restart.")}
         </p>
       </div>
       <div class="actions">
-        <button class="btn" onclick={load}><Icon name="refresh" size={16} />Обновить</button>
+        <button class="btn" onclick={load}><Icon name="refresh" size={16} />{t("Обновить", "Update")}</button>
         <button class="btn" class:busy={clearing} disabled={clearing || events.length === 0} onclick={clear}>
-          Очистить
+          {t("Очистить", "Clear")}
         </button>
       </div>
     </div>
@@ -184,30 +176,32 @@
     {/if}
 
     {#if !journal && !error}
-      <p class="caption">Загружаю журнал…</p>
+      <p class="caption">{t("Загружаю журнал…", "Loading the log…")}</p>
     {/if}
 
     {#if journal}
       {#if !journal.service}
-        <p class="caption">Служба KVT не отвечает — показаны только запросы приложения.</p>
+        <p class="caption">{t("Служба KVT не отвечает — показаны только запросы приложения.", "The KVT service doesn't respond — only the app's requests are shown.")}</p>
       {/if}
 
-      <h3>За последний час: {lastHour} {plural(lastHour, "соединение", "соединения", "соединений")}</h3>
+      <h3>
+        {t("За последний час", "In the last hour")}: {count(lastHour, ["соединение", "соединения", "соединений"], ["connection", "connections"])}
+      </h3>
       {#if hosts.length === 0}
-        <p class="caption">За последний час KVT не выходил в сеть.</p>
+        <p class="caption">{t("За последний час KVT не выходил в сеть.", "KVT didn't go online in the last hour.")}</p>
       {:else}
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th scope="col">Сервер</th>
-                <th scope="col" class="num">Соединений</th>
-                <th scope="col" class="num" title="Наибольшее число соединений за одну минуту">Пик в минуту</th>
-                <th scope="col" class="num" title="Запросы, которые KVT отложил, чтобы не вызвать блокировку">
-                  Отложено
+                <th scope="col">{t("Сервер", "Server")}</th>
+                <th scope="col" class="num">{t("Соединений", "Connections")}</th>
+                <th scope="col" class="num" title={t("Наибольшее число соединений за одну минуту", "The most connections in a single minute")}>{t("Пик в минуту", "Peak per minute")}</th>
+                <th scope="col" class="num" title={t("Запросы, которые KVT отложил, чтобы не вызвать блокировку", "Requests KVT postponed to avoid triggering a block")}>
+                  {t("Отложено", "Postponed")}
                 </th>
-                <th scope="col" class="num">Ошибок</th>
-                <th scope="col">Последний</th>
+                <th scope="col" class="num">{t("Ошибок", "Errors")}</th>
+                <th scope="col">{t("Последний", "Last")}</th>
               </tr>
             </thead>
             <tbody>
@@ -226,19 +220,18 @@
         </div>
         {#if hosts.length > HOSTS_SHOWN}
           <button class="btn more" onclick={() => (allHosts = !allHosts)}>
-            {allHosts ? "Свернуть" : `Все серверы (${hosts.length})`}
+            {allHosts ? t("Свернуть", "Collapse") : t(`Все серверы (${hosts.length})`, `All servers (${hosts.length})`)}
           </button>
         {/if}
         <p class="caption">
-          Проверки серверов и загрузка подписок открывают не больше двух новых соединений к одному серверу в минуту:
-          частые соединения к одному адресу провайдер может принять за VPN и притормозить.
+          {t("Проверки серверов и загрузка подписок открывают не больше двух новых соединений к одному серверу в минуту: частые соединения к одному адресу провайдер может принять за VPN и притормозить.", "Server checks and subscription downloads open at most two new connections to one server per minute: your ISP may take frequent connections to one address for a VPN and throttle them.")}
         </p>
       {/if}
 
       <div class="list-head">
-        <h3>Все запросы</h3>
+        <h3>{t("Все запросы", "All requests")}</h3>
         <label>
-          <span class="sr">Показать</span>
+          <span class="sr">{t("Показать", "Show")}</span>
           <select bind:value={filter} onchange={() => (shown = PAGE)}>
             {#each filters as [value, title] (value)}
               <option {value}>{title} ({counts.get(value) ?? 0})</option>
@@ -248,17 +241,17 @@
       </div>
 
       {#if filtered.length === 0}
-        <p class="caption">{events.length === 0 ? "Запросов пока нет." : "Таких запросов нет."}</p>
+        <p class="caption">{events.length === 0 ? t("Запросов пока нет.", "No requests yet.") : t("Таких запросов нет.", "No such requests.")}</p>
       {:else}
         <div class="table-wrap">
           <table class="events">
             <thead>
               <tr>
-                <th scope="col">Время</th>
-                <th scope="col">Зачем</th>
-                <th scope="col">Сервер</th>
-                <th scope="col">Итог</th>
-                <th scope="col" class="num">мс</th>
+                <th scope="col">{t("Время", "Time")}</th>
+                <th scope="col">{t("Зачем", "Purpose")}</th>
+                <th scope="col">{t("Сервер", "Server")}</th>
+                <th scope="col">{t("Итог", "Result")}</th>
+                <th scope="col" class="num">{t("мс", "ms")}</th>
               </tr>
             </thead>
             <tbody>
@@ -266,7 +259,7 @@
                 <tr>
                   <td class="none">{time(e.at)}</td>
                   <td>
-                    {purposeTitle[e.purpose]}{#if e.origin === "service"}<span class="tag">служба</span>{/if}
+                    {purposeTitle[e.purpose]}{#if e.origin === "service"}<span class="tag">{t("служба", "service")}</span>{/if}
                     <span class="detail">{routeTitle[e.route]}</span>
                   </td>
                   <td class="host">{@render hostName(e.host)}</td>
@@ -280,7 +273,7 @@
           </table>
         </div>
         {#if filtered.length > shown}
-          <button class="btn more" onclick={() => (shown += PAGE)}>Показать ещё ({filtered.length - shown})</button>
+          <button class="btn more" onclick={() => (shown += PAGE)}>{t(`Показать ещё (${filtered.length - shown})`, `Show more (${filtered.length - shown})`)}</button>
         {/if}
       {/if}
     {/if}

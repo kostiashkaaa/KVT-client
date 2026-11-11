@@ -9,6 +9,7 @@
 //! Серверы из подписок не переносятся по одному: переносится ссылка подписки, а
 //! серверы KVT загрузит сам — так они будут обновляться.
 
+use crate::i18n::tr;
 use crate::parser::{parse_uri, Entry};
 use crate::Secret;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
@@ -192,7 +193,7 @@ fn clean_name(name: &str) -> String {
         .collect();
     let n = n.trim();
     if n.is_empty() {
-        "Без названия".into()
+        tr("Без названия", "Untitled").into()
     } else {
         n.to_owned()
     }
@@ -200,11 +201,18 @@ fn clean_name(name: &str) -> String {
 
 fn subscription_url(raw: &str) -> Result<String, &'static str> {
     let raw = raw.trim();
-    let url = url::Url::parse(raw).map_err(|_| "повреждённая ссылка подписки")?;
+    let url = url::Url::parse(raw)
+        .map_err(|_| tr("повреждённая ссылка подписки", "broken subscription link"))?;
     match url.scheme() {
         "https" if url.host_str().is_some() => Ok(raw.to_owned()),
-        "http" => Err("подписка по незащищённому http"),
-        _ => Err("повреждённая ссылка подписки"),
+        "http" => Err(tr(
+            "подписка по незащищённому http",
+            "subscription over insecure http",
+        )),
+        _ => Err(tr(
+            "повреждённая ссылка подписки",
+            "broken subscription link",
+        )),
     }
 }
 
@@ -212,11 +220,18 @@ fn subscription_url(raw: &str) -> Result<String, &'static str> {
 fn check_link(link: &str) -> Result<String, &'static str> {
     match parse_uri(link) {
         Ok(Entry::Server(_)) => Ok(protocol_title(link)),
-        Ok(Entry::Info(_)) => Err("служебная запись провайдера"),
-        Err(crate::parser::ParseError::Unsupported(_)) => {
-            Err("протокол или настройка не поддерживается")
-        }
-        Err(_) => Err("неполные или повреждённые данные сервера"),
+        Ok(Entry::Info(_)) => Err(tr(
+            "служебная запись провайдера",
+            "provider's service entry",
+        )),
+        Err(crate::parser::ParseError::Unsupported(_)) => Err(tr(
+            "протокол или настройка не поддерживается",
+            "protocol or setting not supported",
+        )),
+        Err(_) => Err(tr(
+            "неполные или повреждённые данные сервера",
+            "incomplete or broken server data",
+        )),
     }
 }
 
@@ -281,7 +296,10 @@ impl Link {
 
     fn build(&self) -> Result<String, &'static str> {
         if self.host.trim().is_empty() || self.port == 0 || self.port > 65535 {
-            return Err("неполные или повреждённые данные сервера");
+            return Err(tr(
+                "неполные или повреждённые данные сервера",
+                "incomplete or broken server data",
+            ));
         }
         let host = if self.host.contains(':') && !self.host.starts_with('[') {
             format!("[{}]", self.host)
@@ -446,8 +464,13 @@ pub fn v2rayn_profile(m: &Map<String, Value>) -> Result<String, &'static str> {
                 link.param("obfs-password", Some(pass));
             }
         }
-        1 => return Err("VMess не поддерживается"),
-        _ => return Err("протокол или настройка не поддерживается"),
+        1 => return Err(tr("VMess не поддерживается", "VMess is not supported")),
+        _ => {
+            return Err(tr(
+                "протокол или настройка не поддерживается",
+                "protocol or setting not supported",
+            ))
+        }
     }
     link.build()
 }
@@ -457,10 +480,10 @@ pub fn v2rayn_profile(m: &Map<String, Value>) -> Result<String, &'static str> {
 /// Профиль NekoRay: `{"type": "vless", "bean": {...}}`.
 pub fn nekoray_profile(v: &Value) -> Result<(String, String), &'static str> {
     let kind = v.get("type").and_then(Value::as_str).unwrap_or_default();
-    let bean = v
-        .get("bean")
-        .and_then(Value::as_object)
-        .ok_or("неполные или повреждённые данные сервера")?;
+    let bean = v.get("bean").and_then(Value::as_object).ok_or(tr(
+        "неполные или повреждённые данные сервера",
+        "incomplete or broken server data",
+    ))?;
     let name = text(bean, "name").unwrap_or_default();
     let mut link = Link {
         scheme: "",
@@ -518,7 +541,10 @@ pub fn nekoray_profile(v: &Value) -> Result<(String, String), &'static str> {
         }
         "shadowsocks" => {
             if text(bean, "plugin").is_some() {
-                return Err("плагины Shadowsocks не поддерживаются");
+                return Err(tr(
+                    "плагины Shadowsocks не поддерживаются",
+                    "Shadowsocks plugins are not supported",
+                ));
             }
             link.scheme = "ss";
             link.user = ss_user(
@@ -538,8 +564,13 @@ pub fn nekoray_profile(v: &Value) -> Result<(String, String), &'static str> {
                 link.param("obfs-password", Some(pass));
             }
         }
-        "vmess" => return Err("VMess не поддерживается"),
-        _ => return Err("протокол или настройка не поддерживается"),
+        "vmess" => return Err(tr("VMess не поддерживается", "VMess is not supported")),
+        _ => {
+            return Err(tr(
+                "протокол или настройка не поддерживается",
+                "protocol or setting not supported",
+            ))
+        }
     }
     Ok((name, link.build()?))
 }
@@ -556,9 +587,10 @@ pub fn is_service_outbound(v: &Value) -> bool {
 
 /// Исходящее sing-box (`{"type": "vless", "server": ..., "tls": {...}}`).
 pub fn singbox_outbound(v: &Value, name: &str) -> Result<String, &'static str> {
-    let o = v
-        .as_object()
-        .ok_or("неполные или повреждённые данные сервера")?;
+    let o = v.as_object().ok_or(tr(
+        "неполные или повреждённые данные сервера",
+        "incomplete or broken server data",
+    ))?;
     let kind = text(o, "type").unwrap_or_default();
     let name = if name.trim().is_empty() {
         text(o, "tag").unwrap_or_default()
@@ -615,7 +647,12 @@ pub fn singbox_outbound(v: &Value, name: &str) -> Result<String, &'static str> {
                 link.param("host", host);
             }
             "grpc" => link.param("serviceName", text(t, "service_name")),
-            _ => return Err("протокол или настройка не поддерживается"),
+            _ => {
+                return Err(tr(
+                    "протокол или настройка не поддерживается",
+                    "protocol or setting not supported",
+                ))
+            }
         }
         Ok(())
     };
@@ -636,7 +673,10 @@ pub fn singbox_outbound(v: &Value, name: &str) -> Result<String, &'static str> {
         }
         "shadowsocks" => {
             if text(o, "plugin").is_some() {
-                return Err("плагины Shadowsocks не поддерживаются");
+                return Err(tr(
+                    "плагины Shadowsocks не поддерживаются",
+                    "Shadowsocks plugins are not supported",
+                ));
             }
             link.scheme = "ss";
             link.user = ss_user(
@@ -658,8 +698,13 @@ pub fn singbox_outbound(v: &Value, name: &str) -> Result<String, &'static str> {
                 link.param("obfs-password", text(obfs, "password"));
             }
         }
-        "vmess" => return Err("VMess не поддерживается"),
-        _ => return Err("протокол или настройка не поддерживается"),
+        "vmess" => return Err(tr("VMess не поддерживается", "VMess is not supported")),
+        _ => {
+            return Err(tr(
+                "протокол или настройка не поддерживается",
+                "protocol or setting not supported",
+            ))
+        }
     }
     link.build()
 }

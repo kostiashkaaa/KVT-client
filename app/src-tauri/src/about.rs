@@ -60,10 +60,13 @@ pub fn open_link(target: String) -> Result<(), String> {
         "licenses" => exe_dir()
             .map(|d| d.join("licenses"))
             .filter(|d| d.is_dir())
-            .ok_or("Папка с лицензиями есть только в установленном KVT.")?
+            .ok_or(kvt_core::i18n::tr(
+                "Папка с лицензиями есть только в установленном KVT.",
+                "The licenses folder exists only in an installed KVT.",
+            ))?
             .to_string_lossy()
             .into_owned(),
-        _ => return Err(crate::errors::STATE.into()),
+        _ => return Err(crate::errors::state_text().into()),
     };
     shell_open(&what)
 }
@@ -88,7 +91,11 @@ pub(crate) fn shell_open(what: &str) -> Result<(), String> {
     if result as usize > 32 {
         Ok(())
     } else {
-        Err("Не удалось открыть — скопируйте адрес вручную.".into())
+        Err(kvt_core::i18n::tr(
+            "Не удалось открыть — скопируйте адрес вручную.",
+            "Couldn't open — copy the address manually.",
+        )
+        .into())
     }
 }
 
@@ -105,7 +112,11 @@ pub async fn start_service(app: tauri::AppHandle) -> Result<(), String> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    Err("Служба запустилась, но не отвечает. Сохраните диагностику в разделе «Проверка».".into())
+    Err(kvt_core::i18n::tr(
+        "Служба запустилась, но не отвечает. Сохраните диагностику в разделе «Проверка».",
+        "The service started but doesn't respond. Save diagnostics in the “Check” section.",
+    )
+    .into())
 }
 
 pub(crate) fn start_blocking() -> Result<(), String> {
@@ -122,7 +133,11 @@ pub(crate) fn start_blocking() -> Result<(), String> {
     unsafe {
         let manager = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
         if manager.is_null() {
-            return Err("Не удалось обратиться к службам Windows.".into());
+            return Err(kvt_core::i18n::tr(
+                "Не удалось обратиться к службам Windows.",
+                "Couldn't access Windows services.",
+            )
+            .into());
         }
         let service = OpenServiceW(manager, name.as_ptr(), SERVICE_START);
         let started = !service.is_null() && StartServiceW(service, 0, std::ptr::null()) != 0;
@@ -134,18 +149,18 @@ pub(crate) fn start_blocking() -> Result<(), String> {
         match result {
             Ok(()) | Err(ERROR_SERVICE_ALREADY_RUNNING) => Ok(()),
             Err(ERROR_SERVICE_DOES_NOT_EXIST) => Err(
-                "Служба KVT не установлена. Переустановите KVT — установщик зарегистрирует её."
+                kvt_core::i18n::tr("Служба KVT не установлена. Переустановите KVT — установщик зарегистрирует её.", "The KVT service isn't installed. Reinstall KVT — the installer will register it.")
                     .into(),
             ),
             Err(ERROR_SERVICE_DISABLED) => Err(
-                "Служба KVT отключена в «Службах» Windows. Включите для неё тип запуска «Автоматически» или переустановите KVT."
+                kvt_core::i18n::tr("Служба KVT отключена в «Службах» Windows. Включите для неё тип запуска «Автоматически» или переустановите KVT.", "The KVT service is disabled in Windows Services. Set its startup type to “Automatic” or reinstall KVT.")
                     .into(),
             ),
             Err(ERROR_ACCESS_DENIED) => Err(
-                "Нет прав запустить службу. Переустановите KVT — установщик выдаст их.".into(),
+                kvt_core::i18n::tr("Нет прав запустить службу. Переустановите KVT — установщик выдаст их.", "No permission to start the service. Reinstall KVT — the installer will grant it.").into(),
             ),
             Err(code) => Err(crate::errors::logged(
-                "Служба KVT не запустилась. Сохраните диагностику в разделе «Проверка».",
+                kvt_core::i18n::tr("Служба KVT не запустилась. Сохраните диагностику в разделе «Проверка».", "The KVT service didn't start. Save diagnostics in the “Check” section."),
                 format!("StartService: {code}"),
             )),
         }

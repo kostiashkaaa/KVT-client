@@ -119,9 +119,9 @@ impl Server {
         {
             let insecure = matches!(&self.security, Security::Tls(t) if t.allow_insecure);
             out.push(if insecure {
-                "сертификат сервера не проверяется — VPN-ядро не умеет сверять отпечаток pinSHA256"
+                crate::i18n::tr("сертификат сервера не проверяется — VPN-ядро не умеет сверять отпечаток pinSHA256", "the server certificate isn't verified — the VPN core can't check the pinSHA256 fingerprint")
             } else {
-                "отпечаток pinSHA256 не сверяется — сертификат проверяется обычным способом"
+                crate::i18n::tr("отпечаток pinSHA256 не сверяется — сертификат проверяется обычным способом", "the pinSHA256 fingerprint isn't checked — the certificate is verified the usual way")
             });
         }
         out

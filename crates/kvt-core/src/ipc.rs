@@ -13,19 +13,32 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 /// Сколько адресов можно пингнуть одной командой `Ping`.
 pub const MAX_PING_TARGETS: usize = 1024;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 /// Ответ на `Connect` / `StartZapret`, прерванные командой `Disconnect`. Окно не
 /// показывает его как ошибку: пользователь сам нажал «Отключить».
-pub const CANCELLED: &str = "Подключение отменено.";
+const CANCELLED_RU: &str = "Подключение отменено.";
+const CANCELLED_EN: &str = "Connection cancelled.";
+
+pub fn cancelled() -> &'static str {
+    crate::i18n::tr(CANCELLED_RU, CANCELLED_EN)
+}
+
+/// Ответ службы — отмена (на любом из языков: язык мог смениться между запросами).
+pub fn is_cancelled(message: &str) -> bool {
+    message == CANCELLED_RU || message == CANCELLED_EN
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Hello {
         protocol_version: u32,
+        /// Язык текстов, которые служба вернёт окну (ошибки, итоги).
+        #[serde(default)]
+        lang: crate::i18n::Lang,
     },
     Status,
     Connect(Box<ConnectPlan>),
@@ -275,6 +288,7 @@ mod tests {
     fn roundtrip() {
         let req = Request::Hello {
             protocol_version: PROTOCOL_VERSION,
+            lang: crate::i18n::Lang::En,
         };
         let frame = encode(&req).unwrap();
         let len = frame_len(frame[..4].try_into().unwrap()).unwrap();

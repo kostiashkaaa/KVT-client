@@ -197,7 +197,7 @@ async fn handle_client(
                 response
             }
             Err(_) => Response::Error {
-                message: "неизвестная команда".into(),
+                message: kvt_core::i18n::tr("неизвестная команда", "unknown command").into(),
             },
         };
         pipe.write_all(&ipc::encode(&response)?).await?;

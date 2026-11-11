@@ -190,7 +190,8 @@ pub fn record_hold(
     };
     let secs = until.saturating_duration_since(now).as_secs().max(1);
     record(
-        Event::new(origin, purpose, host, route, outcome).detail(format!("повтор через {secs} с")),
+        Event::new(origin, purpose, host, route, outcome)
+            .detail(crate::trf!("повтор через {secs} с", "retry in {secs} s")),
     );
 }
 

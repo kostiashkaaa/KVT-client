@@ -112,17 +112,30 @@ fn added(state: &AppState, id: String, body: &str) -> Result<Added, String> {
 
 fn with_store<R>(state: &AppState, f: impl FnOnce(&mut Store) -> R) -> Result<R, String> {
     let mut guard = state.store.lock().map_err(lock_err)?;
-    let store = guard.as_mut().ok_or("хранилище подписок не загружено")?;
+    let store = guard.as_mut().ok_or(kvt_core::i18n::tr(
+        "хранилище подписок не загружено",
+        "the subscription store isn't loaded",
+    ))?;
     let result = f(store);
-    store
-        .save()
-        .map_err(|e| crate::errors::io("Не удалось сохранить подписки", &e))?;
+    store.save().map_err(|e| {
+        crate::errors::io(
+            kvt_core::i18n::tr(
+                "Не удалось сохранить подписки",
+                "Couldn't save subscriptions",
+            ),
+            &e,
+        )
+    })?;
     Ok(result)
 }
 
 fn ensure_servers(body: &str) -> Result<(), String> {
     if parse_subscription_body(body).servers.is_empty() {
-        return Err("В подписке не нашлось ни одного сервера.".into());
+        return Err(kvt_core::i18n::tr(
+            "В подписке не нашлось ни одного сервера.",
+            "No servers found in the subscription.",
+        )
+        .into());
     }
     Ok(())
 }
@@ -206,7 +219,9 @@ pub async fn add_input(
     state: State<'_, AppState>,
 ) -> Result<AddReport, String> {
     if input.len() > MAX_BODY_BYTES {
-        return Err("Вставка слишком большая".into());
+        return Err(
+            kvt_core::i18n::tr("Вставка слишком большая", "The pasted text is too large").into(),
+        );
     }
     let split = split_input(&input);
     let has_keys = !split.rest.trim().is_empty();
@@ -228,7 +243,7 @@ pub async fn add_input(
             }
             Err(e) => {
                 report.failed.push(if many_urls {
-                    format!("Подписка {}: {e}", i + 1)
+                    kvt_core::trf!("Подписка {}: {e}", "Subscription {}: {e}", i + 1)
                 } else {
                     e.clone()
                 });
@@ -243,7 +258,7 @@ pub async fn add_input(
                 report.failed.push(if split.urls.is_empty() {
                     e.clone()
                 } else {
-                    format!("Ключи: {e}")
+                    kvt_core::trf!("Ключи: {e}", "Keys: {e}")
                 });
                 first_error.get_or_insert(e);
             }
@@ -251,7 +266,11 @@ pub async fn add_input(
     }
     if report.group.is_none() {
         return Err(first_error.unwrap_or_else(|| {
-            "Не нашлось ни ссылки на подписку, ни ключей. Скопируйте ссылку из личного кабинета провайдера целиком.".into()
+            kvt_core::i18n::tr(
+                "Не нашлось ни ссылки на подписку, ни ключей. Скопируйте ссылку из личного кабинета провайдера целиком.",
+                "No subscription link or keys found. Copy the whole link from your provider's account page.",
+            )
+            .into()
         }));
     }
     notify(&app);
@@ -269,11 +288,19 @@ pub fn rename_subscription(
 ) -> Result<(), String> {
     let title = title.trim();
     if title.chars().count() > 80 || title.chars().any(char::is_control) {
-        return Err("Название длиннее 80 символов или с непечатаемыми символами.".into());
+        return Err(kvt_core::i18n::tr(
+            "Название длиннее 80 символов или с непечатаемыми символами.",
+            "The name is longer than 80 characters or has non-printable characters.",
+        )
+        .into());
     }
     let found = with_store(&state, |s| s.rename(&id, title))?;
     if !found {
-        return Err("Этой подписки уже нет.".into());
+        return Err(kvt_core::i18n::tr(
+            "Этой подписки уже нет.",
+            "This subscription no longer exists.",
+        )
+        .into());
     }
     rebuild(&state)?;
     crate::tray::invalidate(&app);
@@ -596,21 +623,25 @@ fn parse_options(input: OptionsInput) -> Result<(SubOptions, OwnHwid), String> {
     let custom = input.client.as_deref() == Some(fetch::CUSTOM);
     let user_agent = if custom {
         Some(header_value(&input.user_agent, MAX_USER_AGENT).ok_or(
-            "User-Agent пустой, длиннее 200 символов или не латиницей — проверьте строку.",
+            kvt_core::i18n::tr("User-Agent пустой, длиннее 200 символов или не латиницей — проверьте строку.", "The User-Agent is empty, longer than 200 characters or not in Latin script — check it."),
         )?)
     } else {
         None
     };
     if let Some(c) = input.client.as_deref() {
         if !custom && !fetch::PROFILES.contains(&c) {
-            return Err("Такого клиента KVT не знает.".into());
+            return Err(kvt_core::i18n::tr(
+                "Такого клиента KVT не знает.",
+                "KVT doesn't know this client.",
+            )
+            .into());
         }
     }
     let own = match input.own_hwid.as_deref().map(str::trim) {
         None => OwnHwid::Keep,
         Some("") => OwnHwid::Clear,
         Some(raw) => OwnHwid::Set(header_value(raw, MAX_HWID).ok_or(
-            "ID устройства длиннее 128 символов или не латиницей — скопируйте его у провайдера целиком.",
+            kvt_core::i18n::tr("ID устройства длиннее 128 символов или не латиницей — скопируйте его у провайдера целиком.", "The device ID is longer than 128 characters or not in Latin script — copy it from your provider in full."),
         )?),
     };
     Ok((
@@ -640,7 +671,10 @@ pub async fn set_subscription_options(
         let changed = s.set_options(&id, options, own);
         (changed, s.get(&id).is_some_and(|x| x.url.is_some()))
     })?;
-    let request_changed = request_changed.ok_or("Этой подписки уже нет.")?;
+    let request_changed = request_changed.ok_or(kvt_core::i18n::tr(
+        "Этой подписки уже нет.",
+        "This subscription no longer exists.",
+    ))?;
     let result = if request_changed && by_url {
         refresh_one(&state, &id, Refresh::Now).await
     } else {
@@ -675,22 +709,33 @@ pub async fn remove_server(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let entry = state.entry(&key).ok_or("Этого сервера уже нет в списке.")?;
+    let entry = state.entry(&key).ok_or(kvt_core::i18n::tr(
+        "Этого сервера уже нет в списке.",
+        "This server is no longer in the list.",
+    ))?;
     let before = state.selected();
     with_store(&state, |store| {
         let sub = store
             .subscriptions
             .iter_mut()
             .find(|s| s.id == entry.sub)
-            .ok_or("Этого сервера уже нет в списке.")?;
+            .ok_or(kvt_core::i18n::tr(
+                "Этого сервера уже нет в списке.",
+                "This server is no longer in the list.",
+            ))?;
         if sub.url.is_some() {
-            return Err(
-                "Сервер из подписки по ссылке удалить нельзя — провайдер вернёт его при обновлении."
-                    .to_string(),
-            );
+            return Err(kvt_core::i18n::tr(
+                "Сервер из подписки по ссылке удалить нельзя — провайдер вернёт его при обновлении.",
+                "A server from a link subscription can't be removed — the provider will bring it back on update.",
+            )
+            .to_string());
         }
-        let body = kvt_core::parser::remove_server(sub.body.expose(), &entry.server)
-            .ok_or("Не удалось найти этот ключ среди добавленных вручную.")?;
+        let body = kvt_core::parser::remove_server(sub.body.expose(), &entry.server).ok_or(
+            kvt_core::i18n::tr(
+                "Не удалось найти этот ключ среди добавленных вручную.",
+                "Couldn't find this key among the manually added ones.",
+            ),
+        )?;
         if parse_subscription_body(&body).servers.is_empty() {
             // Последний ключ — группа больше не нужна.
             let id = sub.id.clone();
@@ -719,22 +764,34 @@ pub async fn edit_server(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let entry = state.entry(&key).ok_or("Этого сервера уже нет в списке.")?;
+    let entry = state.entry(&key).ok_or(kvt_core::i18n::tr(
+        "Этого сервера уже нет в списке.",
+        "This server is no longer in the list.",
+    ))?;
     let link = link.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
     // Новая ссылка — ровно один сервер (base64 и JSON раскрываются как при добавлении).
     let new_line = match &link {
         Some(raw) => {
             if raw.len() > kvt_core::parser::MAX_URI_LEN * 4 {
-                return Err("Ссылка слишком длинная.".into());
+                return Err(
+                    kvt_core::i18n::tr("Ссылка слишком длинная.", "The link is too long.").into(),
+                );
             }
             let normalized = normalize_pasted(raw);
             let content = parse_subscription_body(&normalized);
             if content.servers.len() != 1 {
                 return Err(if content.servers.is_empty() {
-                    "В ссылке не нашлось сервера — проверьте, что она скопирована целиком.".into()
+                    kvt_core::i18n::tr(
+                        "В ссылке не нашлось сервера — проверьте, что она скопирована целиком.",
+                        "No server found in the link — check that it was copied in full.",
+                    )
+                    .into()
                 } else {
-                    "Вставьте ссылку на один сервер — чтобы добавить несколько, нажмите «Добавить»."
-                        .into()
+                    kvt_core::i18n::tr(
+                        "Вставьте ссылку на один сервер — чтобы добавить несколько, нажмите «Добавить».",
+                        "Paste a link to one server — to add several, press “Add”.",
+                    )
+                    .into()
                 });
             }
             normalized
@@ -746,7 +803,10 @@ pub async fn edit_server(
                     )
                 })
                 .map(str::to_owned)
-                .ok_or("В ссылке не нашлось сервера.")?
+                .ok_or(kvt_core::i18n::tr(
+                    "В ссылке не нашлось сервера.",
+                    "No server found in the link.",
+                ))?
         }
         None => String::new(),
     };
@@ -758,32 +818,47 @@ pub async fn edit_server(
             .subscriptions
             .iter_mut()
             .find(|s| s.id == entry.sub)
-            .ok_or("Этого сервера уже нет в списке.")?;
+            .ok_or(kvt_core::i18n::tr(
+                "Этого сервера уже нет в списке.",
+                "This server is no longer in the list.",
+            ))?;
         if sub.url.is_some() {
-            return Err(
-                "Сервер из подписки по ссылке изменить нельзя — провайдер вернёт прежний при обновлении."
-                    .to_string(),
-            );
+            return Err(kvt_core::i18n::tr(
+                "Сервер из подписки по ссылке изменить нельзя — провайдер вернёт прежний при обновлении.",
+                "A server from a link subscription can't be edited — the provider will restore it on update.",
+            )
+            .to_string());
         }
         // Без новой ссылки правится название прежней: её строка — из тела группы.
         let base = if changed_link {
             new_line.clone()
         } else {
-            find_line(sub.body.expose(), &entry.server)
-                .ok_or("Не удалось найти этот ключ среди добавленных вручную.")?
+            find_line(sub.body.expose(), &entry.server).ok_or(kvt_core::i18n::tr(
+                "Не удалось найти этот ключ среди добавленных вручную.",
+                "Couldn't find this key among the manually added ones.",
+            ))?
         };
         let line = if name.is_empty() {
             base
         } else {
-            kvt_core::parser::with_name(&base, name)
-                .map_err(|e| format!("Название не подходит: {e}."))?
+            kvt_core::parser::with_name(&base, name).map_err(|e| {
+                kvt_core::trf!("Название не подходит: {e}.", "The name doesn't fit: {e}.")
+            })?
         };
         let server = match kvt_core::parser::parse_uri(&line) {
             Ok(kvt_core::parser::Entry::Server(s)) => *s,
-            _ => return Err("Ссылка не разобралась.".to_string()),
+            _ => {
+                return Err(
+                    kvt_core::i18n::tr("Ссылка не разобралась.", "Couldn't read the link.")
+                        .to_string(),
+                )
+            }
         };
         let body = kvt_core::parser::replace_server(sub.body.expose(), &entry.server, &line)
-            .ok_or("Не удалось найти этот ключ среди добавленных вручную.")?;
+            .ok_or(kvt_core::i18n::tr(
+                "Не удалось найти этот ключ среди добавленных вручную.",
+                "Couldn't find this key among the manually added ones.",
+            ))?;
         sub.body = Secret::new(body);
         sub.updated_at = now();
         Ok(server)
@@ -797,7 +872,10 @@ pub async fn edit_server(
         .iter()
         .find(|e| e.sub == entry.sub && e.server == new_server)
         .map(|e| e.key.clone())
-        .ok_or("Ключ сохранился, но не нашёлся в списке — откройте главную заново.")?;
+        .ok_or(kvt_core::i18n::tr(
+            "Ключ сохранился, но не нашёлся в списке — откройте главную заново.",
+            "The key was saved but isn't in the list — reopen the home page.",
+        ))?;
 
     // Выбор и «Недавние» в трее идут за ключом, даже если он сменился.
     let was_selected = {
@@ -875,7 +953,10 @@ async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Result<(), Str
             .as_ref()
             .and_then(|s| s.get(id))
             .and_then(|s| s.url.clone())
-            .ok_or("У этой подписки нет ссылки для обновления")?;
+            .ok_or(kvt_core::i18n::tr(
+                "У этой подписки нет ссылки для обновления",
+                "This subscription has no update link",
+            ))?;
         drop(guard);
         let mut plan = Plan::of(state, |s| s.id == id)?;
         // Метки — только по расписанию и у непустого тела: подписка, добавленная
@@ -977,7 +1058,13 @@ impl Plan {
             match self.dir.as_deref().map(|d| crate::device::hwid(d, host)) {
                 Some(Ok(id)) => Some(id),
                 Some(Err(e)) if mode == HwidMode::Always => {
-                    return Err(crate::errors::io("Не удалось прочитать ID устройства", &e))
+                    return Err(crate::errors::io(
+                        kvt_core::i18n::tr(
+                            "Не удалось прочитать ID устройства",
+                            "Couldn't read the device ID",
+                        ),
+                        &e,
+                    ))
                 }
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "ID устройства недоступен");
@@ -1044,13 +1131,19 @@ pub fn open_subscription_link(
         let sub = guard
             .as_ref()
             .and_then(|s| s.get(&id))
-            .ok_or("Этой подписки уже нет.")?;
+            .ok_or(kvt_core::i18n::tr(
+                "Этой подписки уже нет.",
+                "This subscription no longer exists.",
+            ))?;
         match which.as_str() {
             "support" => sub.meta.support_url.clone(),
             "site" => sub.meta.web_page_url.clone(),
             _ => None,
         }
-        .ok_or("Провайдер не указал такой ссылки.")?
+        .ok_or(kvt_core::i18n::tr(
+            "Провайдер не указал такой ссылки.",
+            "The provider didn't specify such a link.",
+        ))?
     };
     crate::about::shell_open(&url)
 }

@@ -10,9 +10,11 @@
 
 use crate::troubleshoot::{Step, StepState, Tone};
 use crate::{connect_current, query_status, service_client, watchdog, AppState};
+use kvt_core::i18n::tr;
 use kvt_core::ipc::{
     Conflict, MaintenanceReport, Request, Response, ServiceStatus, ZapretInfo, ZapretPlan,
 };
+use kvt_core::trf;
 use kvt_core::zapret::{GameFilter, Release, Strategy};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -29,13 +31,30 @@ pub const CHECK_EVENT: &str = "zapret-check";
 /// Автопроверка что-то сделала сама или требует внимания.
 pub const AUTO_EVENT: &str = "zapret-auto";
 
-const TARGETS: &[(&str, &str)] = &[
-    ("Discord", "https://discord.com/"),
-    ("Discord: подключение", "https://gateway.discord.gg/"),
-    ("Discord: файлы", "https://cdn.discordapp.com/"),
-    ("YouTube", "https://www.youtube.com/"),
-    ("YouTube: картинки", "https://i.ytimg.com/"),
-    ("YouTube: видео", "https://redirector.googlevideo.com/"),
+/// Название (по-русски и по-английски) и адрес.
+const TARGETS: &[(&str, &str, &str)] = &[
+    ("Discord", "Discord", "https://discord.com/"),
+    (
+        "Discord: подключение",
+        "Discord: gateway",
+        "https://gateway.discord.gg/",
+    ),
+    (
+        "Discord: файлы",
+        "Discord: files",
+        "https://cdn.discordapp.com/",
+    ),
+    ("YouTube", "YouTube", "https://www.youtube.com/"),
+    (
+        "YouTube: картинки",
+        "YouTube: images",
+        "https://i.ytimg.com/",
+    ),
+    (
+        "YouTube: видео",
+        "YouTube: video",
+        "https://redirector.googlevideo.com/",
+    ),
 ];
 /// Картинка YouTube больше 32 КБ: если поток встаёт на 16–20 КБ — это заморозка DPI.
 const DOWNLOAD: &str = "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg";
@@ -142,13 +161,11 @@ async fn call(request: Request) -> Result<Response, String> {
     }
 }
 
-const UNEXPECTED: &str = crate::errors::UNEXPECTED;
-
 #[tauri::command]
 pub async fn zapret_strategies() -> Result<Vec<Strategy>, String> {
     match call(Request::ZapretStrategies).await? {
         Response::Strategies { strategies } => Ok(strategies),
-        _ => Err(UNEXPECTED.into()),
+        _ => Err(crate::errors::unexpected().into()),
     }
 }
 
@@ -156,7 +173,7 @@ pub async fn zapret_strategies() -> Result<Vec<Strategy>, String> {
 pub async fn zapret_conflicts() -> Result<Vec<Conflict>, String> {
     match call(Request::ZapretConflicts).await? {
         Response::Conflicts { conflicts } => Ok(conflicts),
-        _ => Err(UNEXPECTED.into()),
+        _ => Err(crate::errors::unexpected().into()),
     }
 }
 
@@ -165,7 +182,7 @@ pub async fn zapret_conflicts() -> Result<Vec<Conflict>, String> {
 pub async fn zapret_stop_conflicts() -> Result<Vec<Conflict>, String> {
     match call(Request::StopConflicts).await? {
         Response::Conflicts { conflicts } => Ok(conflicts),
-        _ => Err(UNEXPECTED.into()),
+        _ => Err(crate::errors::unexpected().into()),
     }
 }
 
@@ -173,7 +190,7 @@ pub async fn zapret_stop_conflicts() -> Result<Vec<Conflict>, String> {
 pub async fn zapret_info() -> Result<ZapretInfo, String> {
     match call(Request::ZapretInfo).await? {
         Response::ZapretInfo(info) => Ok(*info),
-        _ => Err(UNEXPECTED.into()),
+        _ => Err(crate::errors::unexpected().into()),
     }
 }
 
@@ -224,7 +241,7 @@ pub async fn zapret_latest(force: bool, state: State<'_, AppState>) -> Result<Re
             .detail(
                 body.as_ref()
                     .err()
-                    .map_or("версия Flowseal", String::as_str),
+                    .map_or(tr("версия Flowseal", "Flowseal version"), String::as_str),
             ),
         );
     }
@@ -240,12 +257,16 @@ pub async fn zapret_latest(force: bool, state: State<'_, AppState>) -> Result<Re
 async fn maintain(app: &AppHandle, request: Request) -> Result<MaintenanceReport, String> {
     let state = app.state::<AppState>();
     if state.zapret_picking.load(Ordering::SeqCst) {
-        return Err("Идёт подбор стратегии — дождитесь его окончания".into());
+        return Err(tr(
+            "Идёт подбор стратегии — дождитесь его окончания",
+            "A strategy is being picked — wait until it finishes",
+        )
+        .into());
     }
     let before = query_status().await?;
     let report = match call(request).await? {
         Response::Maintenance(report) => *report,
-        _ => return Err(UNEXPECTED.into()),
+        _ => return Err(crate::errors::unexpected().into()),
     };
     // Обновлять было нечего — служба ничего не останавливала, VPN не рвём.
     if report.changed
@@ -314,9 +335,9 @@ async fn downloads(client: &reqwest::Client) -> bool {
     let start = Instant::now();
     let ok = download_passes(client).await;
     let detail = if ok {
-        "загрузка прошла"
+        kvt_core::i18n::tr("загрузка прошла", "download passed")
     } else {
-        "загрузка оборвалась"
+        kvt_core::i18n::tr("загрузка оборвалась", "download dropped")
     };
     log_check(DOWNLOAD, ok, start, detail);
     ok
@@ -386,7 +407,7 @@ pub async fn measure() -> Check {
         };
     };
     let mut set = tokio::task::JoinSet::new();
-    for (i, (_, url)) in TARGETS.iter().enumerate() {
+    for (i, (_, _, url)) in TARGETS.iter().enumerate() {
         for (legacy, c) in [(false, modern.clone()), (true, tls12.clone())] {
             set.spawn(async move { (i, legacy, reachable(&c, url).await) });
         }
@@ -394,8 +415,8 @@ pub async fn measure() -> Check {
     let download = tokio::spawn(async move { downloads(&modern).await });
     let mut targets: Vec<TargetCheck> = TARGETS
         .iter()
-        .map(|(name, _)| TargetCheck {
-            name,
+        .map(|(ru, en, _)| TargetCheck {
+            name: kvt_core::i18n::tr(ru, en),
             tls13: None,
             tls12: None,
         })
@@ -467,7 +488,7 @@ pub async fn zapret_check(
     state: State<'_, AppState>,
 ) -> Result<CheckRecord, String> {
     if state.zapret_picking.load(Ordering::SeqCst) {
-        return Err("Идёт подбор стратегии".into());
+        return Err(tr("Идёт подбор стратегии", "A strategy is being picked").into());
     }
     Ok(check_now(&app).await)
 }
@@ -526,13 +547,17 @@ pub async fn zapret_autoselect(
 async fn autoselect(app: &AppHandle, state: &AppState) -> Result<PickResult, String> {
     let before = query_status().await?;
     if matches!(before, Some(ServiceStatus::Connected { .. })) {
-        return Err("Отключите VPN: подбор проверяет сайты напрямую, через zapret.".into());
+        return Err(tr(
+            "Отключите VPN: подбор проверяет сайты напрямую, через zapret.",
+            "Disconnect the VPN: picking checks sites directly, through zapret.",
+        )
+        .into());
     }
     if before.is_none() {
-        return Err("Служба KVT не запущена.".into());
+        return Err(tr("Служба KVT не запущена.", "The KVT service isn't running.").into());
     }
     if state.zapret_picking.swap(true, Ordering::SeqCst) {
-        return Err("Подбор уже идёт".into());
+        return Err(tr("Подбор уже идёт", "Picking is already running").into());
     }
     state.zapret_cancel.store(false, Ordering::SeqCst);
     let result = pick(app, state, before).await;
@@ -556,7 +581,11 @@ async fn pick(
     let acted = || state.epoch() != epoch;
     let strategies = zapret_strategies().await?;
     if strategies.is_empty() {
-        return Err("Нет стратегий zapret. Нажмите «Переустановить» во вкладке Zapret.".into());
+        return Err(tr(
+            "Нет стратегий zapret. Нажмите «Переустановить» во вкладке Zapret.",
+            "No zapret strategies. Press “Reinstall” on the Zapret tab.",
+        )
+        .into());
     }
     let choice = state
         .choice
@@ -581,9 +610,13 @@ async fn pick(
 
     // Без zapret: если всё и так открывается, подбирать нечего.
     let _ = call(Request::Disconnect).await;
-    progress(0, "Без zapret".into(), None);
+    progress(0, tr("Без zapret", "Without zapret").into(), None);
     let baseline = measure().await;
-    progress(0, "Без zapret".into(), Some(baseline.passed));
+    progress(
+        0,
+        tr("Без zapret", "Without zapret").into(),
+        Some(baseline.passed),
+    );
 
     let mut best: Option<(Strategy, Check)> = None;
     let mut tried = Vec::new();
@@ -627,7 +660,11 @@ async fn pick(
     if acted() {
         // Служба уже работает так, как решил пользователь, — не останавливаем её.
         crate::tray::refresh(app).await;
-        return Err("Подбор прерван: подключение изменили во время проверки.".into());
+        return Err(tr(
+            "Подбор прерван: подключение изменили во время проверки.",
+            "Picking interrupted: the connection changed during the check.",
+        )
+        .into());
     }
 
     if let Some((strategy, _)) = &best {
@@ -758,28 +795,61 @@ fn interferers() -> Vec<String> {
     let services = run("sc", &["query"]);
     let mut out = Vec::new();
     if tasks.contains("\"adguardsvc.exe\"") {
-        out.push("AdGuard — мешает Discord; добавьте Discord в исключения AdGuard".to_owned());
+        out.push(
+            tr(
+                "AdGuard — мешает Discord; добавьте Discord в исключения AdGuard",
+                "AdGuard — interferes with Discord; add Discord to AdGuard's exclusions",
+            )
+            .to_owned(),
+        );
     }
     if tasks.contains("\"avp.exe\"") {
         out.push(
-            "Антивирус Касперского — может блокировать WinDivert; добавьте папку KVT в исключения"
-                .to_owned(),
+            tr(
+                "Антивирус Касперского — может блокировать WinDivert; добавьте папку KVT в исключения",
+                "Kaspersky antivirus — may block WinDivert; add the KVT folder to exclusions",
+            )
+            .to_owned(),
         );
     }
     if services.contains("killer") {
-        out.push("Killer Network Service — конфликтует с zapret; отключите его".to_owned());
+        out.push(
+            tr(
+                "Killer Network Service — конфликтует с zapret; отключите его",
+                "Killer Network Service — conflicts with zapret; turn it off",
+            )
+            .to_owned(),
+        );
     }
     if services
         .lines()
         .any(|l| l.contains("intel") && l.contains("connectivity") && l.contains("network"))
     {
-        out.push("Intel Connectivity Network Service — конфликтует с zapret".to_owned());
+        out.push(
+            tr(
+                "Intel Connectivity Network Service — конфликтует с zapret",
+                "Intel Connectivity Network Service — conflicts with zapret",
+            )
+            .to_owned(),
+        );
     }
     if services.contains("tracsrvwrapper") || services.contains("epwd") {
-        out.push("Check Point — конфликтует с zapret; его придётся удалить".to_owned());
+        out.push(
+            tr(
+                "Check Point — конфликтует с zapret; его придётся удалить",
+                "Check Point — conflicts with zapret; it has to be uninstalled",
+            )
+            .to_owned(),
+        );
     }
     if services.contains("smartbyte") {
-        out.push("SmartByte — конфликтует с zapret; отключите его в «Службах»".to_owned());
+        out.push(
+            tr(
+                "SmartByte — конфликтует с zapret; отключите его в «Службах»",
+                "SmartByte — conflicts with zapret; turn it off in Services",
+            )
+            .to_owned(),
+        );
     }
     out
 }
@@ -883,41 +953,59 @@ pub fn conclude(f: &ZapretFacts) -> ZapretDiagnosis {
     let Some(service) = &f.service else {
         step(
             &mut steps,
-            "Служба KVT",
+            tr("Служба KVT", "KVT service"),
             StepState::Fail,
-            "Служба не отвечает",
+            tr("Служба не отвечает", "The service doesn't respond"),
         );
         return done(
             steps,
             Tone::Error,
-            "Служба KVT не запущена",
-            "zapret запускает служба KVT. Запустите её (для разработки — kvt-service --console от администратора).".into(),
+            tr("Служба KVT не запущена", "The KVT service isn't running"),
+            tr(
+                "zapret запускает служба KVT. Запустите её (для разработки — kvt-service --console от администратора).",
+                "zapret is started by the KVT service. Start it (for development — kvt-service --console as administrator).",
+            )
+            .into(),
             None,
         );
     };
-    step(&mut steps, "Служба KVT", StepState::Ok, "Работает");
+    step(
+        &mut steps,
+        tr("Служба KVT", "KVT service"),
+        StepState::Ok,
+        tr("Работает", "Working"),
+    );
 
     match &f.info {
         Some(info) if !info.ok => {
             step(
                 &mut steps,
-                "Файлы zapret",
+                tr("Файлы zapret", "zapret files"),
                 StepState::Fail,
                 info.problem.clone().unwrap_or_default(),
             );
             return done(
                 steps,
                 Tone::Error,
-                "Файлы zapret повреждены",
-                "Части комплекта нет или файлы изменены. Переустановка вернёт проверенные файлы и драйвер WinDivert.".into(),
+                tr("Файлы zapret повреждены", "zapret files are damaged"),
+                tr(
+                    "Части комплекта нет или файлы изменены. Переустановка вернёт проверенные файлы и драйвер WinDivert.",
+                    "Part of the bundle is missing or files were modified. Reinstalling restores the verified files and the WinDivert driver.",
+                )
+                .into(),
                 Some(ZapretFix::Repair),
             );
         }
         Some(info) => step(
             &mut steps,
-            "Файлы zapret",
+            tr("Файлы zapret", "zapret files"),
             StepState::Ok,
-            format!("Flowseal {}, стратегий: {}", info.version, info.strategies),
+            trf!(
+                "Flowseal {}, стратегий: {}",
+                "Flowseal {}, strategies: {}",
+                info.version,
+                info.strategies
+            ),
         ),
         None => {}
     }
@@ -926,22 +1014,28 @@ pub fn conclude(f: &ZapretFacts) -> ZapretDiagnosis {
         let names: Vec<&str> = f.conflicts.iter().map(|c| c.name.as_str()).collect();
         step(
             &mut steps,
-            "Другие обходы",
+            tr("Другие обходы", "Other bypasses"),
             StepState::Fail,
             names.join(", "),
         );
         return done(
             steps,
             Tone::Error,
-            "Работает другой обход блокировок",
-            format!(
+            tr("Работает другой обход блокировок", "Another block bypass is running"),
+            trf!(
                 "{} обрабатывает те же пакеты — вместе с zapret KVT ничего не открывается. KVT может их остановить, ничего не удаляя.",
+                "{} handles the same packets — together with KVT's zapret nothing opens. KVT can stop them without deleting anything.",
                 names.join(", ")
             ),
             Some(ZapretFix::StopConflicts),
         );
     }
-    step(&mut steps, "Другие обходы", StepState::Ok, "Не найдены");
+    step(
+        &mut steps,
+        tr("Другие обходы", "Other bypasses"),
+        StepState::Ok,
+        tr("Не найдены", "None found"),
+    );
 
     if let ServiceStatus::Failed { reason, .. } = service {
         if reason.contains("zapret") {
@@ -949,20 +1043,33 @@ pub fn conclude(f: &ZapretFacts) -> ZapretDiagnosis {
             return done(
                 steps,
                 Tone::Error,
-                "zapret остановился",
-                "winws завершился сам — чаще всего мешает драйвер WinDivert или антивирус. Переустановка ставит драйвер заново.".into(),
+                tr("zapret остановился", "zapret stopped"),
+                tr(
+                    "winws завершился сам — чаще всего мешает драйвер WinDivert или антивирус. Переустановка ставит драйвер заново.",
+                    "winws exited on its own — usually the WinDivert driver or antivirus interferes. Reinstalling sets up the driver again.",
+                )
+                .into(),
                 Some(ZapretFix::Repair),
             );
         }
     }
 
     let Some(strategy) = &f.running else {
-        step(&mut steps, "zapret", StepState::Warning, "Выключен");
+        step(
+            &mut steps,
+            "zapret",
+            StepState::Warning,
+            tr("Выключен", "Off"),
+        );
         return done(
             steps,
             Tone::Warning,
-            "zapret выключен",
-            "Включите режим «Zapret» (без VPN) или «Гибрид» (YouTube и Discord через zapret, остальное через VPN).".into(),
+            tr("zapret выключен", "zapret is off"),
+            tr(
+                "Включите режим «Zapret» (без VPN) или «Гибрид» (YouTube и Discord через zapret, остальное через VPN).",
+                "Turn on Zapret mode (no VPN) or Hybrid (YouTube and Discord via zapret, everything else via VPN).",
+            )
+            .into(),
             Some(ZapretFix::Enable),
         );
     };
@@ -971,13 +1078,16 @@ pub fn conclude(f: &ZapretFacts) -> ZapretDiagnosis {
         &mut steps,
         "zapret",
         StepState::Ok,
-        format!("Работает, стратегия «{title}»"),
+        trf!(
+            "Работает, стратегия «{title}»",
+            "Working, strategy “{title}”"
+        ),
     );
 
     for name in &f.interferers {
         step(
             &mut steps,
-            "Мешающая программа",
+            tr("Мешающая программа", "Interfering app"),
             StepState::Warning,
             name.clone(),
         );
@@ -985,14 +1095,23 @@ pub fn conclude(f: &ZapretFacts) -> ZapretDiagnosis {
     if let Some(proxy) = &f.proxy {
         step(
             &mut steps,
-            "Системный прокси",
+            tr("Системный прокси", "System proxy"),
             StepState::Warning,
-            format!("Включён ({proxy}) — браузер пойдёт через него, а не через zapret"),
+            trf!(
+                "Включён ({proxy}) — браузер пойдёт через него, а не через zapret",
+                "On ({proxy}) — the browser will go through it instead of zapret"
+            ),
         );
     }
 
     let Some(check) = &f.check else {
-        return done(steps, Tone::Ok, "zapret работает", String::new(), None);
+        return done(
+            steps,
+            Tone::Ok,
+            tr("zapret работает", "zapret works"),
+            String::new(),
+            None,
+        );
     };
     let state = if check.healthy() {
         StepState::Ok
@@ -1001,23 +1120,34 @@ pub fn conclude(f: &ZapretFacts) -> ZapretDiagnosis {
     };
     step(
         &mut steps,
-        "Discord и YouTube",
+        tr("Discord и YouTube", "Discord and YouTube"),
         state,
-        format!("Открывается {} из {} проверок", check.passed, check.max),
+        trf!(
+            "Открывается {} из {} проверок",
+            "{} of {} checks open",
+            check.passed,
+            check.max
+        ),
     );
     if check.healthy() {
         let hint = if f.interferers.is_empty() && f.proxy.is_none() {
             String::new()
         } else {
-            " Если что-то всё же не открывается в браузере — посмотрите предупреждения ниже.".into()
+            tr(
+                " Если что-то всё же не открывается в браузере — посмотрите предупреждения ниже.",
+                " If something still doesn't open in the browser, see the warnings below.",
+            )
+            .into()
         };
         return done(
             steps,
             Tone::Ok,
-            "zapret работает",
-            format!(
+            tr("zapret работает", "zapret works"),
+            trf!(
                 "Discord и YouTube открываются ({} из {}).{hint}",
-                check.passed, check.max
+                "Discord and YouTube open ({} of {}).{hint}",
+                check.passed,
+                check.max
             ),
             None,
         );
@@ -1028,13 +1158,19 @@ pub fn conclude(f: &ZapretFacts) -> ZapretDiagnosis {
             &mut steps,
             "TCP timestamps",
             StepState::Fail,
-            "Выключены, а стратегия их требует",
+            tr(
+                "Выключены, а стратегия их требует",
+                "Off, but the strategy needs them",
+            ),
         );
         return done(
             steps,
             Tone::Error,
-            "Стратегии не хватает TCP timestamps",
-            format!("Стратегия «{title}» работает только с TCP timestamps. Разрешите KVT включать их — так делает и Flowseal."),
+            tr("Стратегии не хватает TCP timestamps", "The strategy needs TCP timestamps"),
+            trf!(
+                "Стратегия «{title}» работает только с TCP timestamps. Разрешите KVT включать их — так делает и Flowseal.",
+                "Strategy “{title}” only works with TCP timestamps. Allow KVT to turn them on — Flowseal does the same."
+            ),
             Some(ZapretFix::AllowTimestamps),
         );
     }
@@ -1042,18 +1178,26 @@ pub fn conclude(f: &ZapretFacts) -> ZapretDiagnosis {
         return done(
             steps,
             Tone::Error,
-            "zapret мешает другая программа",
-            format!("{name}. Если после этого не заработает — подберите стратегию."),
+            tr(
+                "zapret мешает другая программа",
+                "Another app interferes with zapret",
+            ),
+            trf!(
+                "{name}. Если после этого не заработает — подберите стратегию.",
+                "{name}. If it still doesn't work after that, pick a strategy."
+            ),
             Some(ZapretFix::Autoselect),
         );
     }
     done(
         steps,
         Tone::Error,
-        "Стратегия не помогает в этой сети",
-        format!(
+        tr("Стратегия не помогает в этой сети", "The strategy doesn't help on this network"),
+        trf!(
             "С «{title}» открывается {} из {} проверок. Провайдеры блокируют по-разному — подберите стратегию. Если не поможет ни одна, переустановите zapret.",
-            check.passed, check.max
+            "With “{title}”, {} of {} checks open. ISPs block in different ways — pick a strategy. If none helps, reinstall zapret.",
+            check.passed,
+            check.max
         ),
         Some(ZapretFix::Autoselect),
     )

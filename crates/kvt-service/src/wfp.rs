@@ -67,7 +67,10 @@ fn check(code: u32, what: &str) -> io::Result<()> {
     if code == 0 {
         Ok(())
     } else {
-        Err(io::Error::other(format!("WFP {what}: код 0x{code:08X}")))
+        Err(io::Error::other(kvt_core::trf!(
+            "WFP {what}: код 0x{code:08X}",
+            "WFP {what}: code 0x{code:08X}"
+        )))
     }
 }
 
@@ -218,20 +221,26 @@ impl KillSwitch {
         // SAFETY: локальный движок, стандартная аутентификация; session жива на время вызова.
         check(
             unsafe { FwpmEngineOpen0(null(), RPC_C_AUTHN_WINNT, null(), &session, &mut engine) },
-            "открытие движка",
+            kvt_core::i18n::tr("открытие движка", "opening the engine"),
         )?;
         // С этого момента Drop закроет движок, а вместе с ним и все добавленные фильтры.
         let ks = KillSwitch { engine };
 
         // SAFETY: движок открыт.
-        check(unsafe { FwpmTransactionBegin0(ks.engine, 0) }, "транзакция")?;
+        check(
+            unsafe { FwpmTransactionBegin0(ks.engine, 0) },
+            kvt_core::i18n::tr("транзакция", "transaction"),
+        )?;
         if let Err(e) = ks.add_rules(apps, tun_luid, kernel) {
             // SAFETY: транзакция начата выше.
             unsafe { FwpmTransactionAbort0(ks.engine) };
             return Err(e);
         }
         // SAFETY: транзакция начата выше.
-        check(unsafe { FwpmTransactionCommit0(ks.engine) }, "фиксация")?;
+        check(
+            unsafe { FwpmTransactionCommit0(ks.engine) },
+            kvt_core::i18n::tr("фиксация", "commit"),
+        )?;
         Ok(ks)
     }
 
@@ -251,7 +260,7 @@ impl KillSwitch {
         // SAFETY: структура и строка живы на время вызова.
         check(
             unsafe { FwpmSubLayerAdd0(self.engine, &sub, null_mut()) },
-            "подслой",
+            kvt_core::i18n::tr("подслой", "sublayer"),
         )?;
 
         let app_ids = apps
@@ -368,7 +377,7 @@ impl KillSwitch {
         // на время вызова; WFP копирует их внутрь.
         check(
             unsafe { FwpmFilterAdd0(self.engine, &filter, null_mut(), null_mut()) },
-            "фильтр",
+            kvt_core::i18n::tr("фильтр", "filter"),
         )
     }
 }

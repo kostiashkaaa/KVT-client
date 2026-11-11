@@ -18,7 +18,7 @@
 
   const names = (() => {
     try {
-      return new Intl.DisplayNames(["ru"], { type: "region" });
+      return new Intl.DisplayNames([lang()], { type: "region" });
     } catch {
       return null;
     }
@@ -35,6 +35,7 @@
 </script>
 
 <script lang="ts">
+  import { lang } from "./i18n";
   /** width — ширина в пикселях, высота по пропорции флага 4×3. */
   let { code, width = 20 }: { code: string | null; width?: number } = $props();
   const src = $derived(code ? byCode.get(code) : undefined);

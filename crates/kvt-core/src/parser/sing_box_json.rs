@@ -57,7 +57,7 @@ fn outbound_uri(o: &Value) -> Result<String, ParseError> {
     let port = o["server_port"]
         .as_u64()
         .and_then(|p| u16::try_from(p).ok())
-        .ok_or(ParseError::MissingField("порт"))?;
+        .ok_or(ParseError::MissingField(crate::i18n::tr("порт", "port")))?;
     let name = str_at(o, "tag").unwrap_or_default();
     let mut q = Serializer::new(String::new());
 
@@ -71,9 +71,10 @@ fn outbound_uri(o: &Value) -> Result<String, ParseError> {
         }
         "vmess" => {
             if o["alter_id"].as_u64().is_some_and(|a| a > 0) {
-                return Err(ParseError::Unsupported(
+                return Err(ParseError::Unsupported(crate::i18n::tr(
                     "VMess с alterId (устаревший вариант)",
-                ));
+                    "VMess with alterId (legacy)",
+                )));
             }
             if let Some(cipher) = str_at(o, "security") {
                 q.append_pair("encryption", cipher);
@@ -83,7 +84,10 @@ fn outbound_uri(o: &Value) -> Result<String, ParseError> {
         "trojan" => ("trojan", encode(required(o, "password")?)),
         "shadowsocks" => {
             if str_at(o, "plugin").is_some_and(|p| !p.is_empty()) {
-                return Err(ParseError::Unsupported("Shadowsocks с плагином"));
+                return Err(ParseError::Unsupported(crate::i18n::tr(
+                    "Shadowsocks с плагином",
+                    "Shadowsocks with a plugin",
+                )));
             }
             let method = required(o, "method")?;
             let password = required(o, "password")?;
@@ -125,14 +129,23 @@ fn outbound_uri(o: &Value) -> Result<String, ParseError> {
             return Ok(format!("socks5://{auth}{host}:{port}#{}", encode(name)));
         }
         "wireguard" => return Err(ParseError::Unsupported("WireGuard")),
-        "hysteria" => return Err(ParseError::Unsupported("Hysteria первой версии")),
+        "hysteria" => {
+            return Err(ParseError::Unsupported(crate::i18n::tr(
+                "Hysteria первой версии",
+                "Hysteria v1",
+            )))
+        }
         "shadowtls" => return Err(ParseError::Unsupported("ShadowTLS")),
         "naive" => return Err(ParseError::Unsupported("NaiveProxy")),
         "ssh" => return Err(ParseError::Unsupported("SSH")),
         "http" => {
             // Прокси без логина ссылкой не отличить от адреса сайта — не берём.
-            let user = required(o, "username")
-                .map_err(|_| ParseError::Unsupported("HTTP-прокси без логина"))?;
+            let user = required(o, "username").map_err(|_| {
+                ParseError::Unsupported(crate::i18n::tr(
+                    "HTTP-прокси без логина",
+                    "HTTP proxy without a login",
+                ))
+            })?;
             let auth = match str_at(o, "password") {
                 Some(p) => format!("{}:{}@", encode(user), encode(p)),
                 None => format!("{}@", encode(user)),
@@ -142,7 +155,10 @@ fn outbound_uri(o: &Value) -> Result<String, ParseError> {
                 tls_query(&o["tls"], &mut q, false);
             }
             if o["tls"]["reality"]["enabled"].as_bool() == Some(true) {
-                return Err(ParseError::Unsupported("HTTP-прокси с REALITY"));
+                return Err(ParseError::Unsupported(crate::i18n::tr(
+                    "HTTP-прокси с REALITY",
+                    "HTTP proxy with REALITY",
+                )));
             }
             let query = q.finish();
             return Ok(format!(
@@ -153,7 +169,12 @@ fn outbound_uri(o: &Value) -> Result<String, ParseError> {
                 encode(name)
             ));
         }
-        _ => return Err(ParseError::Unsupported("тип подключения")),
+        _ => {
+            return Err(ParseError::Unsupported(crate::i18n::tr(
+                "тип подключения",
+                "connection type",
+            )))
+        }
     };
 
     transport_query(&o["transport"], &mut q);

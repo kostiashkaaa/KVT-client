@@ -36,20 +36,20 @@ pub const CHUNK_SEPARATOR: char = '\u{1e}';
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ParseError {
-    #[error("неизвестная схема ссылки «{0}»")]
+    #[error("{}", crate::trf!("неизвестная схема ссылки «{}»", "unknown link scheme “{}”", .0))]
     UnknownScheme(String),
-    #[error("ссылка повреждена")]
+    #[error("{}", crate::i18n::tr("ссылка повреждена", "broken link"))]
     InvalidUrl,
-    #[error("ссылка слишком длинная")]
+    #[error("{}", crate::i18n::tr("ссылка слишком длинная", "link is too long"))]
     TooLong,
-    #[error("не хватает поля «{0}»")]
+    #[error("{}", crate::trf!("не хватает поля «{}»", "missing field “{}”", .0))]
     MissingField(&'static str),
-    #[error("некорректное поле «{field}»: {reason}")]
+    #[error("{}", crate::trf!("некорректное поле «{}»: {}", "invalid field “{}”: {}", .field, .reason))]
     InvalidField {
         field: &'static str,
         reason: &'static str,
     },
-    #[error("не поддерживается: {0}")]
+    #[error("{}", crate::trf!("не поддерживается: {}", "not supported: {}", .0))]
     Unsupported(&'static str),
 }
 
@@ -156,14 +156,20 @@ fn parse_chunk(
     if is_json {
         out.errors.push((
             offset,
-            ParseError::Unsupported("JSON без списка подключений (outbounds)"),
+            ParseError::Unsupported(crate::i18n::tr(
+                "JSON без списка подключений (outbounds)",
+                "JSON without a list of connections (outbounds)",
+            )),
         ));
         return 1;
     }
     if text.starts_with("proxies:") || text.contains("\nproxies:") {
         out.errors.push((
             offset,
-            ParseError::Unsupported("подписки Clash пока не поддерживаются"),
+            ParseError::Unsupported(crate::i18n::tr(
+                "подписки Clash пока не поддерживаются",
+                "Clash subscriptions aren't supported yet",
+            )),
         ));
         return 1;
     }
@@ -249,12 +255,18 @@ pub const MAX_NAME_CHARS: usize = 120;
 pub fn with_name(line: &str, name: &str) -> Result<String, ParseError> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(ParseError::MissingField("название"));
+        return Err(ParseError::MissingField(crate::i18n::tr(
+            "название",
+            "name",
+        )));
     }
     if name.chars().count() > MAX_NAME_CHARS || name.chars().any(char::is_control) {
         return Err(ParseError::InvalidField {
-            field: "название",
-            reason: "слишком длинное или с непечатаемыми символами",
+            field: crate::i18n::tr("название", "name"),
+            reason: crate::i18n::tr(
+                "слишком длинное или с непечатаемыми символами",
+                "too long or has non-printable characters",
+            ),
         });
     }
     const SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
@@ -325,10 +337,18 @@ pub(crate) fn parse_url(input: &str) -> Result<Url, ParseError> {
 
 /// Хост без квадратных скобок IPv6.
 pub(crate) fn host_of(url: &Url) -> Result<String, ParseError> {
-    let host = url.host_str().ok_or(ParseError::MissingField("адрес"))?;
+    let host = url
+        .host_str()
+        .ok_or(ParseError::MissingField(crate::i18n::tr(
+            "адрес",
+            "address",
+        )))?;
     let host = host.trim_matches(['[', ']']);
     if host.is_empty() {
-        return Err(ParseError::MissingField("адрес"));
+        return Err(ParseError::MissingField(crate::i18n::tr(
+            "адрес",
+            "address",
+        )));
     }
     Ok(host.to_owned())
 }
@@ -336,11 +356,11 @@ pub(crate) fn host_of(url: &Url) -> Result<String, ParseError> {
 pub(crate) fn port_of(url: &Url) -> Result<u16, ParseError> {
     match url.port() {
         Some(0) => Err(ParseError::InvalidField {
-            field: "порт",
-            reason: "равен нулю",
+            field: crate::i18n::tr("порт", "port"),
+            reason: crate::i18n::tr("равен нулю", "is zero"),
         }),
         Some(p) => Ok(p),
-        None => Err(ParseError::MissingField("порт")),
+        None => Err(ParseError::MissingField(crate::i18n::tr("порт", "port"))),
     }
 }
 
@@ -367,6 +387,15 @@ mod tests {
     use super::*;
 
     const VLESS_REALITY: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@203.0.113.10:443?type=tcp&security=reality&sni=www.microsoft.com&fp=firefox&pbk=Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#%D0%9D%D0%B8%D0%B4%D0%B5%D1%80%D0%BB%D0%B0%D0%BD%D0%B4%D1%8B";
+
+    #[test]
+    fn errors_in_english() {
+        use crate::i18n::{with, Lang};
+        let e = with(Lang::En, || parse_uri("foo://x").unwrap_err().to_string());
+        assert_eq!(e, "unknown link scheme “foo”");
+        let e = with(Lang::Ru, || parse_uri("foo://x").unwrap_err().to_string());
+        assert_eq!(e, "неизвестная схема ссылки «foo»");
+    }
 
     #[test]
     fn plain_and_base64_bodies_give_same_result() {

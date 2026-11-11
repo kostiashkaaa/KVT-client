@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { browserLang, isEn, t, type Lang, type LangChoice } from "./i18n";
 
 export interface ServerSummary {
   /** Постоянный ключ сервера: выбор и проверки привязаны к нему, а не к номеру. */
@@ -77,7 +78,7 @@ export async function addSubscription(input: string): Promise<Added> {
       )
     )
       throw new Error(
-        "Загрузка подписки по ссылке работает в приложении (npm run tauri dev).",
+        t("Загрузка подписки по ссылке работает в приложении (npm run tauri dev).", "Loading a subscription by link works in the app (npm run tauri dev)."),
       );
     return previewAdd(input);
   }
@@ -179,27 +180,27 @@ export async function listCatalog(): Promise<ListInfo[]> {
     return [
       {
         id: "russia_inside",
-        title: "Заблокировано в России",
+        title: t("Заблокировано в России", "Blocked in Russia"),
         kind: "region",
-        hint: "Сайты и сервисы из реестра блокировок и замедленные",
+        hint: t("Сайты и сервисы из реестра блокировок и замедленные", "Sites and services from the block registry, plus throttled ones"),
       },
       {
         id: "russia_outside",
-        title: "Российские сайты, закрытые для зарубежа",
+        title: t("Российские сайты, закрытые для зарубежа", "Russian sites closed to foreign visitors"),
         kind: "region",
-        hint: "Госуслуги, банки, магазины — не открываются с зарубежных IP",
+        hint: t("Госуслуги, банки, магазины — не открываются с зарубежных IP", "Gosuslugi, banks, shops — don't open from foreign IPs"),
       },
       {
         id: "geoblock",
-        title: "Сервисы, закрытые для России",
+        title: t("Сервисы, закрытые для России", "Services closed to Russia"),
         kind: "category",
-        hint: "ИИ, стриминг и магазины, которые сами не пускают из России",
+        hint: t("ИИ, стриминг и магазины, которые сами не пускают из России", "AI, streaming and shops that refuse visitors from Russia"),
       },
       {
         id: "news",
-        title: "Новости",
+        title: t("Новости", "News"),
         kind: "category",
-        hint: "Заблокированные СМИ",
+        hint: t("Заблокированные СМИ", "Blocked media"),
       },
       {
         id: "youtube",
@@ -211,13 +212,13 @@ export async function listCatalog(): Promise<ListInfo[]> {
         id: "discord",
         title: "Discord",
         kind: "service",
-        hint: "discord.com, discord.gg, голосовые серверы",
+        hint: t("discord.com, discord.gg, голосовые серверы", "discord.com, discord.gg, voice servers"),
       },
       {
         id: "telegram",
         title: "Telegram",
         kind: "service",
-        hint: "t.me, telegram.org и адреса серверов",
+        hint: t("t.me, telegram.org и адреса серверов", "t.me, telegram.org and server addresses"),
       },
       { id: "roblox", title: "Roblox", kind: "service", hint: "" },
     ];
@@ -228,10 +229,10 @@ export async function listCatalog(): Promise<ListInfo[]> {
 /** Свой сайт в том виде, в каком он попадёт в правило, или текст ошибки. */
 export async function checkRouteTarget(target: string): Promise<string> {
   if (!inTauri) {
-    const t = target.trim().toLowerCase();
-    if (!t) throw "Введите адрес сайта, IP или подсеть.";
-    if (/\s/.test(t)) throw "Одно правило — один адрес, без пробелов.";
-    const host = t
+    const value = target.trim().toLowerCase();
+    if (!value) throw t("Введите адрес сайта, IP или подсеть.", "Enter a site address, IP or subnet.");
+    if (/\s/.test(value)) throw t("Одно правило — один адрес, без пробелов.", "One rule, one address, no spaces.");
+    const host = value
       .replace(/^[a-z]+:\/\//, "")
       .split(/[/?#]/)[0]!
       .replace(/^.*@/, "")
@@ -239,7 +240,7 @@ export async function checkRouteTarget(target: string): Promise<string> {
       .replace(/^\*\./, "")
       .replace(/^www\./, "");
     if (!/^[\p{L}\d-]+(\.[\p{L}\d-]+)*$/u.test(host))
-      throw "Не похоже на адрес сайта. Пример: example.com";
+      throw t("Не похоже на адрес сайта. Пример: example.com", "Doesn't look like a site address. Example: example.com");
     return host;
   }
   return invoke<string>("check_route_target", { target });
@@ -262,7 +263,7 @@ export async function snapshot(): Promise<{
 export async function connect(): Promise<ServiceStatus> {
   if (!inTauri)
     throw new Error(
-      "Подключение работает в приложении (npm run tauri dev) при запущенной службе.",
+      t("Подключение работает в приложении (npm run tauri dev) при запущенной службе.", "Connecting works in the app (npm run tauri dev) with the service running."),
     );
   return invoke<ServiceStatus>("connect");
 }
@@ -295,15 +296,15 @@ export async function leakTest(): Promise<LeakReport> {
       ],
       ipv4Route: {
         verdict: "info",
-        detail: "VPN выключен: трафик идёт напрямую",
+        detail: t("VPN выключен: трафик идёт напрямую", "VPN is off: traffic goes direct"),
       },
       ipv6Route: {
         verdict: "ok",
-        detail: "IPv6 в интернет недоступен — утечки через IPv6 быть не может",
+        detail: t("IPv6 в интернет недоступен — утечки через IPv6 быть не может", "IPv6 internet is unavailable — no leak via IPv6 is possible"),
       },
       dns: {
         verdict: "info",
-        detail: "VPN выключен: DNS обслуживает провайдер",
+        detail: t("VPN выключен: DNS обслуживает провайдер", "VPN is off: DNS is served by your ISP"),
       },
     };
   }
@@ -353,7 +354,8 @@ export function formatElapsed(secs: number): string {
 
 /** 84 МБ, 1,24 ГБ — с запятой, без лишних знаков. */
 export function formatBytes(bytes: number): string {
-  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  const en = isEn();
+  const units = en ? ["B", "KB", "MB", "GB", "TB"] : ["Б", "КБ", "МБ", "ГБ", "ТБ"];
   let value = bytes;
   let unit = 0;
   while (value >= 1000 && unit < units.length - 1) {
@@ -361,7 +363,8 @@ export function formatBytes(bytes: number): string {
     unit++;
   }
   const digits = unit === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits).replace(".", ",")} ${units[unit]}`;
+  const text = value.toFixed(digits);
+  return `${en ? text : text.replace(".", ",")} ${units[unit]}`;
 }
 
 // Предпросмотр интерфейса в обычном браузере (npm run dev) без Rust-части.
@@ -434,7 +437,7 @@ const previewGroups: Group[] = [
   },
   {
     id: "b",
-    title: "Добавлено вручную",
+    title: t("Добавлено вручную", "Added manually"),
     byUrl: false,
     updatedAt: Math.floor(Date.now() / 1000) - 60,
     meta: {
@@ -478,7 +481,7 @@ function previewAdd(body: string): Added {
   if (!group) {
     group = {
       id: "manual",
-      title: "Добавлено вручную",
+      title: t("Добавлено вручную", "Added manually"),
       byUrl: false,
       updatedAt: 0,
       meta: {
@@ -617,12 +620,12 @@ const previewExtras: Record<string, Partial<SubscriptionItem>> = {
     webPageUrl: "https://example.com",
     announce:
       "Плановые работы на серверах в Германии 20 ноября с 03:00 до 04:00 МСК.",
-    skipped: [{ reason: "не поддерживается: WireGuard", count: 2 }],
+    skipped: [{ reason: t("не поддерживается: WireGuard", "not supported: WireGuard"), count: 2 }],
     duplicates: 1,
     warnings: [
       {
         reason:
-          "сертификат сервера не проверяется — VPN-ядро не умеет сверять отпечаток pinSHA256",
+          t("сертификат сервера не проверяется — VPN-ядро не умеет сверять отпечаток pinSHA256", "the server certificate isn't verified — the VPN core can't check the pinSHA256 fingerprint"),
         count: 2,
       },
     ],
@@ -632,7 +635,7 @@ const previewExtras: Record<string, Partial<SubscriptionItem>> = {
   },
   c: {
     lastError:
-      "Не удалось подключиться к серверу подписки — возможно, он заблокирован. Включите VPN и повторите",
+      t("Не удалось подключиться к серверу подписки — возможно, он заблокирован. Включите VPN и повторите", "Couldn't connect to the subscription server — it may be blocked. Turn on the VPN and try again"),
     failedAt: Math.floor(Date.now() / 1000) - 2 * 3600,
   },
 };
@@ -711,7 +714,7 @@ export async function setSubscriptionOptions(
     const words = (t: string) =>
       [...new Set(t.split(/[,;\n]/).map((w) => w.trim().toLowerCase()).filter(Boolean))];
     if (options.client === "custom" && !/^[ -~]{1,200}$/.test(options.userAgent.trim()))
-      throw new Error("User-Agent пустой, длиннее 200 символов или не латиницей — проверьте строку.");
+      throw new Error(t("User-Agent пустой, длиннее 200 символов или не латиницей — проверьте строку.", "The User-Agent is empty, longer than 200 characters or not in Latin script — check it."));
     const old = previewOptions[id] ?? defaultOptions;
     previewOptions[id] = {
       keep: words(options.keep),
@@ -739,10 +742,10 @@ export async function editServer(
     const s = previewGroups
       .flatMap((g) => g.servers)
       .find((x) => x.key === key);
-    if (!s) throw new Error("Этого сервера уже нет в списке.");
+    if (!s) throw new Error(t("Этого сервера уже нет в списке.", "This server is no longer in the list."));
     if (link && !link.includes("://"))
       throw new Error(
-        "В ссылке не нашлось сервера — проверьте, что она скопирована целиком.",
+        t("В ссылке не нашлось сервера — проверьте, что она скопирована целиком.", "No server found in the link — check that it was copied in full."),
       );
     if (name.trim()) s.name = name.trim();
     return key;
@@ -929,7 +932,7 @@ export const defaultDns = (): DnsChoice => ({
 });
 
 const previewResolvers: Resolver[] = [
-  { id: "yandex", title: "Яндекс", udp: "77.88.8.8", tunnel: false },
+  { id: "yandex", title: t("Яндекс", "Yandex"), udp: "77.88.8.8", tunnel: false },
   { id: "cloudflare", title: "Cloudflare", udp: "1.1.1.1", tunnel: true },
   { id: "google", title: "Google", udp: "8.8.8.8", tunnel: true },
   { id: "quad9", title: "Quad9", udp: "9.9.9.9", tunnel: true },
@@ -964,9 +967,9 @@ export async function dnsCheck(): Promise<DnsReport> {
       encryptedAvailable: true,
       recommendedLocal: "yandex",
       tone: "warning",
-      title: "Провайдер перехватывает DNS-запросы",
+      title: t("Провайдер перехватывает DNS-запросы", "Your ISP intercepts DNS queries"),
       detail:
-        "На запросы к публичным DNS по UDP отвечает сервер провайдера (212.48.193.5). При подключении через KVT это не мешает: DNS шифруется (DoH) и идёт внутри туннеля.",
+        t("На запросы к публичным DNS по UDP отвечает сервер провайдера (212.48.193.5). При подключении через KVT это не мешает: DNS шифруется (DoH) и идёт внутри туннеля.", "Queries to public DNS over UDP are answered by your ISP's server (212.48.193.5). This doesn't matter when connected through KVT: DNS is encrypted (DoH) and goes inside the tunnel."),
     };
   }
   return invoke<DnsReport>("dns_check");
@@ -1000,23 +1003,23 @@ export async function troubleshoot(): Promise<Diagnosis> {
     await new Promise((r) => setTimeout(r, 1200));
     return {
       tone: "error",
-      title: "Провайдер блокирует этот сервер",
+      title: t("Провайдер блокирует этот сервер", "Your ISP is blocking this server"),
       detail:
-        "Соединение обрывается после первых килобайт — режет DPI. Можно переключиться на «Германия ⚡».",
+        t("Соединение обрывается после первых килобайт — режет DPI. Можно переключиться на «Германия ⚡».", "The connection drops after the first kilobytes — DPI is cutting it. You can switch to “Германия ⚡”."),
       steps: [
-        { title: "Сеть", state: "ok", detail: "Подключение к сети есть" },
-        { title: "Служба KVT", state: "ok", detail: "Служба работает" },
-        { title: "Подписка", state: "ok", detail: "Подписка действует" },
-        { title: "Интернет без VPN", state: "ok", detail: "Интернет работает" },
+        { title: t("Сеть", "Network"), state: "ok", detail: t("Подключение к сети есть", "Network connection is up") },
+        { title: t("Служба KVT", "KVT service"), state: "ok", detail: t("Служба работает", "The service is running") },
+        { title: t("Подписка", "Subscription"), state: "ok", detail: t("Подписка действует", "The subscription is active") },
+        { title: t("Интернет без VPN", "Internet without VPN"), state: "ok", detail: t("Интернет работает", "The internet works") },
         {
-          title: "Сервер",
+          title: t("Сервер", "Server"),
           state: "ok",
-          detail: "«NL Amsterdam» отвечает, 48 мс",
+          detail: t("«NL Amsterdam» отвечает, 48 мс", "“NL Amsterdam” responds, 48 ms"),
         },
         {
-          title: "Проверка сервера",
+          title: t("Проверка сервера", "Server check"),
           state: "fail",
-          detail: "Соединение обрывается после первых килобайт — режет DPI",
+          detail: t("Соединение обрывается после первых килобайт — режет DPI", "The connection drops after the first kilobytes — DPI is cutting it"),
         },
       ],
       fix: { kind: "switch_server", key: "a-1", name: "Германия ⚡" },
@@ -1151,7 +1154,7 @@ export function strategyFor(
 /** «general (ALT4)» → «ALT4», «general» → «Основная». */
 export function strategyTitle(id: string): string {
   const m = /^general \((.+)\)$/.exec(id);
-  return m ? m[1]! : id === "general" ? "Основная" : id;
+  return m ? m[1]! : id === "general" ? t("Основная", "Main") : id;
 }
 
 export interface ZapretConflict {
@@ -1220,9 +1223,9 @@ export async function zapretAutoselect(
   if (!inTauri) {
     previewCancel = false;
     const total = previewStrategies.length;
-    onProgress({ index: 0, total, title: "Без zapret", score: null, max: 13 });
+    onProgress({ index: 0, total, title: t("Без zapret", "Without zapret"), score: null, max: 13 });
     await new Promise((r) => setTimeout(r, 500));
-    onProgress({ index: 0, total, title: "Без zapret", score: 4, max: 13 });
+    onProgress({ index: 0, total, title: t("Без zapret", "Without zapret"), score: 4, max: 13 });
     const tried: ZapretPick["tried"] = [];
     for (const [i, s] of previewStrategies.slice(0, 4).entries()) {
       if (previewCancel) {
@@ -1350,11 +1353,11 @@ export type ZapretAutoEvent =
 const previewCheck = (passed: number): ZapretCheck => ({
   targets: [
     ["Discord", 480, 530],
-    ["Discord: подключение", 570, null],
-    ["Discord: файлы", 470, 520],
+    [t("Discord: подключение", "Discord: gateway"), 570, null],
+    [t("Discord: файлы", "Discord: files"), 470, 520],
     ["YouTube", 390, 410],
-    ["YouTube: картинки", 320, 370],
-    ["YouTube: видео", 300, 360],
+    [t("YouTube: картинки", "YouTube: images"), 320, 370],
+    [t("YouTube: видео", "YouTube: video"), 300, 360],
   ].map(([name, a, b]) => ({
     name: name as string,
     tls13: a as number | null,
@@ -1426,9 +1429,9 @@ export async function zapretUpdate(): Promise<MaintenanceReport> {
       changed: true,
       binariesUpdated: true,
       steps: [
-        "Скачан релиз 1.10.5 (SHA-256 сверен с GitHub)",
-        "Стратегий: 22",
-        "winws и WinDivert — проверенные версии",
+        t("Скачан релиз 1.10.5 (SHA-256 сверен с GitHub)", "Downloaded release 1.10.5 (SHA-256 checked against GitHub)"),
+        t("Стратегий: 22", "Strategies: 22"),
+        t("winws и WinDivert — проверенные версии", "winws and WinDivert are verified versions"),
       ],
     };
   }
@@ -1443,9 +1446,9 @@ export async function zapretRepair(): Promise<MaintenanceReport> {
       changed: true,
       binariesUpdated: false,
       steps: [
-        "Рабочие списки сброшены — создадутся при запуске",
-        "Файлы комплекта целы (Flowseal 1.10.4)",
-        "Драйвер WinDivert удалён — установится заново при запуске",
+        t("Рабочие списки сброшены — создадутся при запуске", "Working lists reset — they'll be recreated on start"),
+        t("Файлы комплекта целы (Flowseal 1.10.4)", "Bundle files are intact (Flowseal 1.10.4)"),
+        t("Драйвер WinDivert удалён — установится заново при запуске", "WinDivert driver removed — it'll be reinstalled on start"),
       ],
     };
   }
@@ -1474,28 +1477,28 @@ export async function zapretDiagnose(): Promise<ZapretDiagnosis> {
     await new Promise((r) => setTimeout(r, 1500));
     return {
       tone: "error",
-      title: "Стратегия не помогает в этой сети",
+      title: t("Стратегия не помогает в этой сети", "The strategy doesn't help on this network"),
       detail:
-        "С «ALT4» открывается 5 из 13 проверок. Провайдеры блокируют по-разному — подберите стратегию. Если не поможет ни одна, переустановите zapret.",
+        t("С «ALT4» открывается 5 из 13 проверок. Провайдеры блокируют по-разному — подберите стратегию. Если не поможет ни одна, переустановите zapret.", "With “ALT4”, 5 of 13 checks open. ISPs block in different ways — pick a strategy. If none helps, reinstall zapret."),
       steps: [
-        { title: "Служба KVT", state: "ok", detail: "Работает" },
+        { title: t("Служба KVT", "KVT service"), state: "ok", detail: t("Работает", "Working") },
         {
-          title: "Файлы zapret",
+          title: t("Файлы zapret", "zapret files"),
           state: "ok",
-          detail: "Flowseal 1.10.4, стратегий: 22",
+          detail: t("Flowseal 1.10.4, стратегий: 22", "Flowseal 1.10.4, strategies: 22"),
         },
-        { title: "Другие обходы", state: "ok", detail: "Не найдены" },
-        { title: "zapret", state: "ok", detail: "Работает, стратегия «ALT4»" },
+        { title: t("Другие обходы", "Other bypasses"), state: "ok", detail: t("Не найдены", "None found") },
+        { title: "zapret", state: "ok", detail: t("Работает, стратегия «ALT4»", "Working, strategy “ALT4”") },
         {
-          title: "Мешающая программа",
+          title: t("Мешающая программа", "Interfering app"),
           state: "warning",
           detail:
-            "AdGuard — мешает Discord; добавьте Discord в исключения AdGuard",
+            t("AdGuard — мешает Discord; добавьте Discord в исключения AdGuard", "AdGuard — interferes with Discord; add Discord to AdGuard's exclusions"),
         },
         {
-          title: "Discord и YouTube",
+          title: t("Discord и YouTube", "Discord and YouTube"),
           state: "fail",
-          detail: "Открывается 5 из 13 проверок",
+          detail: t("Открывается 5 из 13 проверок", "5 of 13 checks open"),
         },
       ],
       fix: "autoselect",
@@ -1599,7 +1602,7 @@ function previewJournal(): NetJournal {
       route: "test_core",
       outcome: "deferred",
       ms: null,
-      detail: "повтор через 58 с",
+      detail: t("повтор через 58 с", "retry in 58 s"),
     }),
     ev(97, {
       origin: "app",
@@ -1608,7 +1611,7 @@ function previewJournal(): NetJournal {
       route: "test_core",
       outcome: "ok",
       ms: 412,
-      detail: "Работает",
+      detail: t("Работает", "Working"),
     }),
     ev(99, {
       origin: "app",
@@ -1618,7 +1621,7 @@ function previewJournal(): NetJournal {
       outcome: "failed",
       ms: 5000,
       detail:
-        "Провайдер притормозил соединение — подождите или выберите другой сервер",
+        t("Провайдер притормозил соединение — подождите или выберите другой сервер", "Your ISP stalled the connection — wait or pick another server"),
     }),
     ev(120, {
       origin: "app",
@@ -1636,7 +1639,7 @@ function previewJournal(): NetJournal {
       route: "direct",
       outcome: "failed",
       ms: null,
-      detail: "TCP не открылся",
+      detail: t("TCP не открылся", "TCP didn't open"),
     }),
     ev(300, {
       origin: "service",
@@ -1690,7 +1693,7 @@ function previewJournal(): NetJournal {
       route: "direct",
       outcome: "ok",
       ms: 380,
-      detail: "версия Flowseal",
+      detail: t("версия Flowseal", "Flowseal version"),
     }),
   ];
   const by = new Map<string, HostSummary>();
@@ -1764,70 +1767,70 @@ export async function pcAudit(): Promise<AuditReport> {
         ? {
             group: "leaks",
             level: "warning",
-            title: "Включён системный прокси",
+            title: t("Включён системный прокси", "System proxy is on"),
             detail:
-              "Браузеры и другие программы отправляют трафик на 127.0.0.1:10808 — обычно это остаток другого VPN-клиента. Если та программа закрыта, сайты не открываются; если запущена — трафик идёт через неё, а не через KVT.",
+              t("Браузеры и другие программы отправляют трафик на 127.0.0.1:10808 — обычно это остаток другого VPN-клиента. Если та программа закрыта, сайты не открываются; если запущена — трафик идёт через неё, а не через KVT.", "Browsers and other apps send traffic to 127.0.0.1:10808 — usually a leftover from another VPN client. If that app is closed, sites won't open; if it's running, traffic goes through it instead of KVT."),
             fix: { kind: "disable_system_proxy" },
           }
         : {
             group: "leaks",
             level: "ok",
-            title: "Системный прокси",
+            title: t("Системный прокси", "System proxy"),
             detail:
-              "Не задан: программы выходят в сеть обычным путём, через туннель KVT.",
+              t("Не задан: программы выходят в сеть обычным путём, через туннель KVT.", "Not set: apps reach the internet the normal way, through the KVT tunnel."),
             fix: null,
           },
       {
         group: "leaks",
         level: "ok",
-        title: "Прокси WinHTTP",
-        detail: "Не задан.",
+        title: t("Прокси WinHTTP", "WinHTTP proxy"),
+        detail: t("Не задан.", "Not set."),
         fix: null,
       },
       {
         group: "leaks",
         level: "ok",
         title: "Teredo",
-        detail: "Выключен или не используется.",
+        detail: t("Выключен или не используется.", "Off or not in use."),
         fix: null,
       },
       {
         group: "leaks",
         level: "info",
-        title: "Браузер использует свой DNS",
+        title: t("Браузер использует свой DNS", "A browser uses its own DNS"),
         detail:
-          "Microsoft Edge (chrome.cloudflare-dns.com): защищённый DNS включён в настройках браузера. Запросы зашифрованы, но идут мимо DNS KVT — если сайты из списков маршрутизации открываются не так, выключите «Безопасный DNS» в настройках браузера.",
+          t("Microsoft Edge (chrome.cloudflare-dns.com): защищённый DNS включён в настройках браузера. Запросы зашифрованы, но идут мимо DNS KVT — если сайты из списков маршрутизации открываются не так, выключите «Безопасный DNS» в настройках браузера.", "Microsoft Edge (chrome.cloudflare-dns.com): secure DNS is on in the browser settings. Queries are encrypted but bypass KVT's DNS — if sites from the routing lists open the wrong way, turn off “Secure DNS” in the browser settings."),
         fix: null,
       },
       {
         group: "conflicts",
         level: "warning",
-        title: "Запущен v2rayN",
+        title: t("Запущен v2rayN", "v2rayN is running"),
         detail:
-          "Два VPN одновременно спорят за маршруты и DNS: часть трафика уходит не туда, подключение обрывается. Закройте другой клиент, пока работает KVT.",
+          t("Два VPN одновременно спорят за маршруты и DNS: часть трафика уходит не туда, подключение обрывается. Закройте другой клиент, пока работает KVT.", "Two VPNs at once fight over routes and DNS: some traffic goes the wrong way and the connection drops. Close the other client while KVT is running."),
         fix: { kind: "close_process", pid: 4242, name: "v2rayN" },
       },
       {
         group: "conflicts",
         level: "ok",
-        title: "Туннели других VPN",
-        detail: "Активных нет.",
+        title: t("Туннели других VPN", "Other VPN tunnels"),
+        detail: t("Активных нет.", "None active."),
         fix: null,
       },
       {
         group: "conflicts",
         level: "info",
-        title: "Антивирус проверяет HTTPS",
+        title: t("Антивирус проверяет HTTPS", "Antivirus scans HTTPS"),
         detail:
-          "Kaspersky Plus может перехватывать защищённые соединения. Если подписки не загружаются или проверка серверов ошибается, добавьте папку KVT в исключения или выключите «Проверку защищённых соединений».",
+          t("Kaspersky Plus может перехватывать защищённые соединения. Если подписки не загружаются или проверка серверов ошибается, добавьте папку KVT в исключения или выключите «Проверку защищённых соединений».", "Kaspersky Plus may intercept secure connections. If subscriptions don't load or server checks go wrong, add the KVT folder to exclusions or turn off encrypted connection scanning."),
         fix: null,
       },
       {
         group: "zapret",
         level: "warning",
-        title: "Служба zapret запускается вместе с Windows",
+        title: t("Служба zapret запускается вместе с Windows", "Service zapret starts with Windows"),
         detail:
-          "zapret стартует при каждом включении компьютера и мешает zapret в KVT. Исправление остановит её и переведёт в ручной запуск — ничего не удаляется.",
+          t("zapret стартует при каждом включении компьютера и мешает zapret в KVT. Исправление остановит её и переведёт в ручной запуск — ничего не удаляется.", "zapret starts every time the computer turns on and interferes with zapret in KVT. The fix stops it and sets it to manual start — nothing is deleted."),
         fix: {
           kind: "service",
           action: "disable_zapret_service",
@@ -1847,7 +1850,7 @@ export async function pcAuditFix(fix: AuditFix): Promise<void> {
       previewProxyOn = false;
       return;
     }
-    throw new Error("Служба KVT не запущена — это исправление выполняет она");
+    throw new Error(t("Служба KVT не запущена — это исправление выполняет она", "The KVT service isn't running — it performs this fix"));
   }
   await invoke("pc_audit_fix", { fix });
 }
@@ -1886,7 +1889,7 @@ const previewMigration: MigrationPreview[] = [
       { name: "Домашний сервер", protocol: "VLESS" },
       { name: "SS для игр", protocol: "Shadowsocks" },
     ],
-    skipped: [{ reason: "VMess не поддерживается", count: 3 }],
+    skipped: [{ reason: t("VMess не поддерживается", "VMess is not supported"), count: 3 }],
     note: null,
   },
   {
@@ -1896,7 +1899,7 @@ const previewMigration: MigrationPreview[] = [
     subscriptions: [],
     servers: [],
     skipped: [],
-    note: "Happ хранит подписки в зашифрованном виде — KVT их не читает. Скопируйте в Happ ссылку на подписку и добавьте её в KVT кнопкой «+».",
+    note: t("Happ хранит подписки в зашифрованном виде — KVT их не читает. Скопируйте в Happ ссылку на подписку и добавьте её в KVT кнопкой «+».", "Happ stores subscriptions encrypted — KVT can't read them. Copy the subscription link in Happ and add it to KVT with the “+” button."),
   },
 ];
 
@@ -1911,7 +1914,7 @@ export async function migrateScan(): Promise<MigrationPreview[]> {
 /** `null` — пользователь закрыл окно выбора папки. */
 export async function migratePickFolder(): Promise<MigrationPreview[] | null> {
   if (!inTauri)
-    throw new Error("Выбор папки работает в приложении (npm run tauri dev).");
+    throw new Error(t("Выбор папки работает в приложении (npm run tauri dev).", "Choosing a folder works in the app (npm run tauri dev)."));
   return invoke<MigrationPreview[] | null>("migrate_pick_folder");
 }
 
@@ -1956,6 +1959,45 @@ export function onNavigate(handler: (page: TrayPage) => void): () => void {
   if (!inTauri) return () => {};
   const off = listen<TrayPage>("navigate", (e) => handler(e.payload));
   return () => void off.then((f) => f());
+}
+
+export interface LangInfo {
+  choice: LangChoice;
+  /** Действующий язык (для «Как в Windows» — язык системы). */
+  lang: Lang;
+}
+
+const PREVIEW_LANG = "kvt.lang";
+
+function previewLang(): LangInfo {
+  let choice: LangChoice = "auto";
+  try {
+    const c = localStorage.getItem(PREVIEW_LANG);
+    if (c === "ru" || c === "en") choice = c;
+  } catch {
+    // Хранилище недоступно — язык браузера.
+  }
+  return { choice, lang: choice === "auto" ? browserLang() : choice };
+}
+
+/** Язык интерфейса: выбор и действующий язык. */
+export async function getLanguage(): Promise<LangInfo> {
+  if (!inTauri) return previewLang();
+  return invoke<LangInfo>("get_language");
+}
+
+/** Сменить язык (трей и уведомления — сразу, окно перезагружается). */
+export async function setLanguage(choice: LangChoice): Promise<LangInfo> {
+  if (!inTauri) {
+    try {
+      if (choice === "auto") localStorage.removeItem(PREVIEW_LANG);
+      else localStorage.setItem(PREVIEW_LANG, choice);
+    } catch {
+      // Превью: язык продержится до перезагрузки.
+    }
+    return previewLang();
+  }
+  return invoke<LangInfo>("set_language", { choice });
 }
 
 /** Служба отвечает, но другой версии (прерванное обновление) — нужна переустановка. */
@@ -2115,6 +2157,6 @@ export async function diagPreview(): Promise<DiagFile[]> {
 /** Сохраняет показанное в предпросмотре. false — пользователь закрыл окно выбора файла. */
 export async function diagSave(): Promise<boolean> {
   if (!inTauri)
-    throw new Error("Сохранение работает в приложении (npm run tauri dev).");
+    throw new Error(t("Сохранение работает в приложении (npm run tauri dev).", "Saving works in the app (npm run tauri dev)."));
   return invoke<boolean>("diag_save");
 }

@@ -27,25 +27,37 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
             let raw = decode_component(url.username());
             let bytes = decode_base64_lenient(&raw).ok_or(ParseError::InvalidField {
                 field: "userinfo",
-                reason: "ожидается base64",
+                reason: crate::i18n::tr("ожидается base64", "expected base64"),
             })?;
             let text = String::from_utf8(bytes).map_err(|_| ParseError::InvalidUrl)?;
             let (m, p) = text
                 .split_once(':')
-                .ok_or(ParseError::MissingField("пароль"))?;
+                .ok_or(ParseError::MissingField(crate::i18n::tr(
+                    "пароль",
+                    "password",
+                )))?;
             (m.to_owned(), p.to_owned())
         }
     };
 
     let method = method.to_ascii_lowercase();
     if !SUPPORTED_METHODS.contains(&method.as_str()) {
-        return Err(ParseError::Unsupported("метод шифрования Shadowsocks"));
+        return Err(ParseError::Unsupported(crate::i18n::tr(
+            "метод шифрования Shadowsocks",
+            "Shadowsocks cipher",
+        )));
     }
     if password.is_empty() {
-        return Err(ParseError::MissingField("пароль"));
+        return Err(ParseError::MissingField(crate::i18n::tr(
+            "пароль",
+            "password",
+        )));
     }
     if url.query_pairs().any(|(k, _)| k == "plugin") {
-        return Err(ParseError::Unsupported("плагины Shadowsocks"));
+        return Err(ParseError::Unsupported(crate::i18n::tr(
+            "плагины Shadowsocks",
+            "Shadowsocks plugins",
+        )));
     }
 
     let address = host_of(&url)?;
@@ -75,9 +87,13 @@ fn normalize_legacy(input: &str) -> Result<String, ParseError> {
     let bytes = decode_base64_lenient(body).ok_or(ParseError::InvalidUrl)?;
     let decoded = String::from_utf8(bytes).map_err(|_| ParseError::InvalidUrl)?;
     let (userinfo, hostport) = decoded.rsplit_once('@').ok_or(ParseError::InvalidUrl)?;
-    let (method, password) = userinfo
-        .split_once(':')
-        .ok_or(ParseError::MissingField("пароль"))?;
+    let (method, password) =
+        userinfo
+            .split_once(':')
+            .ok_or(ParseError::MissingField(crate::i18n::tr(
+                "пароль",
+                "password",
+            )))?;
     let enc = |s: &str| {
         percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
     };

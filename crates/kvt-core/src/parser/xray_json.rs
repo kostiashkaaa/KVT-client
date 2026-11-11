@@ -67,9 +67,10 @@ fn config_uri(config: &Value) -> Result<String, ParseError> {
         .filter(supported)
         .find(|o| str_at(o, "tag") == Some("proxy"))
         .or_else(|| outbounds.iter().find(supported))
-        .ok_or(ParseError::Unsupported(
+        .ok_or(ParseError::Unsupported(crate::i18n::tr(
             "в конфиге нет подключения VLESS, VMess, Trojan, Shadowsocks или Hysteria2",
-        ))?;
+            "the config has no VLESS, VMess, Trojan, Shadowsocks or Hysteria2 connection",
+        )))?;
     let name = str_at(config, "remarks").unwrap_or_default();
     outbound_uri(outbound, name)
 }
@@ -98,9 +99,10 @@ fn outbound_uri(o: &Value, name: &str) -> Result<String, ParseError> {
             let user = &server["users"][0];
             let id = required(user, "id")?;
             if user["alterId"].as_u64().is_some_and(|a| a > 0) {
-                return Err(ParseError::Unsupported(
+                return Err(ParseError::Unsupported(crate::i18n::tr(
                     "VMess с alterId (устаревший вариант)",
-                ));
+                    "VMess with alterId (legacy)",
+                )));
             }
             if let Some(cipher) = str_at(user, "security") {
                 q.append_pair("encryption", cipher);
@@ -121,7 +123,12 @@ fn outbound_uri(o: &Value, name: &str) -> Result<String, ParseError> {
             return Ok(format!("ss://{userinfo}@{host}:{port}#{}", encode(name)));
         }
         Some("hysteria") => return hysteria_uri(o, name),
-        _ => return Err(ParseError::Unsupported("тип подключения")),
+        _ => {
+            return Err(ParseError::Unsupported(crate::i18n::tr(
+                "тип подключения",
+                "connection type",
+            )))
+        }
     };
 
     let (host, port) = host_port(server)?;
@@ -141,7 +148,10 @@ fn hysteria_uri(o: &Value, name: &str) -> Result<String, ParseError> {
         .as_u64()
         .or_else(|| stream["hysteriaSettings"]["version"].as_u64());
     if version.is_some_and(|v| v != 2) {
-        return Err(ParseError::Unsupported("Hysteria первой версии"));
+        return Err(ParseError::Unsupported(crate::i18n::tr(
+            "Hysteria первой версии",
+            "Hysteria v1",
+        )));
     }
     let auth = required(&stream["hysteriaSettings"], "auth")?;
     let (host, port) = host_port(settings)?;
@@ -248,7 +258,7 @@ fn host_port(server: &Value) -> Result<(String, u16), ParseError> {
     let port = server["port"]
         .as_u64()
         .and_then(|p| u16::try_from(p).ok())
-        .ok_or(ParseError::MissingField("порт"))?;
+        .ok_or(ParseError::MissingField(crate::i18n::tr("порт", "port")))?;
     // IPv6 в ссылке — в квадратных скобках.
     let host = if address.contains(':') && !address.starts_with('[') {
         format!("[{address}]")

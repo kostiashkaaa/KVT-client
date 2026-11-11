@@ -33,14 +33,19 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
     let password = url.password().map(decode_component).unwrap_or_default();
     let address = host_of(&url)?;
     let port = match url.port_or_known_default() {
-        Some(0) | None => return Err(ParseError::MissingField("порт")),
+        Some(0) | None => return Err(ParseError::MissingField(crate::i18n::tr("порт", "port"))),
         Some(p) => p,
     };
     let q = query_of(&url);
     let security = if url.scheme() == "https" {
         match parse_security(&q, "tls")? {
             tls @ Security::Tls(_) => tls,
-            _ => return Err(ParseError::Unsupported("HTTPS-прокси без TLS")),
+            _ => {
+                return Err(ParseError::Unsupported(crate::i18n::tr(
+                    "HTTPS-прокси без TLS",
+                    "HTTPS proxy without TLS",
+                )))
+            }
         }
     } else {
         Security::None

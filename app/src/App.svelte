@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "./lib/i18n";
   import { fade } from "svelte/transition";
   import Banner from "./lib/Banner.svelte";
   import NoticeStack from "./lib/NoticeStack.svelte";
@@ -16,6 +17,8 @@
   import NetJournal from "./lib/NetJournal.svelte";
   import ZapretCard from "./lib/ZapretCard.svelte";
   import ZapretPage from "./lib/ZapretPage.svelte";
+  import PickmeSky from "./lib/PickmeSky.svelte";
+  import { theme } from "./lib/theme.svelte";
   import { startAutoselect } from "./lib/zapretStore.svelte";
   import {
     addSubscription,
@@ -62,7 +65,19 @@
     type QuickResult,
   } from "./lib/api";
 
-  let page = $state<Page>("home");
+  let page = $state<Page>(restoredPage());
+
+  /** Страница до перезагрузки окна при смене языка (одноразово). */
+  function restoredPage(): Page {
+    try {
+      const saved = sessionStorage.getItem("kvt.page");
+      sessionStorage.removeItem("kvt.page");
+      if (saved === "settings") return "settings";
+    } catch {
+      // Хранилище недоступно — главная.
+    }
+    return "home";
+  }
   let mode = $state<Mode>("vpn");
   /** Все подписки и ручные ключи — группами в одном списке. */
   let groups = $state<Group[]>([]);
@@ -240,24 +255,24 @@
   /** Идут ли данные через туннель: null — ещё не проверяли. */
   let tunnelOk = $state<boolean | null>(null);
   $effect(() => {
-    void tunnelState().then((t) => (tunnelOk = t));
-    return onTunnelState((t) => (tunnelOk = t));
+    void tunnelState().then((ok) => (tunnelOk = ok));
+    return onTunnelState((ok) => (tunnelOk = ok));
   });
 
   function watchdogText(e: WatchdogEvent): string {
     switch (e.kind) {
       case "captive_portal":
-        return "Сеть просит войти (как Wi-Fi в гостинице или кафе), а VPN не даёт открыть страницу входа. Отключите VPN, войдите в сеть и подключитесь снова.";
+        return t("Сеть просит войти (как Wi-Fi в гостинице или кафе), а VPN не даёт открыть страницу входа. Отключите VPN, войдите в сеть и подключитесь снова.", "The network asks you to sign in (like hotel or café Wi-Fi), and the VPN keeps the sign-in page from opening. Disconnect the VPN, sign in to the network and connect again.");
       case "server_removed":
-        return `Сервер «${e.server}» больше не в подписках — VPN отключён. Выберите другой сервер и подключитесь.`;
+        return t(`Сервер «${e.server}» больше не в подписках — VPN отключён. Выберите другой сервер и подключитесь.`, `Server “${e.server}” is no longer in your subscriptions — the VPN is disconnected. Pick another server and connect.`);
       case "switched":
-        return `Через «${e.from}» перестали идти данные — KVT переключился на «${e.to}».`;
+        return t(`Через «${e.from}» перестали идти данные — KVT переключился на «${e.to}».`, `Data stopped going through “${e.from}” — KVT switched to “${e.to}”.`);
       case "no_network":
-        return "Пропала сеть. VPN снова заработает, когда она появится.";
+        return t("Пропала сеть. VPN снова заработает, когда она появится.", "The network is gone. The VPN will work again once it's back.");
       case "no_alternative":
-        return `Через «${e.server}» перестали идти данные, а рабочей замены в подписках нет.`;
+        return t(`Через «${e.server}» перестали идти данные, а рабочей замены в подписках нет.`, `Data stopped going through “${e.server}”, and there's no working replacement in your subscriptions.`);
       case "gave_up":
-        return "Серверы слишком часто перестают работать — автопереключение приостановлено на полчаса.";
+        return t("Серверы слишком часто перестают работать — автопереключение приостановлено на полчаса.", "Servers fail too often — auto-switch is paused for half an hour.");
     }
   }
 
@@ -272,7 +287,7 @@
         tone: info ? "info" : "warn",
         actions:
           e.kind === "captive_portal" && active
-            ? [{ label: "Отключить VPN", primary: true, run: () => ondisconnect() }]
+            ? [{ label: t("Отключить VPN", "Disconnect VPN"), primary: true, run: () => ondisconnect() }]
             : [],
       });
     }),
@@ -285,13 +300,13 @@
         pushNotice({
           key: "zapret-auto",
           tone: "info",
-          text: `zapret перестал справляться — KVT подобрал стратегию ${e.title} (${e.passed} из ${e.max}).`,
+          text: t(`zapret перестал справляться — KVT подобрал стратегию ${e.title} (${e.passed} из ${e.max}).`, `zapret stopped working — KVT picked strategy ${e.title} (${e.passed} of ${e.max}).`),
         });
       } else {
         pushNotice({
           key: "zapret-auto",
-          text: `zapret справляется хуже: ${e.passed} из ${e.max} проверок.`,
-          actions: [{ label: "Открыть Zapret", run: () => void (page = "zapret") }],
+          text: t(`zapret справляется хуже: ${e.passed} из ${e.max} проверок.`, `zapret works worse: ${e.passed} of ${e.max} checks.`),
+          actions: [{ label: t("Открыть Zapret", "Open Zapret"), run: () => void (page = "zapret") }],
         });
       }
     }),
@@ -372,8 +387,8 @@
     pushNotice({
       key: "error",
       text,
-      actions: why ? [{ label: "Почему не работает?", run: askWhy }] : [],
-      closeLabel: why ? "Скрыть" : "Понятно",
+      actions: why ? [{ label: t("Почему не работает?", "Why isn't it working?"), run: askWhy }] : [],
+      closeLabel: why ? t("Скрыть", "Hide") : t("Понятно", "Got it"),
     });
   }
 
@@ -440,13 +455,13 @@
     try {
       const result = await addSubscription(body);
       if (result.servers === 0 || result.group === null) {
-        addError = result.failed[0] ?? "В подписке не нашлось ни одного сервера.";
+        addError = result.failed[0] ?? t("В подписке не нашлось ни одного сервера.", "No servers found in the subscription.");
         return;
       }
       // Добавилась только часть вставки — сказать, что именно не вышло.
       if (result.failed.length > 0) {
         pushNotice({
-          text: `Добавлено не всё. ${result.failed.join(" ")}`,
+          text: t(`Добавлено не всё. ${result.failed.join(" ")}`, `Not everything was added. ${result.failed.join(" ")}`),
           tone: "warn",
           key: "add-partial",
         });
@@ -592,7 +607,7 @@
       // перезаписать статус и сбросить connectedWith.
       if (busy) return;
       if (next?.state === "failed" && status?.state === "connected") {
-        showError(`Соединение прервано: ${next.reason}`, true);
+        showError(t(`Соединение прервано: ${next.reason}`, `Connection lost: ${next.reason}`), true);
       }
       const nextActive = next?.state === "connected" || next?.state === "zapret";
       if (!nextActive) connectedWith = null;
@@ -618,6 +633,10 @@
   });
 </script>
 
+{#if theme.pickme}
+  <PickmeSky />
+{/if}
+
 <div class="shell">
   <NavRail bind:current={page} />
 
@@ -627,7 +646,7 @@
     {#key page}
     <div class="page" class:home={page === "home"}>
     {#if page === "home"}
-      <h1>Главная</h1>
+      <h1>{t("Главная", "Home")}</h1>
 
       {#if restored && !onboarded}
         <Onboarding
@@ -645,10 +664,10 @@
       {#if update.banner}
         <div transition:fade={{ duration: 150 }}>
           <Banner tone="info">
-            Вышла KVT {update.version}. Скачайте её на странице загрузки — настройки и подписки сохранятся.
+            {t(`Вышла KVT ${update.version}. Скачайте её на странице загрузки — настройки и подписки сохранятся.`, `KVT ${update.version} is out. Download it from the download page — your settings and subscriptions will be kept.`)}
             {#snippet action()}
-              <button class="btn btn-primary" onclick={() => void openLink("latest")}>Скачать</button>
-              <button class="btn" onclick={skipUpdate}>Позже</button>
+              <button class="btn btn-primary" onclick={() => void openLink("latest")}>{t("Скачать", "Download")}</button>
+              <button class="btn" onclick={skipUpdate}>{t("Позже", "Later")}</button>
             {/snippet}
           </Banner>
         </div>
@@ -676,7 +695,7 @@
           {outcomes}
           {fullChecking}
           fullCheckBlocked={status?.state === "connected"
-            ? "Отключите VPN: полная проверка идёт напрямую, иначе туннель исказит результат"
+            ? t("Отключите VPN: полная проверка идёт напрямую, иначе туннель исказит результат", "Disconnect the VPN: the full check runs directly, otherwise the tunnel distorts the result")
             : null}
           onfullcheck={runFullCheck}
           {refreshing}
@@ -693,10 +712,10 @@
       </div>
       </div>
     {:else if page === "subscriptions"}
-      <h1>Подписки</h1>
+      <h1>{t("Подписки", "Subscriptions")}</h1>
       <Subscriptions onadd={() => (adding = true)} />
     {:else if page === "routing"}
-      <h1>Маршрутизация</h1>
+      <h1>{t("Маршрутизация", "Routing")}</h1>
       <Routing
         bind:routing
         connected={status?.state === "connected"}
@@ -708,7 +727,7 @@
       <h1>Zapret</h1>
       <ZapretPage bind:zapret bind:mode {status} {busy} {onconnect} />
     {:else if page === "diagnostics"}
-      <h1>Проверка</h1>
+      <h1>{t("Проверка", "Check")}</h1>
       <Diagnostics
         connected={status?.state === "connected"}
         vpnState={status?.state ?? "none"}
@@ -718,7 +737,7 @@
         onautorun={() => (autoDiagnose = false)}
       />
     {:else if page === "settings"}
-      <h1>Настройки</h1>
+      <h1>{t("Настройки", "Settings")}</h1>
       <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks bind:notifications bind:connectOnStart
         bind:checkUpdates
         connected={status?.state === "connected"}
@@ -731,7 +750,7 @@
         }}
       />
     {:else}
-      <h1>Журнал</h1>
+      <h1>{t("Журнал", "Log")}</h1>
       <NetJournal />
     {/if}
     </div>

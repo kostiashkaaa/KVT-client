@@ -30,13 +30,13 @@ SetCompressor /SOLID lzma
 !define RELEASES "https://github.com/kostiashkaaa/KVT-client/releases"
 !define BACKUP ".kvt-update-backup"
 
-Name "Обновление KVT ${VERSION}"
-Caption "Обновление KVT до ${VERSION}"
+Name "KVT ${VERSION}"
+Caption "$(KvtCaption)"
 OutFile "${OUTFILE}"
 BrandingText "KVT ${VERSION}"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "KVT"
-VIAddVersionKey "FileDescription" "Обновление KVT"
+VIAddVersionKey "FileDescription" "KVT update"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "KVT — GPL-3.0-or-later"
@@ -47,15 +47,48 @@ Var Installed
 
 !define MUI_ICON "${ICON}"
 !define MUI_ABORTWARNING
-!define MUI_WELCOMEPAGE_TITLE "Обновление KVT до ${VERSION}"
-!define MUI_WELCOMEPAGE_TEXT "Установленная версия: $Installed.$\r$\n$\r$\nОкно KVT закроется, а VPN отключится на несколько секунд: служба перезапускается вместе с новой версией. Kill switch на это время тоже выключен.$\r$\n$\r$\nНастройки и подписки сохранятся."
+!define MUI_WELCOMEPAGE_TITLE "$(KvtCaption)"
+!define MUI_WELCOMEPAGE_TEXT "$(KvtWelcome)"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_TEXT "Запустить KVT"
+!define MUI_FINISHPAGE_RUN_TEXT "$(KvtRun)"
 !define MUI_FINISHPAGE_RUN_FUNCTION RunKvt
 !insertmacro MUI_PAGE_FINISH
+; Язык — как у Windows: русский для русской Windows, иначе английский (первый в списке).
+!insertmacro MUI_LANGUAGE "English"
 !insertmacro MUI_LANGUAGE "Russian"
+
+LangString KvtCaption ${LANG_ENGLISH} "Updating KVT to ${VERSION}"
+LangString KvtCaption ${LANG_RUSSIAN} "Обновление KVT до ${VERSION}"
+LangString KvtWelcome ${LANG_ENGLISH} "Installed version: $Installed.$\r$\n$\r$\nThe KVT window will close and the VPN will disconnect for a few seconds: the service restarts with the new version. The kill switch is also off during that time.$\r$\n$\r$\nYour settings and subscriptions will be kept."
+LangString KvtWelcome ${LANG_RUSSIAN} "Установленная версия: $Installed.$\r$\n$\r$\nОкно KVT закроется, а VPN отключится на несколько секунд: служба перезапускается вместе с новой версией. Kill switch на это время тоже выключен.$\r$\n$\r$\nНастройки и подписки сохранятся."
+LangString KvtRun ${LANG_ENGLISH} "Start KVT"
+LangString KvtRun ${LANG_RUSSIAN} "Запустить KVT"
+LangString KvtNotInstalled ${LANG_ENGLISH} "KVT isn't installed on this computer — there's nothing to update.$\r$\n$\r$\nOpen the download page? It has the full installer (KVT-${VERSION}-setup.exe)."
+LangString KvtNotInstalled ${LANG_RUSSIAN} "KVT на этом компьютере не установлен — обновлять нечего.$\r$\n$\r$\nОткрыть страницу загрузки? Там есть полная установка (KVT-${VERSION}-setup.exe)."
+LangString KvtTooOld ${LANG_ENGLISH} "Version $Installed is installed, and this update is for versions ${MIN_VERSION} and later.$\r$\n$\r$\nOpen the download page? Get the full installer KVT-${VERSION}-setup.exe — it updates KVT and keeps your settings."
+LangString KvtTooOld ${LANG_RUSSIAN} "Установлена версия $Installed, а это обновление подходит для версий от ${MIN_VERSION}.$\r$\n$\r$\nОткрыть страницу загрузки? Скачайте полную установку KVT-${VERSION}-setup.exe — она обновит KVT с сохранением настроек."
+LangString KvtNewer ${LANG_ENGLISH} "A newer version is installed ($Installed). Updating to ${VERSION} isn't needed."
+LangString KvtNewer ${LANG_RUSSIAN} "Установлена более новая версия ($Installed). Обновление до ${VERSION} не нужно."
+LangString KvtSame ${LANG_ENGLISH} "KVT ${VERSION} is already installed. Reinstall the files?"
+LangString KvtSame ${LANG_RUSSIAN} "KVT ${VERSION} уже установлен. Установить файлы заново?"
+LangString KvtClosing ${LANG_ENGLISH} "Closing the KVT window…"
+LangString KvtClosing ${LANG_RUSSIAN} "Закрытие окна KVT…"
+LangString KvtStopping ${LANG_ENGLISH} "Stopping the KVT service…"
+LangString KvtStopping ${LANG_RUSSIAN} "Остановка службы KVT…"
+LangString KvtFiles ${LANG_ENGLISH} "New files…"
+LangString KvtFiles ${LANG_RUSSIAN} "Новые файлы…"
+LangString KvtRegistering ${LANG_ENGLISH} "Registering the KVT service…"
+LangString KvtRegistering ${LANG_RUSSIAN} "Регистрация службы KVT…"
+LangString KvtWriteFiles ${LANG_ENGLISH} "writing files"
+LangString KvtWriteFiles ${LANG_RUSSIAN} "запись файлов"
+LangString KvtRollingBack ${LANG_ENGLISH} "Update failed ($2) — restoring the previous version…"
+LangString KvtRollingBack ${LANG_RUSSIAN} "Обновление не удалось ($2) — возвращаю прежнюю версию…"
+LangString KvtFailed ${LANG_ENGLISH} "Couldn't update KVT ($2). The previous version $Installed is restored and working.$\r$\n$\r$\nDownload the full installer KVT-${VERSION}-setup.exe from the download page."
+LangString KvtFailed ${LANG_RUSSIAN} "Обновить KVT не удалось ($2). Прежняя версия $Installed возвращена и работает.$\r$\n$\r$\nСкачайте полную установку KVT-${VERSION}-setup.exe со страницы загрузки."
+LangString KvtDone ${LANG_ENGLISH} "KVT updated to ${VERSION}."
+LangString KvtDone ${LANG_RUSSIAN} "KVT обновлён до ${VERSION}."
 
 
 Function .onInit
@@ -68,22 +101,22 @@ Function .onInit
   ReadRegStr $Installed HKLM "${UNINSTKEY}" "DisplayVersion"
   ${If} $INSTDIR == ""
   ${OrIfNot} ${FileExists} "$INSTDIR\kvt-service.exe"
-    MessageBox MB_ICONINFORMATION|MB_YESNO "KVT на этом компьютере не установлен — обновлять нечего.$\r$\n$\r$\nОткрыть страницу загрузки? Там есть полная установка (KVT-${VERSION}-setup.exe)." /SD IDNO IDNO +2
+    MessageBox MB_ICONINFORMATION|MB_YESNO "$(KvtNotInstalled)" /SD IDNO IDNO +2
       ExecShell "open" "${RELEASES}"
     Quit
   ${EndIf}
   ${VersionCompare} "$Installed" "${MIN_VERSION}" $1
   ${If} $1 = 2
-    MessageBox MB_ICONINFORMATION|MB_YESNO "Установлена версия $Installed, а это обновление подходит для версий от ${MIN_VERSION}.$\r$\n$\r$\nОткрыть страницу загрузки? Скачайте полную установку KVT-${VERSION}-setup.exe — она обновит KVT с сохранением настроек." /SD IDNO IDNO +2
+    MessageBox MB_ICONINFORMATION|MB_YESNO "$(KvtTooOld)" /SD IDNO IDNO +2
       ExecShell "open" "${RELEASES}"
     Quit
   ${EndIf}
   ${VersionCompare} "$Installed" "${VERSION}" $1
   ${If} $1 = 1
-    MessageBox MB_ICONEXCLAMATION|MB_OK "Установлена более новая версия ($Installed). Обновление до ${VERSION} не нужно." /SD IDOK
+    MessageBox MB_ICONEXCLAMATION|MB_OK "$(KvtNewer)" /SD IDOK
     Quit
   ${ElseIf} $1 = 0
-    MessageBox MB_ICONQUESTION|MB_YESNO "KVT ${VERSION} уже установлен. Установить файлы заново?" /SD IDYES IDYES +2
+    MessageBox MB_ICONQUESTION|MB_YESNO "$(KvtSame)" /SD IDYES IDYES +2
     Quit
   ${EndIf}
 
@@ -109,14 +142,14 @@ FunctionEnd
   ${EndIf}
 !macroend
 
-Section "Обновление"
+Section "Update"
   SetOutPath "$INSTDIR"
 
-  DetailPrint "Закрытие окна KVT…"
+  DetailPrint "$(KvtClosing)"
   nsExec::Exec 'taskkill /F /IM kvt.exe'
   Pop $1
 
-  DetailPrint "Остановка службы KVT…"
+  DetailPrint "$(KvtStopping)"
   nsExec::ExecToLog '"$INSTDIR\kvt-service.exe" stop'
   Pop $1
   ; Процесс службы отпускает файлы чуть позже, чем сообщает об остановке.
@@ -137,7 +170,7 @@ Section "Обновление"
     !insertmacro Backup "tgproxy"
   !endif
 
-  DetailPrint "Новые файлы…"
+  DetailPrint "$(KvtFiles)"
   ClearErrors
   File "${SRC}\kvt.exe"
   File "${SRC}\kvt-service.exe"
@@ -153,15 +186,15 @@ Section "Обновление"
   !endif
   StrCpy $2 0
   ${IfNot} ${Errors}
-    DetailPrint "Регистрация службы KVT…"
+    DetailPrint "$(KvtRegistering)"
     nsExec::ExecToLog '"$INSTDIR\kvt-service.exe" install'
     Pop $2
   ${Else}
-    StrCpy $2 "запись файлов"
+    StrCpy $2 "$(KvtWriteFiles)"
   ${EndIf}
 
   ${If} $2 != 0
-    DetailPrint "Обновление не удалось ($2) — возвращаю прежнюю версию…"
+    DetailPrint "$(KvtRollingBack)"
     nsExec::ExecToLog '"$INSTDIR\kvt-service.exe" stop'
     Pop $1
     Sleep 1000
@@ -180,11 +213,11 @@ Section "Обновление"
     nsExec::ExecToLog '"$INSTDIR\kvt-service.exe" install'
     Pop $1
     RMDir /r "$INSTDIR\${BACKUP}"
-    MessageBox MB_ICONEXCLAMATION|MB_OK "Обновить KVT не удалось ($2). Прежняя версия $Installed возвращена и работает.$\r$\n$\r$\nСкачайте полную установку KVT-${VERSION}-setup.exe со страницы загрузки." /SD IDOK
+    MessageBox MB_ICONEXCLAMATION|MB_OK "$(KvtFailed)" /SD IDOK
     Abort
   ${EndIf}
 
   RMDir /r "$INSTDIR\${BACKUP}"
   WriteRegStr HKLM "${UNINSTKEY}" "DisplayVersion" "${VERSION}"
-  DetailPrint "KVT обновлён до ${VERSION}."
+  DetailPrint "$(KvtDone)"
 SectionEnd

@@ -16,6 +16,8 @@
 
 pub mod wire;
 
+use crate::i18n::tr;
+use crate::trf;
 use serde::Serialize;
 use std::net::Ipv4Addr;
 
@@ -37,6 +39,8 @@ pub struct Endpoint {
 #[serde(rename_all = "camelCase")]
 pub struct Resolver {
     pub id: &'static str,
+    /// Название; на английском — через [`title_text`].
+    #[serde(serialize_with = "ser_title")]
     pub title: &'static str,
     pub udp: Ipv4Addr,
     pub dot: Endpoint,
@@ -47,6 +51,18 @@ pub struct Resolver {
     /// Откуда этот резолвер ходит к авторитетным серверам. Пусто — неизвестно.
     #[serde(skip)]
     pub egress: &'static [(Ipv4Addr, u8)],
+}
+
+/// Название резолвера на текущем языке (по-русски в каталоге только «Яндекс»).
+pub fn title_text(title: &str) -> &str {
+    match title {
+        "Яндекс" => crate::i18n::tr("Яндекс", "Yandex"),
+        other => other,
+    }
+}
+
+fn ser_title<S: serde::Serializer>(title: &&'static str, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(title_text(title))
 }
 
 impl Resolver {
@@ -276,6 +292,7 @@ pub enum PathStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ResolverReport {
     pub id: &'static str,
+    #[serde(serialize_with = "ser_title")]
     pub title: &'static str,
     pub udp: PathStatus,
     pub dot: PathStatus,
@@ -379,9 +396,9 @@ fn intercepted(
 
 fn source_title(source: Source) -> String {
     match source {
-        Source::System => "DNS сети".into(),
+        Source::System => crate::i18n::tr("DNS сети", "Network DNS").into(),
         Source::Resolver(id, via) => {
-            let title = resolver(id).map_or(id, |r| r.title);
+            let title = resolver(id).map_or(id, |r| title_text(r.title));
             let via = match via {
                 Via::Udp => "UDP",
                 Via::Dot => "DoT",
@@ -510,54 +527,87 @@ pub fn analyze(obs: &Observations) -> DnsReport {
     let (tone, title, mut detail) = match (interception, spoofing.is_empty()) {
         (true, false) => (
             Tone::Warning,
-            "Провайдер перехватывает DNS и подменяет ответы".to_owned(),
-            format!(
+            tr(
+                "Провайдер перехватывает DNS и подменяет ответы",
+                "Your ISP intercepts DNS and spoofs answers",
+            )
+            .to_owned(),
+            trf!(
                 "На запросы к публичным DNS по UDP отвечает сервер провайдера ({}), а для \
                  заблокированных сайтов он возвращает адрес заглушки.",
+                "Queries to public DNS over UDP are answered by your ISP's server ({}), and for \
+                 blocked sites it returns a block-page address.",
                 interceptor.map(|ip| ip.to_string()).unwrap_or_default()
             ),
         ),
         (true, true) => (
             Tone::Warning,
-            "Провайдер перехватывает DNS-запросы".to_owned(),
-            format!(
+            tr(
+                "Провайдер перехватывает DNS-запросы",
+                "Your ISP intercepts DNS queries",
+            )
+            .to_owned(),
+            trf!(
                 "На запросы к публичным DNS по UDP отвечает сервер провайдера ({}). Подмены \
                  ответов для проверочных сайтов не нашлось.",
+                "Queries to public DNS over UDP are answered by your ISP's server ({}). No \
+                 spoofed answers were found for the test sites.",
                 interceptor.map(|ip| ip.to_string()).unwrap_or_default()
             ),
         ),
         (false, false) => (
             Tone::Warning,
-            "DNS подменяет ответы для заблокированных сайтов".to_owned(),
-            format!(
+            tr(
+                "DNS подменяет ответы для заблокированных сайтов",
+                "DNS spoofs answers for blocked sites",
+            )
+            .to_owned(),
+            trf!(
                 "{} возвращает адрес заглушки вместо настоящего адреса сайта.",
+                "{} returns a block-page address instead of the site's real address.",
                 spoofing[0].source
             ),
         ),
         (false, true) if fake_ip => (
             Tone::Ok,
-            "На роутере работает обход блокировок".to_owned(),
-            "DNS сети отдаёт заблокированным сайтам адреса FakeIP (198.18.x.x) — так работают \
-             podkop и sing-box: роутер сам ведёт эти сайты через свой VPN. Подмены провайдером \
-             и перехвата запросов не обнаружено. С KVT это не конфликтует: при подключении DNS \
-             идёт через DoH в туннеле KVT."
-                .to_owned(),
+            tr(
+                "На роутере работает обход блокировок",
+                "Your router bypasses blocks",
+            )
+            .to_owned(),
+            tr(
+                "DNS сети отдаёт заблокированным сайтам адреса FakeIP (198.18.x.x) — так работают \
+                 podkop и sing-box: роутер сам ведёт эти сайты через свой VPN. Подмены провайдером \
+                 и перехвата запросов не обнаружено. С KVT это не конфликтует: при подключении DNS \
+                 идёт через DoH в туннеле KVT.",
+                "The network DNS gives blocked sites FakeIP addresses (198.18.x.x) — that's how \
+                 podkop and sing-box work: the router routes these sites through its own VPN. No ISP \
+                 spoofing or query interception was found. This doesn't conflict with KVT: when \
+                 connected, DNS goes over DoH inside the KVT tunnel.",
+            )
+            .to_owned(),
         ),
         (false, true) => (
             Tone::Ok,
-            "DNS работает честно".to_owned(),
-            "Перехвата запросов и подмены ответов не обнаружено.".to_owned(),
+            tr("DNS работает честно", "DNS is honest").to_owned(),
+            tr(
+                "Перехвата запросов и подмены ответов не обнаружено.",
+                "No query interception or spoofed answers found.",
+            )
+            .to_owned(),
         ),
     };
     if tone == Tone::Warning {
-        detail.push_str(
+        detail.push_str(tr(
             " При подключении через KVT это не мешает: DNS шифруется (DoH) и идёт внутри туннеля.",
-        );
+            " This doesn't matter when connected through KVT: DNS is encrypted (DoH) and goes inside the tunnel.",
+        ));
     }
     if !encrypted_available {
-        detail.push_str(
+        detail.push_str(tr(
             " Зашифрованный DNS (DoH и DoT) напрямую недоступен — похоже, провайдер его блокирует.",
-        );
+            " Encrypted DNS (DoH and DoT) isn't reachable directly — your ISP seems to block it.",
+        ));
     }
 
     DnsReport {

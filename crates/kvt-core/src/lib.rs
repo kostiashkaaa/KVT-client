@@ -13,6 +13,7 @@ pub mod diaglog;
 pub mod dns;
 pub mod flag;
 pub mod governor;
+pub mod i18n;
 pub mod ipc;
 pub mod lists;
 pub mod migrate;

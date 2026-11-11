@@ -11,6 +11,7 @@
 </script>
 
 <script lang="ts">
+  import { count, isEn, plural, t } from "./i18n";
   // Проверка компьютера: аудит системы (прокси, Teredo, другие VPN и сборки zapret)
   // и проверка утечек (открытые SOCKS5, маршруты и DNS) — одной кнопкой.
   import Icon from "./Icon.svelte";
@@ -19,9 +20,9 @@
   let { connected }: { connected: boolean } = $props();
 
   const groups: [AuditFinding["group"], string][] = [
-    ["leaks", "Утечки мимо VPN"],
-    ["conflicts", "Программы, которые мешают"],
-    ["zapret", "Другие сборки zapret"],
+    ["leaks", t("Утечки мимо VPN", "Leaks around the VPN")],
+    ["conflicts", t("Программы, которые мешают", "Interfering apps")],
+    ["zapret", t("Другие сборки zapret", "Other zapret builds")],
   ];
 
   /** Идёт исправление находки с этим ключом. */
@@ -61,22 +62,22 @@
   function fixLabel(fix: AuditFix): string {
     switch (fix.kind) {
       case "disable_system_proxy":
-        return "Выключить прокси";
+        return t("Выключить прокси", "Turn off proxy");
       case "close_process":
-        return `Закрыть ${fix.name}`;
+        return t(`Закрыть ${fix.name}`, `Close ${fix.name}`);
       case "stop_zapret":
-        return "Остановить";
+        return t("Остановить", "Stop");
       case "disable_user_autostart":
-        return "Отключить автозапуск";
+        return t("Отключить автозапуск", "Disable autostart");
       case "service":
         switch (fix.action) {
           case "reset_win_http_proxy":
-            return "Сбросить прокси";
+            return t("Сбросить прокси", "Reset proxy");
           case "disable_teredo":
-            return "Выключить Teredo";
+            return t("Выключить Teredo", "Turn off Teredo");
           case "disable_zapret_service":
           case "disable_autostart":
-            return "Отключить автозапуск";
+            return t("Отключить автозапуск", "Disable autostart");
         }
     }
   }
@@ -95,8 +96,8 @@
       out.push({
         group: "leaks",
         level: "ok",
-        title: "Открытые прокси",
-        detail: "Не найдено: программы не узнают адрес VPN-сервера через локальный порт.",
+        title: t("Открытые прокси", "Open proxies"),
+        detail: t("Не найдено: программы не узнают адрес VPN-сервера через локальный порт.", "None found: apps can't learn the VPN server address through a local port."),
         fix: null,
       });
     }
@@ -104,19 +105,23 @@
       out.push({
         group: "leaks",
         level: "warning",
-        title: `Открытый SOCKS5 на порту ${p.port}`,
-        detail:
+        title: t(`Открытый SOCKS5 на порту ${p.port}`, `Open SOCKS5 on port ${p.port}`),
+        detail: t(
           `${p.process ?? "Неизвестная программа"} пускает без пароля: любое приложение узнает через него IP ` +
-          `VPN-сервера.${p.knownScanPort ? " Этот порт ищут в первую очередь." : ""} Включите в той программе ` +
-          "пароль для прокси или режим TUN.",
+            `VPN-сервера.${p.knownScanPort ? " Этот порт ищут в первую очередь." : ""} Включите в той программе ` +
+            "пароль для прокси или режим TUN.",
+          `${p.process ?? "An unknown app"} lets anyone in without a password: any app can learn the VPN server's IP ` +
+            `through it.${p.knownScanPort ? " This port is scanned first." : ""} Turn on a proxy password or TUN mode ` +
+            "in that app.",
+        ),
         fix: null,
       });
     }
     // Без VPN маршруты и DNS идут напрямую — это не утечка, строки не нужны.
     if (l.connected) {
       for (const [title, r] of [
-        ["Маршрут IPv4", l.ipv4Route],
-        ["Маршрут IPv6", l.ipv6Route],
+        [t("Маршрут IPv4", "IPv4 route"), l.ipv4Route],
+        [t("Маршрут IPv6", "IPv6 route"), l.ipv6Route],
         ["DNS", l.dns],
       ] as const) {
         out.push({ group: "leaks", level: r.verdict, title, detail: r.detail, fix: null });
@@ -131,31 +136,23 @@
   /** VPN включили или выключили после проверки: маршруты и DNS уже другие. */
   const stale = $derived(st.leaks !== null && st.leaks.connected !== connected);
 
-  function plural(n: number, one: string, few: string, many: string): string {
-    const d = n % 10;
-    const dd = n % 100;
-    if (d === 1 && dd !== 11) return one;
-    if (d >= 2 && d <= 4 && (dd < 12 || dd > 14)) return few;
-    return many;
-  }
 </script>
 
 <section class="card block" aria-labelledby="audit-title">
   <div class="row">
     <div>
-      <h2 id="audit-title">Проверка компьютера</h2>
+      <h2 id="audit-title">{t("Проверка компьютера", "Computer check")}</h2>
       <p class="muted">
-        Что пускает трафик мимо VPN или мешает KVT: открытые прокси, Teredo, другие VPN и сборки zapret, а при
-        подключённом VPN — маршруты и DNS. Систему только читает; исправления — по кнопке.
+        {t("Что пускает трафик мимо VPN или мешает KVT: открытые прокси, Teredo, другие VPN и сборки zapret, а при подключённом VPN — маршруты и DNS. Систему только читает; исправления — по кнопке.", "What lets traffic around the VPN or interferes with KVT: open proxies, Teredo, other VPNs and zapret builds, and — with the VPN on — routes and DNS. Only reads the system; fixes are applied by button.")}
       </p>
     </div>
     <button class="btn" class:busy={st.running} disabled={st.running} onclick={run}>
-      <Icon name="shield" size={16} />{done ? "Проверить снова" : "Проверить компьютер"}
+      <Icon name="shield" size={16} />{done ? t("Проверить снова", "Check again") : t("Проверить компьютер", "Check computer")}
     </button>
   </div>
 
   {#if st.running && !done}
-    <p class="caption">Собираю сведения о системе — несколько секунд.</p>
+    <p class="caption">{t("Собираю сведения о системе — несколько секунд.", "Collecting system information — a few seconds.")}</p>
   {/if}
   {#if st.error}
     <p class="error-text">{st.error}</p>
@@ -165,15 +162,19 @@
     <div class="verdict" class:warning={warnings > 0} role="status">
       <strong>
         {#if warnings === 0}
-          Ничего не мешает VPN
+          {t("Ничего не мешает VPN", "Nothing interferes with the VPN")}
         {:else}
-          {warnings}
-          {plural(warnings, "проблема", "проблемы", "проблем")}
-          {plural(warnings, "мешает", "мешают", "мешают")} VPN
+          {isEn()
+            ? `${count(warnings, ["", "", ""], ["problem interferes", "problems interfere"])} with the VPN`
+            : `${count(warnings, ["проблема", "проблемы", "проблем"], ["", ""])} ${plural(warnings, ["мешает", "мешают", "мешают"], ["", ""])} VPN`}
         {/if}
       </strong>
       {#if stale}
-        <p>VPN {connected ? "подключили" : "отключили"} после проверки — проверьте снова.</p>
+        <p>
+          {connected
+            ? t("VPN подключили после проверки — проверьте снова.", "The VPN was connected after the check — check again.")
+            : t("VPN отключили после проверки — проверьте снова.", "The VPN was disconnected after the check — check again.")}
+        </p>
       {/if}
     </div>
 
@@ -205,7 +206,7 @@
                       {fixLabel(fix)}
                     </button>
                     {#if needsService(fix)}
-                      <span class="caption">через службу KVT</span>
+                      <span class="caption">{t("через службу KVT", "via the KVT service")}</span>
                     {/if}
                   </div>
                 {/if}
@@ -214,7 +215,7 @@
           {/each}
         </ul>
         {#if group === "leaks" && st.leaks && !st.leaks.connected}
-          <p class="caption">Маршруты и DNS проверяются при подключённом VPN.</p>
+          <p class="caption">{t("Маршруты и DNS проверяются при подключённом VPN.", "Routes and DNS are checked with the VPN on.")}</p>
         {/if}
       {/if}
     {/each}

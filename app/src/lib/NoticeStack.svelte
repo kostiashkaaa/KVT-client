@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "./i18n";
   import Banner from "./Banner.svelte";
   import { dismiss, hover, notices } from "./notices.svelte";
 </script>
@@ -14,7 +15,7 @@
         onmouseleave={() => hover(n.id, false)}
       >
         <Banner tone={n.tone}>
-          {n.text}{#if n.count > 1}<span class="count" title="Пришло {n.count} раза">&nbsp;×{n.count}</span>{/if}
+          {n.text}{#if n.count > 1}<span class="count" title={t(`Пришло ${n.count} раза`, `Came ${n.count} times`)}>&nbsp;×{n.count}</span>{/if}
           {#snippet action()}
             {#each n.actions as a (a.label)}
               <button

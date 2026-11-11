@@ -45,7 +45,7 @@ fn validate_id(id: &str) -> Result<(), ParseError> {
     } else {
         Err(ParseError::InvalidField {
             field: "id",
-            reason: "не UUID",
+            reason: crate::i18n::tr("не UUID", "not a UUID"),
         })
     }
 }

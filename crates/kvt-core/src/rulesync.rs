@@ -230,7 +230,10 @@ async fn sync_itdog<H: Http>(
             for f in files {
                 report.failed.push((
                     f.local.clone(),
-                    format!("не удалось получить релиз itdoginfo: {e}"),
+                    crate::trf!(
+                        "не удалось получить релиз itdoginfo: {e}",
+                        "couldn't get the itdoginfo release: {e}"
+                    ),
                 ));
             }
             return;

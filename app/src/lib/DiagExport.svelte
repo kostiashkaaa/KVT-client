@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "./i18n";
   import { fade } from "svelte/transition";
   import Icon from "./Icon.svelte";
   import { diagPreview, diagSave, type DiagFile } from "./api";
@@ -16,9 +17,9 @@
 
   function size(text: string): string {
     const bytes = new TextEncoder().encode(text).length;
-    if (bytes === 0) return "пусто";
-    if (bytes < 1024) return `${bytes} Б`;
-    return `${Math.round(bytes / 102.4) / 10} КБ`;
+    if (bytes === 0) return t("пусто", "empty");
+    if (bytes < 1024) return t(`${bytes} Б`, `${bytes} B`);
+    return t(`${Math.round(bytes / 102.4) / 10} КБ`, `${Math.round(bytes / 102.4) / 10} KB`);
   }
 
   async function start() {
@@ -65,7 +66,7 @@
   }
 </script>
 
-<button class="btn" bind:this={opener} onclick={start}><Icon name="log" size={16} />Сохранить диагностику</button>
+<button class="btn" bind:this={opener} onclick={start}><Icon name="log" size={16} />{t("Сохранить диагностику", "Save diagnostics")}</button>
 
 {#if open}
   <div
@@ -84,14 +85,13 @@
     }}
   >
     <section class="card dialog">
-      <h2 id="diag-title">Что войдёт в диагностику</h2>
+      <h2 id="diag-title">{t("Что войдёт в диагностику", "What goes into diagnostics")}</h2>
       <p class="muted">
-        Архив для разбора проблемы: журналы, итоги проверок и конфиг ядра. Ключи, пароли, UUID, ссылки подписок и адреса
-        серверов уже скрыты — нажмите на файл, чтобы увидеть его целиком.
+        {t("Архив для разбора проблемы: журналы, итоги проверок и конфиг ядра. Ключи, пароли, UUID, ссылки подписок и адреса серверов уже скрыты — нажмите на файл, чтобы увидеть его целиком.", "An archive for troubleshooting: logs, check results and the core config. Keys, passwords, UUIDs, subscription links and server addresses are already hidden — click a file to see it in full.")}
       </p>
 
       {#if loading}
-        <p class="caption"><span class="spinner" aria-hidden="true"></span> Собираем…</p>
+        <p class="caption"><span class="spinner" aria-hidden="true"></span> {t("Собираем…", "Collecting…")}</p>
       {:else if files.length > 0}
         <ul class="files">
           {#each files as f (f.name)}
@@ -106,7 +106,7 @@
                 <span class="caption">{size(f.text)}</span>
               </button>
               {#if shown === f.name}
-                <pre class="appear">{f.text || "(пусто)"}</pre>
+                <pre class="appear">{f.text || t("(пусто)", "(empty)")}</pre>
               {/if}
             </li>
           {/each}
@@ -117,18 +117,18 @@
         <p class="error-text appear">{error}</p>
       {/if}
       {#if saved}
-        <p class="caption appear">Архив сохранён. Приложите его к сообщению об ошибке на GitHub.</p>
+        <p class="caption appear">{t("Архив сохранён. Приложите его к сообщению об ошибке на GitHub.", "Archive saved. Attach it to your bug report on GitHub.")}</p>
       {/if}
 
       <div class="actions">
-        <button class="btn" onclick={close} disabled={saving}>{saved ? "Готово" : "Отмена"}</button>
+        <button class="btn" onclick={close} disabled={saving}>{saved ? t("Готово", "Done") : t("Отмена", "Cancel")}</button>
         <button
           class="btn btn-primary"
           class:busy={saving}
           disabled={loading || saving || files.length === 0}
           onclick={save}
         >
-          Сохранить…
+          {t("Сохранить…", "Save…")}
         </button>
       </div>
     </section>

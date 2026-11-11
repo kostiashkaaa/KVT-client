@@ -165,7 +165,7 @@ pub fn log_probe(sni: &str, verdict: Verdict, observation: &ProbeObservation) {
         Route::TestCore,
         outcome,
     )
-    .detail(verdict.message_ru());
+    .detail(verdict.message());
     if let Some(latency) = observation.latency {
         event = event.ms(latency);
     }

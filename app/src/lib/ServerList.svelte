@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { locale, t } from "./i18n";
   import { slide } from "svelte/transition";
   import Icon from "./Icon.svelte";
   import Flag, { country } from "./Flag.svelte";
@@ -61,29 +62,29 @@
   function outcomeCell(o: Outcome): Cell {
     if (o.kind === "deferred") {
       return {
-        text: "позже",
+        text: t("позже", "later"),
         tone: "muted",
-        hint: `Не проверялся, чтобы не вызвать заморозку у провайдера. Повторите через ${Math.ceil(o.retry_after_secs / 60)} мин`,
+        hint: t(`Не проверялся, чтобы не вызвать заморозку у провайдера. Повторите через ${Math.ceil(o.retry_after_secs / 60)} мин`, `Not checked to avoid triggering throttling by your ISP. Try again in ${Math.ceil(o.retry_after_secs / 60)} min`),
       };
     }
-    const ms = o.latency_ms != null ? `${o.latency_ms} мс` : "";
+    const ms = o.latency_ms != null ? t(`${o.latency_ms} мс`, `${o.latency_ms} ms`) : "";
     switch (o.verdict) {
       case "works":
-        return { text: ms || "работает", tone: "good", hint: "Работает: отклик через туннель и загрузка 200 КБ" };
+        return { text: ms || t("работает", "works"), tone: "good", hint: t("Работает: отклик через туннель и загрузка 200 КБ", "Works: response through the tunnel and a 200 KB download") };
       case "slow":
-        return { text: ms || "медленно", tone: "warn", hint: "Работает, но отвечает медленно" };
+        return { text: ms || t("медленно", "slow"), tone: "warn", hint: t("Работает, но отвечает медленно", "Works, but responds slowly") };
       case "data_frozen":
-        return { text: "режет DPI", tone: "bad", hint: "Соединение обрывается после первых килобайт — провайдер режет этот сервер" };
+        return { text: t("режет DPI", "cut by DPI"), tone: "bad", hint: t("Соединение обрывается после первых килобайт — провайдер режет этот сервер", "The connection drops after the first kilobytes — your ISP is cutting this server") };
       case "tls_frozen":
-        return { text: "заморожен", tone: "bad", hint: "Провайдер притормозил соединение — попробуйте позже или другой сервер" };
+        return { text: t("заморожен", "frozen"), tone: "bad", hint: t("Провайдер притормозил соединение — попробуйте позже или другой сервер", "Your ISP stalled the connection — try later or another server") };
       case "unreachable":
-        return { text: "нет связи", tone: "bad", hint: "Сервер недоступен — возможно, заблокирован его IP" };
+        return { text: t("нет связи", "unreachable"), tone: "bad", hint: t("Сервер недоступен — возможно, заблокирован его IP", "Server unreachable — its IP may be blocked") };
       case "dns_failed":
-        return { text: "DNS", tone: "bad", hint: "Не удалось найти адрес сервера" };
+        return { text: "DNS", tone: "bad", hint: t("Не удалось найти адрес сервера", "Couldn't find the server address") };
       case "rejected":
-        return { text: "отклонён", tone: "bad", hint: "Сервер отклонил подключение — возможно, подписка устарела" };
+        return { text: t("отклонён", "rejected"), tone: "bad", hint: t("Сервер отклонил подключение — возможно, подписка устарела", "The server rejected the connection — the subscription may have expired") };
       case "config_error":
-        return { text: "не поддерж.", tone: "muted", hint: "Этот сервер не поддерживается ядром KVT" };
+        return { text: t("не поддерж.", "unsupported"), tone: "muted", hint: t("Этот сервер не поддерживается ядром KVT", "This server isn't supported by KVT's core") };
     }
   }
 
@@ -91,16 +92,16 @@
     switch (r?.kind) {
       case "reachable":
         return {
-          text: `${r.latency_ms} мс`,
+          text: t(`${r.latency_ms} мс`, `${r.latency_ms} ms`),
           tone: r.latency_ms < 300 ? "good" : "",
-          hint: "Время TCP-соединения до сервера",
+          hint: t("Время TCP-соединения до сервера", "TCP connection time to the server"),
         };
       case "unreachable":
-        return { text: "нет связи", tone: "bad", hint: "Сервер не принимает соединения — возможно, его IP заблокирован" };
+        return { text: t("нет связи", "unreachable"), tone: "bad", hint: t("Сервер не принимает соединения — возможно, его IP заблокирован", "The server doesn't accept connections — its IP may be blocked") };
       case "dns_failed":
-        return { text: "DNS", tone: "bad", hint: "Не удалось найти адрес сервера" };
+        return { text: "DNS", tone: "bad", hint: t("Не удалось найти адрес сервера", "Couldn't find the server address") };
       case "not_applicable":
-        return { text: "UDP", tone: "muted", hint: "Hysteria2 и TUIC работают по UDP — проверяются только при подключении" };
+        return { text: "UDP", tone: "muted", hint: t("Hysteria2 и TUIC работают по UDP — проверяются только при подключении", "Hysteria2 and TUIC use UDP — they're only checked when connecting") };
       default:
         return { text: "—", tone: "muted", hint: "" };
     }
@@ -109,7 +110,7 @@
   function cell(group: string, key: string): Cell {
     const o = outcomes[key];
     if (o) return outcomeCell(o);
-    if (fullChecking === group || checking === group) return { text: "…", tone: "muted", hint: "Проверяется" };
+    if (fullChecking === group || checking === group) return { text: "…", tone: "muted", hint: t("Проверяется", "Checking") };
     return latency(results[key]);
   }
 
@@ -122,11 +123,11 @@
   const names = $derived(new Map(groups.flatMap((g) => g.servers.map((s) => [s.key, s.name] as const))));
 
   const GB = 2 ** 30;
-  const gb = (bytes: number) => (bytes / GB).toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+  const gb = (bytes: number) => (bytes / GB).toLocaleString(locale(), { maximumFractionDigits: 1 });
 
   function usage(m: SubscriptionInfo): string | null {
     if (m.usedBytes == null || !m.totalBytes) return null;
-    return `${gb(m.usedBytes)} из ${gb(m.totalBytes)} ГБ`;
+    return t(`${gb(m.usedBytes)} из ${gb(m.totalBytes)} ГБ`, `${gb(m.usedBytes)} of ${gb(m.totalBytes)} GB`);
   }
 
   /** «34 из 100 ГБ · до 19 декабря»; срок подсвечивается, когда кончается. */
@@ -139,10 +140,10 @@
   function expiry(m: SubscriptionInfo): { text: string; soon: boolean } | null {
     if (m.expire == null) return null;
     const days = Math.ceil((m.expire * 1000 - Date.now()) / 86_400_000);
-    if (days < 0) return { text: "закончилась", soon: true };
-    if (days === 0) return { text: "заканчивается сегодня", soon: true };
-    const date = new Date(m.expire * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
-    return { text: `до ${date}`, soon: days <= 3 };
+    if (days < 0) return { text: t("закончилась", "expired"), soon: true };
+    if (days === 0) return { text: t("заканчивается сегодня", "expires today"), soon: true };
+    const date = new Date(m.expire * 1000).toLocaleDateString(locale(), { day: "numeric", month: "long" });
+    return { text: t(`до ${date}`, `until ${date}`), soon: days <= 3 };
   }
 
   // Свёрнутые группы запоминаются на этом компьютере (только вид, не настройка).
@@ -219,21 +220,21 @@
 
 <section class="card list">
   <header class="toolbar">
-    <h2>Серверы</h2>
+    <h2>{t("Серверы", "Servers")}</h2>
     <span class="caption">{total}</span>
     {#if total > SEARCH_FROM}
       <input
         class="search"
         type="search"
-        placeholder="Поиск по всем подпискам"
-        aria-label="Поиск сервера"
+        placeholder={t("Поиск по всем подпискам", "Search all subscriptions")}
+        aria-label={t("Поиск сервера", "Search servers")}
         autocomplete="off"
         spellcheck="false"
         bind:value={query}
       />
-      {#if searching}<span class="caption">{found} из {total}</span>{/if}
+      {#if searching}<span class="caption">{t(`${found} из ${total}`, `${found} of ${total}`)}</span>{/if}
     {/if}
-    <button class="btn add" onclick={onadd} title="Добавить подписку или ключ" aria-label="Добавить подписку или ключ">
+    <button class="btn add" onclick={onadd} title={t("Добавить подписку или ключ", "Add a subscription or key")} aria-label={t("Добавить подписку или ключ", "Add a subscription or key")}>
       <Icon name="plus" size={16} />
     </button>
   </header>
@@ -242,7 +243,7 @@
        вместе со страницей (шапка прилипает к верху окна). -->
   <div class="body">
   {#if searching && visible.length === 0}
-    <p class="empty caption">Ничего не найдено</p>
+    <p class="empty caption">{t("Ничего не найдено", "Nothing found")}</p>
   {/if}
 
   {#each visible as { g, servers } (g.id)}
@@ -265,8 +266,8 @@
               class="btn ghost square"
               disabled={refreshing !== null}
               onclick={() => onrefresh(g.id)}
-              title="Обновить подписку"
-              aria-label={`Обновить ${g.title}`}
+              title={t("Обновить подписку", "Update subscription")}
+              aria-label={t(`Обновить ${g.title}`, `Update ${g.title}`)}
             >
               <span class="glyph" class:spin={refreshing === g.id}><Icon name="refresh" size={16} /></span>
             </button>
@@ -277,9 +278,9 @@
             class:busy={checking === g.id}
             disabled={checking !== null || fullChecking !== null}
             onclick={() => oncheck(g.id)}
-            title="Пинг: только TCP-соединение, без TLS — не привлекает внимание DPI"
+            title={t("Пинг: только TCP-соединение, без TLS — не привлекает внимание DPI", "Ping: TCP connection only, no TLS — doesn't attract DPI attention")}
           >
-            Пинг
+            {t("Пинг", "Ping")}
           </button>
           <button
             class="btn ghost"
@@ -287,9 +288,9 @@
             disabled={checking !== null || fullChecking !== null || fullCheckBlocked !== null}
             onclick={() => onfullcheck(g.id)}
             title={fullCheckBlocked ??
-              "Подключается к каждому серверу и скачивает 200 КБ. Серверы с одинаковым SNI проверяются по очереди, чтобы не вызвать заморозку у провайдера"}
+              t("Подключается к каждому серверу и скачивает 200 КБ. Серверы с одинаковым SNI проверяются по очереди, чтобы не вызвать заморозку у провайдера", "Connects to each server and downloads 200 KB. Servers with the same SNI are checked one at a time to avoid throttling by your ISP")}
           >
-            Проверить
+            {t("Проверить", "Check")}
           </button>
         </div>
       </div>
@@ -318,8 +319,8 @@
                   <span class="sub"
                     >{label(s)}{#if s.sameAs && names.has(s.sameAs)}<span
                         class="same"
-                        title="Тот же адрес, порт и ключ — отличается только название. Автопереключение его не перебирает."
-                        > · тот же сервер, что «{names.get(s.sameAs)}»</span
+                        title={t("Тот же адрес, порт и ключ — отличается только название. Автопереключение его не перебирает.", "Same address, port and key — only the name differs. Auto-switch skips it.")}
+                        > {t(`· тот же сервер, что «${names.get(s.sameAs)}»`, `· same server as “${names.get(s.sameAs)}”`)}</span
                       >{/if}</span
                   >
                 </span>
@@ -334,8 +335,8 @@
                 <button
                   class="remove"
                   class:shown={confirmKey === s.key}
-                  title="Удалить ключ"
-                  aria-label={`Удалить ключ ${s.name}`}
+                  title={t("Удалить ключ", "Delete key")}
+                  aria-label={t(`Удалить ключ ${s.name}`, `Delete key ${s.name}`)}
                   onclick={() => (confirmKey = confirmKey === s.key ? null : s.key)}
                 >
                   <Icon name="trash" size={16} />
@@ -345,24 +346,24 @@
             {#if confirmKey === s.key && onremove}
               <li class="confirm" transition:slide={{ duration: 150 }}>
                 <span class="caption">
-                  Удалить ключ «{s.name}»?{#if selected === s.key} Если VPN подключён к нему, он отключится.{/if}
+                  {t(`Удалить ключ «${s.name}»?`, `Delete key “${s.name}”?`)}{#if selected === s.key} {t("Если VPN подключён к нему, он отключится.", "If the VPN is connected to it, it will disconnect.")}{/if}
                 </span>
                 <button class="btn danger" disabled={removing} onclick={() => void remove(s.key)}>
-                  {#if removing}<span class="spinner" aria-hidden="true"></span>{/if}Удалить
+                  {#if removing}<span class="spinner" aria-hidden="true"></span>{/if}{t("Удалить", "Delete")}
                 </button>
-                <button class="btn" disabled={removing} onclick={() => (confirmKey = null)}>Отмена</button>
+                <button class="btn" disabled={removing} onclick={() => (confirmKey = null)}>{t("Отмена", "Cancel")}</button>
               </li>
             {/if}
           {/each}
         </ul>
         {#if servers.length > limitOf(g.id)}
           <p class="caption more" use:more={() => grow(g.id)}>
-            Показано {limitOf(g.id)} из {servers.length}
-            <button class="btn ghost" onclick={() => grow(g.id)}>Показать ещё</button>
+            {t(`Показано ${limitOf(g.id)} из ${servers.length}`, `Showing ${limitOf(g.id)} of ${servers.length}`)}
+            <button class="btn ghost" onclick={() => grow(g.id)}>{t("Показать ещё", "Show more")}</button>
           </p>
         {/if}
         {#if g.errors > 0}
-          <p class="caption skipped">Пропущено строк с ошибками: {g.errors}</p>
+          <p class="caption skipped">{t(`Пропущено строк с ошибками: ${g.errors}`, `Lines skipped with errors: ${g.errors}`)}</p>
         {/if}
         </div>
       {/if}
@@ -432,10 +433,23 @@
     padding: var(--space-3) var(--space-5);
   }
 
+  /* Акцентом, как выбранный режим на главной: на тёмном фоне серая кнопка терялась. */
   .add {
     width: 32px;
     margin-left: auto;
     padding: 0;
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+    color: var(--accent);
+  }
+
+  .add:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent-subtle), var(--accent) 18%);
+  }
+
+  .add:active:not(:disabled) {
+    background: color-mix(in srgb, var(--accent-subtle), var(--accent) 8%);
+    color: var(--accent);
   }
 
   .empty {

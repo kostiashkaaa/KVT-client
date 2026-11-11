@@ -160,31 +160,37 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
         Protocol::Hysteria2 { .. } => {
             return Err(CompileError::Unsupported {
                 core: CORE,
-                feature: "Hysteria2 (используйте sing-box)",
+                feature: crate::i18n::tr(
+                    "Hysteria2 (используйте sing-box)",
+                    "Hysteria2 (use sing-box)",
+                ),
             })
         }
         Protocol::Tuic { .. } => {
             return Err(CompileError::Unsupported {
                 core: CORE,
-                feature: "TUIC (используйте sing-box)",
+                feature: crate::i18n::tr("TUIC (используйте sing-box)", "TUIC (use sing-box)"),
             })
         }
         Protocol::AnyTls { .. } => {
             return Err(CompileError::Unsupported {
                 core: CORE,
-                feature: "AnyTLS (используйте sing-box)",
+                feature: crate::i18n::tr("AnyTLS (используйте sing-box)", "AnyTLS (use sing-box)"),
             })
         }
         Protocol::Socks { .. } => {
             return Err(CompileError::Unsupported {
                 core: CORE,
-                feature: "SOCKS5 (используйте sing-box)",
+                feature: crate::i18n::tr("SOCKS5 (используйте sing-box)", "SOCKS5 (use sing-box)"),
             })
         }
         Protocol::Http { .. } => {
             return Err(CompileError::Unsupported {
                 core: CORE,
-                feature: "HTTP-прокси (используйте sing-box)",
+                feature: crate::i18n::tr(
+                    "HTTP-прокси (используйте sing-box)",
+                    "HTTP proxy (use sing-box)",
+                ),
             })
         }
     };
@@ -223,7 +229,7 @@ fn stream_settings(s: &Server) -> Result<Value, CompileError> {
         Transport::Quic => {
             return Err(CompileError::Unsupported {
                 core: CORE,
-                feature: "QUIC-транспорт",
+                feature: crate::i18n::tr("QUIC-транспорт", "QUIC transport"),
             })
         }
     };

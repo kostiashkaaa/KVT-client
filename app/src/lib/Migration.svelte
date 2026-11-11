@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { count, t } from "./i18n";
   import Icon from "./Icon.svelte";
   import {
     migrateImport,
@@ -68,32 +69,23 @@
   const selected = $derived(found?.filter((p) => chosen.includes(p.location)) ?? []);
   const serversCount = $derived(selected.reduce((n, p) => n + p.servers.length, 0));
 
-  function plural(n: number, one: string, few: string, many: string): string {
-    const d = n % 10;
-    const dd = n % 100;
-    if (d === 1 && dd !== 11) return one;
-    if (d >= 2 && d <= 4 && (dd < 12 || dd > 14)) return few;
-    return many;
-  }
-
-  const subs = (n: number) => `${n} ${plural(n, "подписка", "подписки", "подписок")}`;
-  const servers = (n: number) => `${n} ${plural(n, "сервер", "сервера", "серверов")}`;
+  const subs = (n: number) => count(n, ["подписка", "подписки", "подписок"], ["subscription", "subscriptions"]);
+  const servers = (n: number) => count(n, ["сервер", "сервера", "серверов"], ["server", "servers"]);
 </script>
 
 <section class="card block" aria-labelledby="migrate-title">
   <div class="row">
     <div>
-      <h2 id="migrate-title">Перенести из другого клиента</h2>
+      <h2 id="migrate-title">{t("Перенести из другого клиента", "Import from another client")}</h2>
       <p class="muted">
-        Найдёт на компьютере v2rayN, Throne, NekoRay и Hiddify и перенесёт подписки и серверы, добавленные вручную.
-        Данные этих программ только читаются — в них ничего не меняется.
+        {t("Найдёт на компьютере v2rayN, Throne, NekoRay и Hiddify и перенесёт подписки и серверы, добавленные вручную. Данные этих программ только читаются — в них ничего не меняется.", "Finds v2rayN, Throne, NekoRay and Hiddify on this computer and imports subscriptions and manually added servers. Those apps' data is only read — nothing in them changes.")}
       </p>
     </div>
     <div class="actions">
       <button class="btn" class:busy={scanning} disabled={scanning || importing} onclick={scan}>
-        <Icon name="refresh" size={16} />Найти
+        <Icon name="refresh" size={16} />{t("Найти", "Find")}
       </button>
-      <button class="btn" disabled={scanning || importing} onclick={pick}>Указать папку</button>
+      <button class="btn" disabled={scanning || importing} onclick={pick}>{t("Указать папку", "Choose folder")}</button>
     </div>
   </div>
 
@@ -103,19 +95,18 @@
 
   {#if report}
     <div class="verdict appear" role="status">
-      <strong>Перенос завершён</strong>
+      <strong>{t("Перенос завершён", "Import complete")}</strong>
       <ul>
-        {#if report.loaded > 0}<li>Загружено подписок: {report.loaded}</li>{/if}
+        {#if report.loaded > 0}<li>{t(`Загружено подписок: ${report.loaded}`, `Subscriptions loaded: ${report.loaded}`)}</li>{/if}
         {#if report.pending > 0}
           <li>
-            Сохранено, но пока не загрузилось: {report.pending}. Сайт провайдера может быть недоступен без VPN —
-            подключитесь и нажмите «Обновить» у подписки.
+            {t(`Сохранено, но пока не загрузилось: ${report.pending}. Сайт провайдера может быть недоступен без VPN — подключитесь и нажмите «Обновить» у подписки.`, `Saved but not loaded yet: ${report.pending}. The provider's site may be unreachable without the VPN — connect and press “Update” on the subscription.`)}
           </li>
         {/if}
-        {#if report.existing > 0}<li>Уже были в KVT: {report.existing}</li>{/if}
-        {#if report.servers > 0}<li>Серверов в группе «Добавлено вручную»: {report.servers}</li>{/if}
+        {#if report.existing > 0}<li>{t(`Уже были в KVT: ${report.existing}`, `Already in KVT: ${report.existing}`)}</li>{/if}
+        {#if report.servers > 0}<li>{t(`Серверов в группе «Добавлено вручную»: ${report.servers}`, `Servers in the “Added manually” group: ${report.servers}`)}</li>{/if}
         {#if report.loaded + report.pending + report.servers === 0 && report.existing === 0}
-          <li>Переносить оказалось нечего.</li>
+          <li>{t("Переносить оказалось нечего.", "There was nothing to import.")}</li>
         {/if}
       </ul>
     </div>
@@ -124,7 +115,7 @@
   {#if found}
     {#if found.length === 0}
       <p class="caption appear">
-        Ничего не нашлось. Если программа лежит в другом месте, нажмите «Указать папку» и выберите её папку.
+        {t("Ничего не нашлось. Если программа лежит в другом месте, нажмите «Указать папку» и выберите её папку.", "Nothing found. If the app is somewhere else, press “Choose folder” and select its folder.")}
       </p>
     {:else}
       <ul class="clients appear">
@@ -151,16 +142,16 @@
             {/if}
             {#if p.servers.length > 0}
               <p class="caption">
-                {servers(p.servers.length)} вручную: {p.servers.map((s) => `${s.name} — ${s.protocol}`).join(", ")}
+                {t(`${servers(p.servers.length)} вручную: ${p.servers.map((s) => `${s.name} — ${s.protocol}`).join(", ")}`, `${servers(p.servers.length)} added manually: ${p.servers.map((s) => `${s.name} — ${s.protocol}`).join(", ")}`)}
               </p>
             {/if}
             {#if p.skipped.length > 0}
               <p class="caption">
-                Не перенесётся: {p.skipped.map((s) => `${s.count} — ${s.reason}`).join("; ")}
+                {t(`Не перенесётся: ${p.skipped.map((s) => `${s.count} — ${s.reason}`).join("; ")}`, `Won't be imported: ${p.skipped.map((s) => `${s.count} — ${s.reason}`).join("; ")}`)}
               </p>
             {/if}
             {#if can === false && !p.note}
-              <p class="caption">Подписок и серверов не найдено.</p>
+              <p class="caption">{t("Подписок и серверов не найдено.", "No subscriptions or servers found.")}</p>
             {/if}
           </li>
         {/each}
@@ -171,7 +162,7 @@
           {#if serversCount > 0}
             <label class="check">
               <input type="checkbox" bind:checked={withServers} disabled={importing} />
-              Перенести и серверы, добавленные вручную ({serversCount})
+              {t(`Перенести и серверы, добавленные вручную (${serversCount})`, `Also import manually added servers (${serversCount})`)}
             </label>
           {/if}
           <button
@@ -180,11 +171,11 @@
             disabled={importing || selected.length === 0}
             onclick={run}
           >
-            Перенести
+            {t("Перенести", "Import")}
           </button>
         </div>
         <p class="caption">
-          Серверы из подписок переносятся вместе с подпиской: KVT загрузит их сам и будет обновлять.
+          {t("Серверы из подписок переносятся вместе с подпиской: KVT загрузит их сам и будет обновлять.", "Servers from subscriptions come with the subscription: KVT loads and updates them itself.")}
         </p>
       {/if}
     {/if}

@@ -121,7 +121,7 @@ pub(crate) fn title(s: &Subscription) -> String {
                 .as_ref()
                 .and_then(|u| url::Url::parse(u.expose()).ok())
                 .and_then(|u| u.host_str().map(str::to_owned))
-                .unwrap_or_else(|| "Добавлено вручную".into())
+                .unwrap_or_else(|| kvt_core::i18n::tr("Добавлено вручную", "Added manually").into())
         })
 }
 

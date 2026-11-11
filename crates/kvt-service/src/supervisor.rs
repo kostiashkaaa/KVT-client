@@ -69,8 +69,13 @@ impl Paths {
 /// Каталог только для SYSTEM (S-1-5-18) и администраторов (S-1-5-32-544).
 /// SID вместо имён — имена групп локализованы («Администраторы»).
 pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir)
-        .map_err(|e| format!("не удалось создать {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir).map_err(|e| {
+        kvt_core::trf!(
+            "не удалось создать {}: {e}",
+            "couldn't create {}: {e}",
+            dir.display()
+        )
+    })?;
     let status = std::process::Command::new("icacls")
         .arg(dir)
         .args([
@@ -88,7 +93,11 @@ pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!("не удалось ограничить доступ к {}", dir.display()))
+        Err(kvt_core::trf!(
+            "не удалось ограничить доступ к {}",
+            "couldn't restrict access to {}",
+            dir.display()
+        ))
     }
 }
 
@@ -182,8 +191,9 @@ impl Supervisor {
             if self.kill_switch.is_none() {
                 // Защиту включали до переподключения — не снимаем её из-за сбоя.
                 self.kill_switch = Some(previous);
-                return Err(format!(
-                    "{e}. Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново"
+                return Err(kvt_core::trf!(
+                    "{e}. Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново",
+                    "{e}. The kill switch is keeping the internet blocked — press “Disconnect” or connect again"
                 ));
             }
         }
@@ -197,8 +207,11 @@ impl Supervisor {
         plan.routing.validate().map_err(|e| e.to_string())?;
         if !crate::win::is_elevated() {
             tracing::error!("служба без прав администратора — TUN не создать");
-            return Err("Службе KVT не хватает прав, чтобы создать сетевой адаптер. Переустановите KVT — служба должна работать от имени системы."
-                .into());
+            return Err(kvt_core::i18n::tr(
+                "Службе KVT не хватает прав, чтобы создать сетевой адаптер. Переустановите KVT — служба должна работать от имени системы.",
+                "The KVT service lacks the rights to create a network adapter. Reinstall KVT — the service must run as SYSTEM.",
+            )
+            .into());
         }
         hide_server_addresses(&plan.server);
         secure_dir(&self.paths.rules)?;
@@ -219,8 +232,9 @@ impl Supervisor {
             .iter()
             .find(|f| !self.paths.rules.join(&f.local).exists())
         {
-            return Err(format!(
+            return Err(kvt_core::trf!(
                 "Не удалось загрузить список «{}» с GitHub. Проверьте интернет и подключитесь снова.",
+                "Couldn't download the list “{}” from GitHub. Check your internet and connect again.",
                 missing.local
             ));
         }
@@ -276,8 +290,12 @@ impl Supervisor {
         // Секреты на диске не задерживаются: файл удаляется, как только ядро его
         // прочитало (или не запустилось), — и когда запуск отменён на полпути.
         let config_file = RemoveOnDrop(config_path);
-        std::fs::write(&config_file.0, config)
-            .map_err(|e| format!("не удалось записать конфиг: {e}"))?;
+        std::fs::write(&config_file.0, config).map_err(|e| {
+            kvt_core::trf!(
+                "не удалось записать конфиг: {e}",
+                "couldn't write the config: {e}"
+            )
+        })?;
         if let Ok(mut issues) = self.issues.lock() {
             *issues = None;
         }
@@ -291,8 +309,9 @@ impl Supervisor {
                 // Защиту обещали, но включить не смогли — не оставляем «полузащищённое» соединение.
                 self.stop().await;
                 tracing::error!(error = %e, "kill switch не включился");
-                return Err(format!(
-                    "Не удалось включить kill switch, поэтому подключение остановлено. Подключитесь снова; если повторится — выключите kill switch в настройках и сохраните диагностику. ({e})"
+                return Err(kvt_core::trf!(
+                    "Не удалось включить kill switch, поэтому подключение остановлено. Подключитесь снова; если повторится — выключите kill switch в настройках и сохраните диагностику. ({e})",
+                    "Couldn't turn on the kill switch, so the connection was stopped. Connect again; if it happens again, turn off the kill switch in settings and save diagnostics. ({e})"
                 ));
             }
         }
@@ -340,7 +359,11 @@ impl Supervisor {
             core_errors::Action::Reconnect | core_errors::Action::Stop => {
                 tracing::warn!(code = %issue.code, "подключение остановлено по ошибке ядра");
                 self.halt_core().await;
-                Some(format!("{} Подключение остановлено.", issue.text))
+                Some(kvt_core::trf!(
+                    "{} Подключение остановлено.",
+                    "{} Connection stopped.",
+                    issue.text
+                ))
             }
         }
     }
@@ -374,11 +397,17 @@ impl Supervisor {
                 .map_or(true, |r| matches!(r.child.try_wait(), Ok(Some(_))));
             if exited {
                 let last = self.recent_log(1).pop().unwrap_or_default();
-                return Err(format!("VPN-ядро остановилось, не создав адаптер: {last}"));
+                return Err(kvt_core::trf!(
+                    "VPN-ядро остановилось, не создав адаптер: {last}",
+                    "The VPN core stopped without creating an adapter: {last}"
+                ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let luid = luid.ok_or("интерфейс TUN не появился за 20 с")?;
+        let luid = luid.ok_or(kvt_core::i18n::tr(
+            "интерфейс TUN не появился за 20 с",
+            "the TUN interface didn't appear within 20 s",
+        ))?;
         let service = std::env::current_exe().map_err(|e| e.to_string())?;
         // «Гибрид»: пакеты, которые winws отправляет заново, Windows приписывает ядру
         // системы — kill switch должен их пропускать (см. `wfp::KillSwitch::add_rules`).
@@ -401,13 +430,20 @@ impl Supervisor {
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .await
-            .map_err(|e| format!("не удалось запустить {}: {e}", spec.exe.display()))?;
+            .map_err(|e| {
+                kvt_core::trf!(
+                    "не удалось запустить {}: {e}",
+                    "couldn't start {}: {e}",
+                    spec.exe.display()
+                )
+            })?;
         if !check.status.success() {
             let text = String::from_utf8_lossy(&[check.stdout, check.stderr].concat()).into_owned();
             let detail = tail(&kvt_core::redact::text(&text), 3);
             tracing::error!(%detail, "ядро отвергло конфигурацию");
-            return Err(format!(
-                "VPN-ядро не приняло настройки этого сервера — возможно, в ключе неподдерживаемые параметры. Выберите другой сервер или сохраните диагностику. ({detail})"
+            return Err(kvt_core::trf!(
+                "VPN-ядро не приняло настройки этого сервера — возможно, в ключе неподдерживаемые параметры. Выберите другой сервер или сохраните диагностику. ({detail})",
+                "The VPN core rejected this server's settings — the key may have unsupported parameters. Pick another server or save diagnostics. ({detail})"
             ));
         }
         let mut cmd = Command::new(&spec.exe);
@@ -417,7 +453,7 @@ impl Supervisor {
         spawn_supervised(
             cmd,
             &self.log,
-            "ядро",
+            kvt_core::i18n::tr("ядро", "core"),
             Some((spec.core, Arc::clone(&self.issues))),
         )
         .await
@@ -427,10 +463,11 @@ impl Supervisor {
     pub async fn start_zapret(&mut self, plan: &ZapretPlan) -> Result<String, String> {
         self.stop().await;
         if !crate::win::is_elevated() {
-            return Err(
-                "Службе KVT не хватает прав, чтобы запустить zapret. Переустановите KVT — служба должна работать от имени системы."
-                    .into(),
-            );
+            return Err(kvt_core::i18n::tr(
+                "Службе KVT не хватает прав, чтобы запустить zapret. Переустановите KVT — служба должна работать от имени системы.",
+                "The KVT service lacks the rights to start zapret. Reinstall KVT — the service must run as SYSTEM.",
+            )
+            .into());
         }
         let winws =
             crate::zapret::start(&self.paths, plan, &plan.domains, &[], None, &self.log).await?;
@@ -502,15 +539,20 @@ impl Supervisor {
                     if let Ok(mut slot) = self.issues.lock() {
                         *slot = Some(core_errors::Triggered {
                             code: rule.code.clone(),
-                            text: rule.text.clone(),
+                            text: rule.message().to_owned(),
                             action: rule.action,
                         });
                         self.retry_after_exit = true;
                         return None;
                     }
                 }
-                let known = rule.map(|r| r.text.clone());
-                Some(known.unwrap_or_else(|| format!("VPN-ядро неожиданно остановилось: {last}")))
+                let known = rule.map(|r| r.message().to_owned());
+                Some(known.unwrap_or_else(|| {
+                    kvt_core::trf!(
+                        "VPN-ядро неожиданно остановилось: {last}",
+                        "The VPN core stopped unexpectedly: {last}"
+                    )
+                }))
             }
             _ => None,
         }
@@ -598,9 +640,12 @@ pub async fn spawn_supervised(
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
         .kill_on_drop(true);
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("не удалось запустить {what}: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        kvt_core::trf!(
+            "не удалось запустить {what}: {e}",
+            "couldn't start {what}: {e}"
+        )
+    })?;
     let job = Job::kill_on_close().map_err(|e| format!("job: {e}"))?;
     if let Some(handle) = child.raw_handle() {
         job.assign(handle).map_err(|e| format!("job: {e}"))?;
@@ -623,8 +668,9 @@ pub async fn spawn_supervised(
                 .collect::<Vec<_>>()
                 .join(" | ")
         });
-        return Err(format!(
+        return Err(kvt_core::trf!(
             "{what} завершился сразу после запуска ({}): {}",
+            "{what} exited right after starting ({}): {}",
             status.map(|s| s.to_string()).unwrap_or_default(),
             last.unwrap_or_default()
         ));

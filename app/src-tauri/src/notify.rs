@@ -9,6 +9,8 @@
 //! пока KVT запущен (а он в трее всегда).
 
 use crate::{watchdog, AppState};
+use kvt_core::i18n::tr;
+use kvt_core::trf;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Listener, Manager};
 
@@ -99,10 +101,14 @@ pub fn status_changed(app: &AppHandle, before: &str, failed_reason: Option<&str>
     show(
         app,
         Notice {
-            title: if reason.contains("Kill switch") {
-                "Соединение прервано — интернет закрыт".into()
+            title: if reason.to_lowercase().contains("kill switch") {
+                tr(
+                    "Соединение прервано — интернет закрыт",
+                    "Connection lost — internet blocked",
+                )
+                .into()
             } else {
-                "Соединение прервано".into()
+                tr("Соединение прервано", "Connection lost").into()
             },
             body: reason.to_owned(),
             page: Some("why".into()),
@@ -116,36 +122,49 @@ fn watchdog_notice(event: &Value) -> Option<Notice> {
     let s = |k: &str| event.get(k).and_then(Value::as_str).unwrap_or_default();
     let (title, body, page) = match s("kind") {
         "switched" => (
-            "Сервер заменён",
-            format!(
+            tr("Сервер заменён", "Server switched"),
+            trf!(
                 "Через «{}» перестали идти данные — KVT переключился на «{}».",
+                "Data stopped going through “{}” — KVT switched to “{}”.",
                 s("from"),
                 s("to")
             ),
             None,
         ),
         "no_alternative" => (
-            "Сервер не отвечает",
-            format!(
+            tr("Сервер не отвечает", "Server not responding"),
+            trf!(
                 "Через «{}» перестали идти данные, а рабочей замены в подписках нет.",
+                "Data stopped going through “{}”, and there's no working replacement in your subscriptions.",
                 s("server")
             ),
             Some("why"),
         ),
         "gave_up" => (
-            "Автопереключение приостановлено",
-            "Серверы слишком часто перестают работать — KVT не будет менять их полчаса.".to_owned(),
+            tr("Автопереключение приостановлено", "Auto-switch paused"),
+            tr(
+                "Серверы слишком часто перестают работать — KVT не будет менять их полчаса.",
+                "Servers fail too often — KVT won't switch them for half an hour.",
+            )
+            .to_owned(),
             Some("why"),
         ),
         "captive_portal" => (
-            "Сеть просит войти",
-            "Как Wi-Fi в гостинице или кафе: отключите VPN, войдите в сеть и подключитесь снова."
-                .to_owned(),
+            tr("Сеть просит войти", "The network asks you to sign in"),
+            tr(
+                "Как Wi-Fi в гостинице или кафе: отключите VPN, войдите в сеть и подключитесь снова.",
+                "Like hotel or café Wi-Fi: disconnect the VPN, sign in to the network and connect again.",
+            )
+            .to_owned(),
             None,
         ),
         "server_removed" => (
-            "VPN отключён",
-            format!("Сервер «{}» больше не в подписках.", s("server")),
+            tr("VPN отключён", "VPN disconnected"),
+            trf!(
+                "Сервер «{}» больше не в подписках.",
+                "Server “{}” is no longer in your subscriptions.",
+                s("server")
+            ),
             None,
         ),
         // «Пропала сеть» видно и без KVT — уведомлять не о чем.
@@ -164,9 +183,10 @@ fn zapret_notice(event: &Value) -> Option<Notice> {
     let n = |k: &str| event.get(k).and_then(Value::as_u64).unwrap_or_default();
     match event.get("kind").and_then(Value::as_str)? {
         "picked" => Some(Notice {
-            title: "zapret: стратегия заменена".into(),
-            body: format!(
+            title: tr("zapret: стратегия заменена", "zapret: strategy replaced").into(),
+            body: trf!(
                 "Прежняя перестала справляться — KVT подобрал {} ({} из {}).",
+                "The previous one stopped working — KVT picked {} ({} of {}).",
                 event
                     .get("title")
                     .and_then(Value::as_str)
@@ -178,9 +198,10 @@ fn zapret_notice(event: &Value) -> Option<Notice> {
             force: false,
         }),
         "unhealthy" => Some(Notice {
-            title: "zapret перестал справляться".into(),
-            body: format!(
+            title: tr("zapret перестал справляться", "zapret stopped working").into(),
+            body: trf!(
                 "Прошло {} из {} проверок. Откройте вкладку Zapret → «Почему не работает?».",
+                "{} of {} checks passed. Open the Zapret tab → “Why isn't it working?”.",
                 n("passed"),
                 n("max")
             ),

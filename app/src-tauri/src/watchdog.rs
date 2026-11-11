@@ -150,7 +150,7 @@ pub(crate) fn server_name(state: &AppState, key: &str) -> String {
     state
         .entry(key)
         .map(|e| display_name(&e.server))
-        .unwrap_or_else(|| "сервер".into())
+        .unwrap_or_else(|| kvt_core::i18n::tr("сервер", "server").into())
 }
 
 /// Сбой подтверждён несколькими попытками подряд.
@@ -178,7 +178,11 @@ pub(crate) async fn switch_to(app: &AppHandle, key: &str) -> Result<(), String> 
     tokio::time::sleep(Duration::from_secs(3)).await;
     if tunnel_dead(&state.health).await {
         crate::tunnel::set(app, Some(false));
-        return Err("через сервер не идут данные".into());
+        return Err(kvt_core::i18n::tr(
+            "через сервер не идут данные",
+            "no data is going through the server",
+        )
+        .into());
     }
     crate::tunnel::set(app, Some(true));
     Ok(())

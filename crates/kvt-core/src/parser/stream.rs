@@ -23,7 +23,10 @@ pub(crate) fn parse_transport(q: &Query) -> Result<Transport, ParseError> {
     Ok(match kind.as_str() {
         "tcp" | "raw" => {
             if non_empty(q, "headertype").is_some_and(|h| h != "none") {
-                return Err(ParseError::Unsupported("TCP с HTTP-заголовками"));
+                return Err(ParseError::Unsupported(crate::i18n::tr(
+                    "TCP с HTTP-заголовками",
+                    "TCP with HTTP headers",
+                )));
             }
             Transport::Tcp
         }
@@ -43,7 +46,12 @@ pub(crate) fn parse_transport(q: &Query) -> Result<Transport, ParseError> {
             host: host(),
             mode: non_empty(q, "mode"),
         },
-        _ => return Err(ParseError::Unsupported("транспорт")),
+        _ => {
+            return Err(ParseError::Unsupported(crate::i18n::tr(
+                "транспорт",
+                "transport",
+            )))
+        }
     })
 }
 
@@ -54,7 +62,7 @@ pub(crate) fn parse_security(q: &Query, default_security: &str) -> Result<Securi
     let fingerprint = match non_empty(q, "fp") {
         Some(fp) => Some(Fingerprint::parse(&fp).ok_or(ParseError::InvalidField {
             field: "fp",
-            reason: "неизвестный отпечаток",
+            reason: crate::i18n::tr("неизвестный отпечаток", "unknown fingerprint"),
         })?),
         None => None,
     };
@@ -91,7 +99,12 @@ pub(crate) fn parse_security(q: &Query, default_security: &str) -> Result<Securi
                 spider_x: non_empty(q, "spx"),
             })
         }
-        _ => return Err(ParseError::Unsupported("тип шифрования")),
+        _ => {
+            return Err(ParseError::Unsupported(crate::i18n::tr(
+                "тип шифрования",
+                "security type",
+            )))
+        }
     })
 }
 
@@ -105,8 +118,10 @@ pub(crate) fn parse_ech(q: &Query) -> Result<Option<String>, ParseError> {
     let Some(value) = non_empty(q, "ech") else {
         return Ok(None);
     };
-    let bytes = decode_base64_lenient(&value)
-        .ok_or(ParseError::Unsupported("ECH с запросом конфига через DNS"))?;
+    let bytes = decode_base64_lenient(&value).ok_or(ParseError::Unsupported(crate::i18n::tr(
+        "ECH с запросом конфига через DNS",
+        "ECH with config fetched over DNS",
+    )))?;
     // ECHConfigList начинается с длины остатка (2 байта).
     let declared = bytes
         .get(..2)
@@ -114,7 +129,7 @@ pub(crate) fn parse_ech(q: &Query) -> Result<Option<String>, ParseError> {
     if bytes.len() < 4 || bytes.len() > MAX_ECH_BYTES || declared != Some(bytes.len() - 2) {
         return Err(ParseError::InvalidField {
             field: "ech",
-            reason: "не похоже на конфиг ECH",
+            reason: crate::i18n::tr("не похоже на конфиг ECH", "doesn't look like an ECH config"),
         });
     }
     use base64::Engine as _;
@@ -133,7 +148,7 @@ fn validate_reality_key(key: &str) -> Result<(), ParseError> {
         Some(bytes) if bytes.len() == 32 => Ok(()),
         _ => Err(ParseError::InvalidField {
             field: "pbk",
-            reason: "ожидается ключ X25519",
+            reason: crate::i18n::tr("ожидается ключ X25519", "expected an X25519 key"),
         }),
     }
 }
@@ -146,7 +161,10 @@ fn validate_short_id(sid: &str) -> Result<(), ParseError> {
     } else {
         Err(ParseError::InvalidField {
             field: "sid",
-            reason: "ожидается hex до 16 символов",
+            reason: crate::i18n::tr(
+                "ожидается hex до 16 символов",
+                "expected hex up to 16 characters",
+            ),
         })
     }
 }

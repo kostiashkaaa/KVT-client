@@ -47,19 +47,23 @@ fn cipher(raw: Option<String>) -> Result<String, ParseError> {
     if CIPHERS.contains(&c.as_str()) {
         Ok(c)
     } else {
-        Err(ParseError::Unsupported("шифр VMess"))
+        Err(ParseError::Unsupported(crate::i18n::tr(
+            "шифр VMess",
+            "VMess cipher",
+        )))
     }
 }
 
 fn check_alter_id(aid: Option<String>) -> Result<(), ParseError> {
     match aid.as_deref().map(str::parse::<u32>) {
         None | Some(Ok(0)) => Ok(()),
-        Some(Ok(_)) => Err(ParseError::Unsupported(
+        Some(Ok(_)) => Err(ParseError::Unsupported(crate::i18n::tr(
             "VMess с alterId (устаревший вариант)",
-        )),
+            "VMess with alterId (legacy)",
+        ))),
         Some(Err(_)) => Err(ParseError::InvalidField {
             field: "aid",
-            reason: "не число",
+            reason: crate::i18n::tr("не число", "not a number"),
         }),
     }
 }
@@ -70,23 +74,26 @@ fn check_id(id: &str) -> Result<(), ParseError> {
     } else {
         Err(ParseError::InvalidField {
             field: "id",
-            reason: "не UUID",
+            reason: crate::i18n::tr("не UUID", "not a UUID"),
         })
     }
 }
 
 /// Формат v2rayN: поля JSON переводятся в те же параметры, что у VLESS-ссылок.
 fn from_json(v: &Value, fragment: Option<String>) -> Result<Server, ParseError> {
-    let address = text(v, "add").ok_or(ParseError::MissingField("адрес"))?;
+    let address = text(v, "add").ok_or(ParseError::MissingField(crate::i18n::tr(
+        "адрес",
+        "address",
+    )))?;
     let address = address.trim_matches(['[', ']']).to_owned();
     let port: u16 = text(v, "port")
-        .ok_or(ParseError::MissingField("порт"))?
+        .ok_or(ParseError::MissingField(crate::i18n::tr("порт", "port")))?
         .parse()
         .ok()
         .filter(|p| *p != 0)
         .ok_or(ParseError::InvalidField {
-            field: "порт",
-            reason: "не число от 1 до 65535",
+            field: crate::i18n::tr("порт", "port"),
+            reason: crate::i18n::tr("не число от 1 до 65535", "not a number from 1 to 65535"),
         })?;
     let id = text(v, "id").ok_or(ParseError::MissingField("id"))?;
     check_id(&id)?;

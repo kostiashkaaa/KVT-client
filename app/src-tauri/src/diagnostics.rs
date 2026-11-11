@@ -183,18 +183,32 @@ fn is_tun_address(ip: IpAddr) -> bool {
 async fn ipv4_route(connected: bool) -> Check {
     let Some(src) = source_address("0.0.0.0:0", SocketAddr::from(([1, 1, 1, 1], 53))).await else {
         return Check::Info {
-            detail: "Нет маршрута IPv4 в интернет".into(),
+            detail: kvt_core::i18n::tr(
+                "Нет маршрута IPv4 в интернет",
+                "No IPv4 route to the internet",
+            )
+            .into(),
         };
     };
     match (connected, is_tun_address(src)) {
         (true, true) => Check::Ok {
-            detail: "Трафик IPv4 идёт через туннель".into(),
+            detail: kvt_core::i18n::tr(
+                "Трафик IPv4 идёт через туннель",
+                "IPv4 traffic goes through the tunnel",
+            )
+            .into(),
         },
         (true, false) => Check::Warning {
-            detail: format!("Трафик IPv4 идёт мимо туннеля (через {src})"),
+            detail: kvt_core::trf!(
+                "Трафик IPv4 идёт мимо туннеля (через {src})",
+                "IPv4 traffic bypasses the tunnel (via {src})"
+            ),
         },
         (false, _) => Check::Info {
-            detail: format!("VPN выключен: трафик идёт напрямую (через {src})"),
+            detail: kvt_core::trf!(
+                "VPN выключен: трафик идёт напрямую (через {src})",
+                "VPN is off: traffic goes direct (via {src})"
+            ),
         },
     }
 }
@@ -206,20 +220,33 @@ async fn ipv6_route(connected: bool) -> Check {
     ));
     let Some(src) = source_address("[::]:0", target).await else {
         return Check::Ok {
-            detail: "IPv6 в интернет недоступен — утечки через IPv6 быть не может".into(),
+            detail: kvt_core::i18n::tr(
+                "IPv6 в интернет недоступен — утечки через IPv6 быть не может",
+                "IPv6 internet is unavailable — no leak via IPv6 is possible",
+            )
+            .into(),
         };
     };
     match (connected, is_tun_address(src)) {
         (true, true) => Check::Ok {
-            detail: "Трафик IPv6 идёт через туннель".into(),
+            detail: kvt_core::i18n::tr(
+                "Трафик IPv6 идёт через туннель",
+                "IPv6 traffic goes through the tunnel",
+            )
+            .into(),
         },
         (true, false) => Check::Warning {
-            detail: format!(
-                "Трафик IPv6 идёт мимо туннеля (через {src}) — сайты могут увидеть ваш адрес"
+            detail: kvt_core::trf!(
+                "Трафик IPv6 идёт мимо туннеля (через {src}) — сайты могут увидеть ваш адрес",
+                "IPv6 traffic bypasses the tunnel (via {src}) — sites may see your address"
             ),
         },
         (false, _) => Check::Info {
-            detail: "VPN выключен: IPv6 идёт напрямую".into(),
+            detail: kvt_core::i18n::tr(
+                "VPN выключен: IPv6 идёт напрямую",
+                "VPN is off: IPv6 goes direct",
+            )
+            .into(),
         },
     }
 }
@@ -230,37 +257,54 @@ async fn ipv6_route(connected: bool) -> Check {
 fn classify_dns(connected: bool, resolver: Option<Ipv4Addr>, remote: &str) -> Check {
     let Some(resolver) = resolver else {
         return Check::Info {
-            detail: "Не удалось определить DNS-резолвер".into(),
+            detail: kvt_core::i18n::tr(
+                "Не удалось определить DNS-резолвер",
+                "Couldn't determine the DNS resolver",
+            )
+            .into(),
         };
     };
     if !connected {
         return Check::Info {
-            detail: format!("VPN выключен: DNS обслуживает {resolver}"),
+            detail: kvt_core::trf!(
+                "VPN выключен: DNS обслуживает {resolver}",
+                "VPN is off: DNS is served by {resolver}"
+            ),
         };
     }
     let known = RESOLVERS.iter().find(|r| in_nets(resolver, r.egress));
     let remote = dns::resolver(remote);
     match known {
         Some(r) if r.tunnel => Check::Ok {
-            detail: format!("DNS идёт через DoH {} в туннеле", r.title),
+            detail: kvt_core::trf!(
+                "DNS идёт через DoH {} в туннеле",
+                "DNS goes over DoH {} in the tunnel",
+                dns::title_text(r.title)
+            ),
         },
         Some(r) => Check::Warning {
-            detail: format!(
+            detail: kvt_core::trf!(
                 "На DNS отвечает {} ({resolver}), а не DoH в туннеле — возможна утечка DNS",
-                r.title
+                "DNS is answered by {} ({resolver}), not DoH in the tunnel — a DNS leak is possible",
+                dns::title_text(r.title)
             ),
         },
         // Адресов, с которых ходит Quad9, KVT не знает: подтвердить нельзя, но и
         // тревогу поднимать не из-за чего.
         None if remote.is_some_and(|r| r.egress.is_empty()) => Check::Info {
-            detail: format!(
-                "На DNS отвечает {resolver}. Адресов {} KVT не знает — подтвердить,                  что это DoH в туннеле, нельзя",
-                remote.map_or("этого резолвера", |r| r.title)
+            detail: kvt_core::trf!(
+                "На DNS отвечает {resolver}. Адресов {} KVT не знает — подтвердить, что это DoH в туннеле, нельзя",
+                "DNS is answered by {resolver}. KVT doesn't know the addresses of {} — it can't confirm this is DoH in the tunnel",
+                remote.map_or(
+                    kvt_core::i18n::tr("этого резолвера", "this resolver"),
+                    |r| dns::title_text(r.title)
+                )
             ),
         },
         None => Check::Warning {
-            detail: format!(
-                "На DNS отвечает {resolver}, а не DoH в туннеле — возможна утечка DNS"
+            detail: kvt_core::trf!(
+                "На DNS отвечает {resolver}, а не DoH в туннеле — возможна утечка DNS",
+                "DNS is answered by {resolver}, not DoH in the tunnel — a DNS leak is possible"
             ),
         },
     }
@@ -285,7 +329,7 @@ async fn dns(connected: bool, remote: &str) -> Check {
     };
     let event = |outcome| {
         netlog::Event::new(Origin::App, Purpose::Dns, WHOAMI, route, outcome)
-            .detail("проверка утечек")
+            .detail(kvt_core::i18n::tr("проверка утечек", "leak test"))
     };
     netlog::record(match resolver {
         Some(_) => event(Outcome::Ok).ms(start.elapsed()),

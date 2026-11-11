@@ -9,9 +9,11 @@
 use crate::health::{self, Trace};
 use crate::prober::CoreProber;
 use crate::{display_name, query_status, watchdog, AppState};
+use kvt_core::i18n::tr;
 use kvt_core::ipc::ServiceStatus;
 use kvt_core::probe::{classify, Verdict};
 use kvt_core::tester::{sni_key, tcp_ping, Outcome, Prober, QuickResult};
+use kvt_core::trf;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -137,8 +139,15 @@ fn switch(f: &Facts) -> Option<Fix> {
 
 fn switch_hint(f: &Facts) -> String {
     match &f.alternative {
-        Some((_, name)) => format!(" Можно переключиться на «{name}»."),
-        None => " Рабочей замены в подписке не нашлось — обновите подписку или напишите в поддержку провайдера VPN.".into(),
+        Some((_, name)) => trf!(
+            " Можно переключиться на «{name}».",
+            " You can switch to “{name}”."
+        ),
+        None => tr(
+            " Рабочей замены в подписке не нашлось — обновите подписку или напишите в поддержку провайдера VPN.",
+            " No working replacement in the subscription — update it or contact your VPN provider's support.",
+        )
+        .into(),
     }
 }
 
@@ -146,38 +155,71 @@ pub fn conclude(f: &Facts) -> Diagnosis {
     let mut out = Out { steps: Vec::new() };
 
     if !f.network {
-        out.step("Сеть", StepState::Fail, "Нет подключения к сети");
+        out.step(
+            tr("Сеть", "Network"),
+            StepState::Fail,
+            tr("Нет подключения к сети", "No network connection"),
+        );
         return out.finish(
             Tone::Error,
-            "Компьютер не подключён к сети",
-            "Проверьте Wi-Fi или кабель. VPN заработает, как только появится сеть.",
+            tr(
+                "Компьютер не подключён к сети",
+                "The computer isn't connected to a network",
+            ),
+            tr(
+                "Проверьте Wi-Fi или кабель. VPN заработает, как только появится сеть.",
+                "Check Wi-Fi or the cable. The VPN will work as soon as there's a network.",
+            ),
             None,
         );
     }
-    out.step("Сеть", StepState::Ok, "Подключение к сети есть");
+    out.step(
+        tr("Сеть", "Network"),
+        StepState::Ok,
+        tr("Подключение к сети есть", "Network connection is up"),
+    );
 
     let Some(service) = &f.service else {
-        out.step("Служба KVT", StepState::Fail, "Служба не отвечает");
+        out.step(
+            tr("Служба KVT", "KVT service"),
+            StepState::Fail,
+            tr("Служба не отвечает", "The service doesn't respond"),
+        );
         return out.finish(
             Tone::Error,
-            "Служба KVT не запущена",
-            "Без службы KVT не может создать туннель. Переустановите KVT или запустите службу \
-             KVTService в «Службах» Windows.",
+            tr("Служба KVT не запущена", "The KVT service isn't running"),
+            tr(
+                "Без службы KVT не может создать туннель. Переустановите KVT или запустите службу \
+                 KVTService в «Службах» Windows.",
+                "Without its service KVT can't create the tunnel. Reinstall KVT or start the \
+                 KVTService service in Windows Services.",
+            ),
             None,
         );
     };
     if let ServiceStatus::Failed { reason, blocked } = service {
-        out.step("Служба KVT", StepState::Fail, reason.clone());
+        out.step(
+            tr("Служба KVT", "KVT service"),
+            StepState::Fail,
+            reason.clone(),
+        );
         // Текст — для службы прежней версии, которая флаг не присылает.
-        let blocked = *blocked || reason.contains("Kill switch");
+        let blocked = *blocked || reason.to_lowercase().contains("kill switch");
         return out.finish(
             Tone::Error,
-            "Соединение прервалось",
+            tr("Соединение прервалось", "Connection lost"),
             if blocked {
-                "Ядро остановилось, и kill switch закрыл интернет, чтобы ничего не ушло мимо \
-                 туннеля. Отключитесь, чтобы вернуть интернет, или подключитесь снова."
+                tr(
+                    "Ядро остановилось, и kill switch закрыл интернет, чтобы ничего не ушло мимо \
+                     туннеля. Отключитесь, чтобы вернуть интернет, или подключитесь снова.",
+                    "The core stopped, and the kill switch blocked the internet so nothing leaks \
+                     outside the tunnel. Disconnect to restore the internet, or connect again.",
+                )
             } else {
-                "Ядро VPN остановилось. Попробуйте подключиться снова."
+                tr(
+                    "Ядро VPN остановилось. Попробуйте подключиться снова.",
+                    "The VPN core stopped. Try connecting again.",
+                )
             },
             Some(if blocked {
                 Fix::Disconnect
@@ -186,57 +228,90 @@ pub fn conclude(f: &Facts) -> Diagnosis {
             }),
         );
     }
-    out.step("Служба KVT", StepState::Ok, "Служба работает");
+    out.step(
+        tr("Служба KVT", "KVT service"),
+        StepState::Ok,
+        tr("Служба работает", "The service is running"),
+    );
 
     if let ServiceStatus::Zapret { strategy } = service {
         let title = kvt_core::zapret::title(strategy);
         out.step(
             "Zapret",
             StepState::Ok,
-            format!("Работает, стратегия «{title}»"),
+            trf!(
+                "Работает, стратегия «{title}»",
+                "Working, strategy “{title}”"
+            ),
         );
         return out.finish(
             Tone::Ok,
-            "Работает zapret",
-            format!(
+            tr("Работает zapret", "zapret is on"),
+            trf!(
                 "Обход DPI для YouTube и Discord включён (стратегия «{title}»). Если они всё равно \
-                 не открываются, подберите стратегию автоматически — провайдеры блокируют по-разному."
+                 не открываются, подберите стратегию автоматически — провайдеры блокируют по-разному.",
+                "DPI bypass for YouTube and Discord is on (strategy “{title}”). If they still \
+                 don't open, pick a strategy automatically — ISPs block in different ways."
             ),
             Some(Fix::ZapretAutoselect),
         );
     }
 
     let Some(sub) = &f.subscription else {
-        out.step("Подписка", StepState::Fail, "Подписка не добавлена");
+        out.step(
+            tr("Подписка", "Subscription"),
+            StepState::Fail,
+            tr("Подписка не добавлена", "No subscription added"),
+        );
         return out.finish(
             Tone::Warning,
-            "Нет подписки",
-            "Добавьте ссылку на подписку или ключ сервера, который дал провайдер VPN.",
+            tr("Нет подписки", "No subscription"),
+            tr(
+                "Добавьте ссылку на подписку или ключ сервера, который дал провайдер VPN.",
+                "Add the subscription link or server key your VPN provider gave you.",
+            ),
             Some(Fix::AddSubscription),
         );
     };
     if sub.expired || sub.exhausted {
         let what = if sub.expired {
-            "Срок подписки закончился"
+            tr("Срок подписки закончился", "The subscription has expired")
         } else {
-            "Трафик подписки израсходован"
+            tr(
+                "Трафик подписки израсходован",
+                "The subscription's traffic is used up",
+            )
         };
-        out.step("Подписка", StepState::Fail, what);
+        out.step(tr("Подписка", "Subscription"), StepState::Fail, what);
         return out.finish(
             Tone::Error,
             what,
-            "Продлите подписку у провайдера VPN и обновите её в KVT.",
+            tr(
+                "Продлите подписку у провайдера VPN и обновите её в KVT.",
+                "Renew the subscription with your VPN provider and update it in KVT.",
+            ),
             Some(Fix::RefreshSubscription),
         );
     }
-    out.step("Подписка", StepState::Ok, "Подписка действует");
+    out.step(
+        tr("Подписка", "Subscription"),
+        StepState::Ok,
+        tr("Подписка действует", "The subscription is active"),
+    );
 
     let Some(server) = &f.server else {
-        out.step("Сервер", StepState::Fail, "Сервер не выбран");
+        out.step(
+            tr("Сервер", "Server"),
+            StepState::Fail,
+            tr("Сервер не выбран", "No server selected"),
+        );
         return out.finish(
             Tone::Warning,
-            "Не выбран сервер",
-            "Выберите сервер в списке на главной.",
+            tr("Не выбран сервер", "No server selected"),
+            tr(
+                "Выберите сервер в списке на главной.",
+                "Pick a server from the list on the home page.",
+            ),
             None,
         );
     };
@@ -244,55 +319,78 @@ pub fn conclude(f: &Facts) -> Diagnosis {
     let connected = matches!(service, ServiceStatus::Connected { .. });
     if !connected && f.internet == Some(false) {
         out.step(
-            "Интернет без VPN",
+            tr("Интернет без VPN", "Internet without VPN"),
             StepState::Fail,
-            "Сайты недоступны и без VPN",
+            tr(
+                "Сайты недоступны и без VPN",
+                "Sites are unreachable even without the VPN",
+            ),
         );
         return out.finish(
             Tone::Error,
-            "Интернет не работает даже без VPN",
-            "Сеть есть, но в интернет выйти не получается. Проблема у провайдера или роутера — \
-             KVT здесь не поможет.",
+            tr("Интернет не работает даже без VPN", "The internet doesn't work even without the VPN"),
+            tr(
+                "Сеть есть, но в интернет выйти не получается. Проблема у провайдера или роутера — \
+                 KVT здесь не поможет.",
+                "There's a network, but the internet isn't reachable. The problem is with your ISP \
+                 or router — KVT can't help here.",
+            ),
             None,
         );
     }
     if !connected {
-        out.step("Интернет без VPN", StepState::Ok, "Интернет работает");
+        out.step(
+            tr("Интернет без VPN", "Internet without VPN"),
+            StepState::Ok,
+            tr("Интернет работает", "The internet works"),
+        );
     }
 
     match f.server_tcp {
         Some(QuickResult::DnsFailed) => {
             out.step(
-                "Сервер",
+                tr("Сервер", "Server"),
                 StepState::Fail,
-                format!("Адрес сервера «{server}» не находится"),
+                trf!(
+                    "Адрес сервера «{server}» не находится",
+                    "The address of “{server}” can't be found"
+                ),
             );
             return out.finish(
                 Tone::Error,
-                "Не удаётся найти адрес сервера",
-                format!(
+                tr("Не удаётся найти адрес сервера", "Can't find the server address"),
+                trf!(
                     "DNS не возвращает адрес этого сервера — провайдер мог заблокировать его домен.{}",
+                    "DNS doesn't return this server's address — your ISP may have blocked its domain.{}",
                     switch_hint(f)
                 ),
                 switch(f).or(Some(Fix::OpenDnsCheck)),
             );
         }
         Some(QuickResult::Unreachable) => {
-            out.step("Сервер", StepState::Fail, format!("«{server}» не отвечает"));
+            out.step(
+                tr(tr("Сервер", "Server"), "Server"),
+                StepState::Fail,
+                trf!("«{server}» не отвечает", "“{server}” doesn't respond"),
+            );
             return out.finish(
                 Tone::Error,
-                "Сервер недоступен",
-                format!(
+                tr("Сервер недоступен", "Server unreachable"),
+                trf!(
                     "Сервер не принимает соединения: он выключен или его IP заблокирован.{}",
+                    "The server doesn't accept connections: it's off or its IP is blocked.{}",
                     switch_hint(f)
                 ),
                 switch(f),
             );
         }
         Some(QuickResult::Reachable { latency_ms }) => out.step(
-            "Сервер",
+            tr("Сервер", "Server"),
             StepState::Ok,
-            format!("«{server}» отвечает, {latency_ms} мс"),
+            trf!(
+                "«{server}» отвечает, {latency_ms} мс",
+                "“{server}” responds, {latency_ms} ms"
+            ),
         ),
         Some(QuickResult::NotApplicable) | None => {}
     }
@@ -300,15 +398,22 @@ pub fn conclude(f: &Facts) -> Diagnosis {
     if connected && f.captive {
         // Своё название шага: «Сеть» уже есть в начале списка.
         out.step(
-            "Вход в сеть",
+            tr("Вход в сеть", "Network sign-in"),
             StepState::Fail,
-            "Вместо проверочного ответа пришла страница входа",
+            tr(
+                "Вместо проверочного ответа пришла страница входа",
+                "A sign-in page came instead of the test response",
+            ),
         );
         return out.finish(
             Tone::Warning,
-            "Сеть просит войти",
-            "Похоже на Wi-Fi гостиницы, кафе или метро: сначала нужно войти на странице сети. \
-             VPN и kill switch не дают её открыть — отключите VPN, войдите и подключитесь снова.",
+            tr("Сеть просит войти", "The network asks you to sign in"),
+            tr(
+                "Похоже на Wi-Fi гостиницы, кафе или метро: сначала нужно войти на странице сети. \
+                 VPN и kill switch не дают её открыть — отключите VPN, войдите и подключитесь снова.",
+                "Looks like hotel, café or metro Wi-Fi: you need to sign in on the network's page first. \
+                 The VPN and kill switch keep it from opening — disconnect, sign in and connect again.",
+            ),
             Some(Fix::Disconnect),
         );
     }
@@ -319,109 +424,148 @@ pub fn conclude(f: &Facts) -> Diagnosis {
                 let exit = trace
                     .country
                     .as_deref()
-                    .map(|c| format!(" Выход в интернет: {c}."))
+                    .map(|c| trf!(" Выход в интернет: {c}.", " Internet exit: {c}."))
                     .unwrap_or_default();
                 out.step(
-                    "Туннель",
+                    tr("Туннель", "Tunnel"),
                     StepState::Ok,
-                    format!("Данные идут через VPN, {} мс", trace.ms),
+                    trf!(
+                        "Данные идут через VPN, {} мс",
+                        "Data goes through the VPN, {} ms",
+                        trace.ms
+                    ),
                 );
                 out.finish(
                     Tone::Ok,
-                    "VPN работает",
-                    format!(
+                    tr("VPN работает", "VPN works"),
+                    trf!(
                         "Трафик идёт через туннель.{exit} Если не открывается конкретный сайт, \
-                         проверьте в «Маршрутизации», не идёт ли он напрямую."
+                         проверьте в «Маршрутизации», не идёт ли он напрямую.",
+                        "Traffic goes through the tunnel.{exit} If a particular site doesn't open, \
+                         check in “Routing” whether it goes direct."
                     ),
                     None,
                 )
             }
             Some(Err(reason)) => {
                 out.step(
-                    "Туннель",
+                    tr("Туннель", "Tunnel"),
                     StepState::Fail,
-                    format!("Данные не проходят ({reason})"),
+                    trf!(
+                        "Данные не проходят ({reason})",
+                        "No data gets through ({reason})"
+                    ),
                 );
                 out.finish(
                     Tone::Error,
-                    "Подключение есть, но данные не идут",
-                    format!(
+                    tr("Подключение есть, но данные не идут", "Connected, but no data is flowing"),
+                    trf!(
                         "Туннель поднят, но сервер не пропускает трафик: провайдер режет соединение \
                          или сервер перегружен.{}",
+                        "The tunnel is up, but the server passes no traffic: your ISP is cutting the \
+                         connection or the server is overloaded.{}",
                         switch_hint(f)
                     ),
                     switch(f),
                 )
             }
-            None => out.finish(Tone::Ok, "VPN подключён", "", None),
+            None => out.finish(Tone::Ok, tr("VPN подключён", "VPN connected"), "", None),
         };
     }
 
     match &f.probe {
         Some(ProbeFact::Done(Verdict::Works)) => {
             out.step(
-                "Проверка сервера",
+                tr("Проверка сервера", "Server check"),
                 StepState::Ok,
-                Verdict::Works.message_ru(),
+                Verdict::Works.message(),
             );
             out.finish(
                 Tone::Ok,
-                "Сервер работает — можно подключаться",
-                "Через этот сервер данные проходят. Если после подключения сайты не открываются, \
-                 запустите проверку ещё раз при включённом VPN.",
+                tr("Сервер работает — можно подключаться", "The server works — you can connect"),
+                tr(
+                    "Через этот сервер данные проходят. Если после подключения сайты не открываются, \
+                     запустите проверку ещё раз при включённом VPN.",
+                    "Data gets through this server. If sites don't open after connecting, \
+                     run the check again with the VPN on.",
+                ),
                 Some(Fix::Connect),
             )
         }
         Some(ProbeFact::Done(Verdict::Slow)) => {
             out.step(
-                "Проверка сервера",
+                tr("Проверка сервера", "Server check"),
                 StepState::Warning,
-                Verdict::Slow.message_ru(),
+                Verdict::Slow.message(),
             );
             out.finish(
                 Tone::Warning,
-                "Сервер работает, но медленно",
-                format!(
+                tr(
+                    "Сервер работает, но медленно",
+                    "The server works, but slowly",
+                ),
+                trf!(
                     "Подключиться можно, но страницы будут открываться с задержкой.{}",
+                    "You can connect, but pages will open with a delay.{}",
                     switch_hint(f)
                 ),
                 switch(f).or(Some(Fix::Connect)),
             )
         }
         Some(ProbeFact::Done(verdict)) => {
-            out.step("Проверка сервера", StepState::Fail, verdict.message_ru());
+            out.step(
+                tr("Проверка сервера", "Server check"),
+                StepState::Fail,
+                verdict.message(),
+            );
             let title = match verdict {
-                Verdict::TlsFrozen | Verdict::DataFrozen => "Провайдер блокирует этот сервер",
-                Verdict::Rejected => "Сервер отклоняет подключение",
-                Verdict::ConfigError => "Сервер не поддерживается",
-                Verdict::DnsFailed => "Не удаётся найти адрес сервера",
-                _ => "Сервер недоступен",
+                Verdict::TlsFrozen | Verdict::DataFrozen => tr(
+                    "Провайдер блокирует этот сервер",
+                    "Your ISP is blocking this server",
+                ),
+                Verdict::Rejected => tr(
+                    "Сервер отклоняет подключение",
+                    "The server rejects the connection",
+                ),
+                Verdict::ConfigError => tr("Сервер не поддерживается", "Server not supported"),
+                Verdict::DnsFailed => tr(
+                    "Не удаётся найти адрес сервера",
+                    "Can't find the server address",
+                ),
+                _ => tr("Сервер недоступен", "Server unreachable"),
             };
             out.finish(
                 Tone::Error,
                 title,
-                format!("{}.{}", verdict.message_ru(), switch_hint(f)),
+                format!("{}.{}", verdict.message(), switch_hint(f)),
                 switch(f),
             )
         }
         Some(ProbeFact::Postponed) => {
             out.step(
-                "Проверка сервера",
+                tr("Проверка сервера", "Server check"),
                 StepState::Warning,
-                "Отложена: к этому серверу недавно подключались",
+                tr(
+                    "Отложена: к этому серверу недавно подключались",
+                    "Postponed: this server was connected to recently",
+                ),
             );
             out.finish(
                 Tone::Warning,
-                "Повторите проверку через пару минут",
-                "Частые подключения к одному серверу заметны провайдеру, поэтому KVT выдерживает \
-                 паузу. Сервер отвечает — попробуйте подключиться.",
+                tr("Повторите проверку через пару минут", "Repeat the check in a couple of minutes"),
+                tr(
+                    "Частые подключения к одному серверу заметны провайдеру, поэтому KVT выдерживает \
+                     паузу. Сервер отвечает — попробуйте подключиться.",
+                    "Frequent connections to one server are noticeable to your ISP, so KVT waits. \
+                     The server responds — try connecting.",
+                ),
                 Some(Fix::Connect),
             )
         }
         None => out.finish(
             Tone::Ok,
-            "Явных проблем не найдено",
-            "Попробуйте подключиться.",
+            tr("Явных проблем не найдено", "No obvious problems found"),
+            tr("Попробуйте подключиться.", "Try connecting."),
             Some(Fix::Connect),
         ),
     }
@@ -567,6 +711,26 @@ pub async fn troubleshoot(state: State<'_, AppState>) -> Result<Diagnosis, Strin
 mod tests {
     use super::*;
     use kvt_core::core_select::CoreKind;
+
+    #[test]
+    fn english_texts() {
+        use kvt_core::i18n::{with, Lang};
+        let d = with(Lang::En, || {
+            conclude(&Facts {
+                network: false,
+                ..base()
+            })
+        });
+        assert_eq!(d.title, "The computer isn't connected to a network");
+        assert_eq!(d.steps[0].title, "Network");
+        let d = with(Lang::En, || {
+            conclude(&Facts {
+                server_tcp: Some(QuickResult::Unreachable),
+                ..base()
+            })
+        });
+        assert!(d.detail.contains("You can switch to “DE”"), "{}", d.detail);
+    }
 
     fn base() -> Facts {
         Facts {

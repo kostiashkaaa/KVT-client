@@ -30,7 +30,9 @@ pub struct Rule {
     /// Подстроки в нижнем регистре; достаточно одной.
     #[serde(rename = "match")]
     pub patterns: Vec<String>,
+    /// Текст для пользователя по-русски (и для журнала).
     pub text: String,
+    pub text_en: String,
     pub action: Action,
     /// Сколько совпадений за окно нужно для действия.
     #[serde(default = "one")]
@@ -61,6 +63,11 @@ fn core_name(core: CoreKind) -> &'static str {
 }
 
 impl Rule {
+    /// Текст для пользователя на текущем языке.
+    pub fn message(&self) -> &str {
+        crate::i18n::tr(&self.text, &self.text_en)
+    }
+
     fn applies(&self, core: CoreKind, lower: &str) -> bool {
         (self.cores.is_empty() || self.cores.iter().any(|c| c == core_name(core)))
             && self.patterns.iter().any(|p| lower.contains(p.as_str()))
@@ -129,7 +136,7 @@ impl Watcher {
         times.clear();
         Some(Triggered {
             code: rule.code.clone(),
-            text: rule.text.clone(),
+            text: rule.message().to_owned(),
             action: rule.action,
         })
     }
@@ -146,6 +153,7 @@ mod tests {
         for r in &rules {
             assert!(!r.patterns.is_empty(), "{}", r.code);
             assert!(!r.text.is_empty(), "{}", r.code);
+            assert!(!r.text_en.is_empty(), "{}", r.code);
             assert!(r.count >= 1, "{}", r.code);
             for c in &r.cores {
                 assert!(c == "xray" || c == "sing-box", "{}: {c}", r.code);
@@ -250,6 +258,7 @@ mod tests {
             cores: vec![],
             patterns: vec!["boom".into()],
             text: "t".into(),
+            text_en: "t".into(),
             action: Action::Stop,
             count: 3,
             window: 60,

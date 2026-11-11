@@ -74,14 +74,26 @@ pub const UPDATE_HOSTS: &[&str] = &[
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RoutingError {
-    #[error("адрес VPN-сервера «{0}» попал под zapret")]
+    #[error("{}", crate::trf!("адрес VPN-сервера «{}» попал под zapret", "VPN server address “{}” falls under zapret", .0))]
     ServerUnderZapret(String),
-    #[error("правила подписки не могут включать zapret")]
+    #[error(
+        "{}",
+        crate::i18n::tr(
+            "правила подписки не могут включать zapret",
+            "subscription rules can't enable zapret"
+        )
+    )]
     ProviderZapret,
-    #[error("правило zapret должно задаваться доменом")]
+    #[error(
+        "{}",
+        crate::i18n::tr(
+            "правило zapret должно задаваться доменом",
+            "a zapret rule must be a domain"
+        )
+    )]
     ZapretNeedsDomain,
     /// Имя набора превращается в путь к файлу, поэтому неизвестные имена отвергаются.
-    #[error("неизвестный набор правил «{0}»")]
+    #[error("{}", crate::trf!("неизвестный набор правил «{}»", "unknown rule set “{}”", .0))]
     UnknownRuleSet(String),
 }
 
@@ -387,19 +399,36 @@ pub mod presets {
                 Some((ip, "32" | "128")) => ip.to_owned(),
                 _ => c,
             },
-            _ => return Err("Не похоже на адрес сайта. Пример: example.com"),
+            _ => {
+                return Err(crate::i18n::tr(
+                    "Не похоже на адрес сайта. Пример: example.com",
+                    "Doesn't look like a site address. Example: example.com",
+                ))
+            }
         })
     }
 
     /// Правило и, для кириллического домена, его вид в Unicode.
     fn parse_custom(input: &str) -> Result<(Matcher, Option<String>), &'static str> {
-        const NOT_A_SITE: &str = "Не похоже на адрес сайта. Пример: example.com";
+        let not_a_site = crate::i18n::tr(
+            crate::i18n::tr(
+                "Не похоже на адрес сайта. Пример: example.com",
+                "Doesn't look like a site address. Example: example.com",
+            ),
+            "Doesn't look like a site address. Example: example.com",
+        );
         let text = input.trim();
         if text.is_empty() {
-            return Err("Введите адрес сайта, IP или подсеть.");
+            return Err(crate::i18n::tr(
+                "Введите адрес сайта, IP или подсеть.",
+                "Enter a site address, IP or subnet.",
+            ));
         }
         if text.len() > 300 || text.chars().any(char::is_whitespace) {
-            return Err("Одно правило — один адрес, без пробелов.");
+            return Err(crate::i18n::tr(
+                "Одно правило — один адрес, без пробелов.",
+                "One rule, one address, no spaces.",
+            ));
         }
         if let Some(m) = cidr(text)? {
             return Ok((m, None));
@@ -410,8 +439,8 @@ pub mod presets {
         let rest = rest.rsplit_once('@').map_or(rest, |(_, h)| h);
         if let Some(inner) = rest.strip_prefix('[') {
             // [2001:db8::1]:443
-            let (ip, _) = inner.split_once(']').ok_or(NOT_A_SITE)?;
-            return cidr(ip)?.ok_or(NOT_A_SITE).map(|m| (m, None));
+            let (ip, _) = inner.split_once(']').ok_or(not_a_site)?;
+            return cidr(ip)?.ok_or(not_a_site).map(|m| (m, None));
         }
         let host = match rest.rsplit_once(':') {
             Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
@@ -427,13 +456,13 @@ pub mod presets {
             Ok(url::Host::Domain(d)) => d,
             Ok(url::Host::Ipv4(ip)) => return Ok((ip_cidr(ip.into(), None), None)),
             Ok(url::Host::Ipv6(ip)) => return Ok((ip_cidr(ip.into(), None), None)),
-            Err(_) => return Err(NOT_A_SITE),
+            Err(_) => return Err(not_a_site),
         };
         let labels_ok = domain
             .split('.')
             .all(|l| !l.starts_with('-') && !l.ends_with('-'));
         if !crate::zapret::valid_domain(&domain) || !labels_ok {
-            return Err(NOT_A_SITE);
+            return Err(not_a_site);
         }
         let unicode = (!host.is_ascii()).then(|| host.to_owned());
         Ok((Matcher::DomainSuffix(domain), unicode))
@@ -452,12 +481,25 @@ pub mod presets {
         let (max, min) = if ip.is_ipv4() { (32, 8) } else { (128, 16) };
         let prefix = match prefix.map(str::parse::<u8>) {
             None => None,
-            Some(Ok(n)) if n > max => return Err("Неверная длина подсети."),
+            Some(Ok(n)) if n > max => {
+                return Err(crate::i18n::tr(
+                    "Неверная длина подсети.",
+                    "Invalid subnet length.",
+                ))
+            }
             Some(Ok(n)) if n < min => {
-                return Err("Подсеть слишком широкая — для всего трафика есть «Всё остальное».")
+                return Err(crate::i18n::tr(
+                    "Подсеть слишком широкая — для всего трафика есть «Всё остальное».",
+                    "The subnet is too wide — use “Everything else” for all traffic.",
+                ))
             }
             Some(Ok(n)) => Some(n),
-            Some(Err(_)) => return Err("Неверная длина подсети."),
+            Some(Err(_)) => {
+                return Err(crate::i18n::tr(
+                    "Неверная длина подсети.",
+                    "Invalid subnet length.",
+                ))
+            }
         };
         Ok(Some(ip_cidr(ip, prefix)))
     }

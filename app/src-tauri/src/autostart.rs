@@ -32,8 +32,12 @@ pub enum AutostartState {
 }
 
 fn command_line() -> Result<String, String> {
-    let exe =
-        std::env::current_exe().map_err(|e| crate::errors::io("Не удалось найти kvt.exe", &e))?;
+    let exe = std::env::current_exe().map_err(|e| {
+        crate::errors::io(
+            kvt_core::i18n::tr("Не удалось найти kvt.exe", "Couldn't find kvt.exe"),
+            &e,
+        )
+    })?;
     Ok(format!("\"{}\" {TRAY_FLAG}", exe.display()))
 }
 
@@ -71,7 +75,15 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
     // Отметка Windows переживает удаление записи: без этого включённый снова
     // автозапуск остался бы запрещённым «Диспетчером задач».
     .and_then(|()| crate::winreg::delete_value(APPROVED, NAME));
-    result.map_err(|e| crate::errors::io("Не удалось изменить автозапуск", &e))
+    result.map_err(|e| {
+        crate::errors::io(
+            kvt_core::i18n::tr(
+                "Не удалось изменить автозапуск",
+                "Couldn't change autostart",
+            ),
+            &e,
+        )
+    })
 }
 
 /// KVT установлен (kvt.exe в Program Files), а не запущен из каталога сборки.

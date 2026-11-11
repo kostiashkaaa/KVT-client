@@ -53,7 +53,10 @@ pub struct Winws {
 impl Winws {
     pub fn exited(&mut self) -> Option<String> {
         match self.child.try_wait() {
-            Ok(Some(status)) => Some(format!("zapret остановился ({status})")),
+            Ok(Some(status)) => Some(kvt_core::trf!(
+                "zapret остановился ({status})",
+                "zapret stopped ({status})"
+            )),
             _ => None,
         }
     }
@@ -68,7 +71,7 @@ fn read_version(bundle: &Path) -> String {
         .ok()
         .map(|v| v.trim().to_owned())
         .filter(|v| zapret::valid_version(v))
-        .unwrap_or_else(|| "неизвестна".into())
+        .unwrap_or_else(|| kvt_core::i18n::tr("неизвестна", "unknown").into())
 }
 
 /// Стратегии комплекта (порядок Flowseal) и имена отвергнутых белым списком.
@@ -104,9 +107,13 @@ fn scan_strategies(bundle: &Path) -> (Vec<Strategy>, Vec<String>) {
 
 fn verify_binaries(bin: &Path) -> Result<(), String> {
     for name in zapret::BINARIES {
-        let bytes = std::fs::read(bin.join(name)).map_err(|_| format!("нет файла {name}"))?;
+        let bytes = std::fs::read(bin.join(name))
+            .map_err(|_| kvt_core::trf!("нет файла {name}", "file {name} is missing"))?;
         if !zapret::binary_known(name, &sha256_hex(&bytes)) {
-            return Err(format!("файл {name} изменён"));
+            return Err(kvt_core::trf!(
+                "файл {name} изменён",
+                "file {name} was modified"
+            ));
         }
     }
     Ok(())
@@ -116,11 +123,11 @@ fn verify_binaries(bin: &Path) -> Result<(), String> {
 fn check_bundle(bundle: &Path) -> Result<(Vec<Strategy>, Vec<String>), String> {
     verify_binaries(&bundle.join("bin"))?;
     if !bundle.join("lists").join("list-general.txt").exists() {
-        return Err("нет списков".into());
+        return Err(kvt_core::i18n::tr("нет списков", "no lists").into());
     }
     let (ok, rejected) = scan_strategies(bundle);
     if ok.is_empty() {
-        return Err("нет ни одной стратегии".into());
+        return Err(kvt_core::i18n::tr("нет ни одной стратегии", "no strategies").into());
     }
     Ok((ok, rejected))
 }
@@ -170,7 +177,11 @@ fn remove_driver() -> Result<(), String> {
 /// При удалении KVT: драйвер убирается, если им сейчас не пользуется чужой winws.
 pub fn remove_driver_if_unused(paths: &Paths) -> Result<(), String> {
     if conflicts(paths, None).iter().any(|(c, _)| !c.service) {
-        return Err("им пользуется другая программа".into());
+        return Err(kvt_core::i18n::tr(
+            "им пользуется другая программа",
+            "another app is using it",
+        )
+        .into());
     }
     remove_driver()
 }
@@ -312,7 +323,11 @@ fn extract(archive: &Path, dest: &Path) -> Result<PathBuf, String> {
         .status()
         .map_err(|e| format!("tar: {e}"))?;
     if !status.success() {
-        return Err("не удалось распаковать архив".into());
+        return Err(kvt_core::i18n::tr(
+            "не удалось распаковать архив",
+            "couldn't unpack the archive",
+        )
+        .into());
     }
     // В архиве Flowseal всё лежит в одном каталоге zapret-discord-youtube-<версия>.
     let dirs: Vec<PathBuf> = std::fs::read_dir(dest)
@@ -336,12 +351,18 @@ fn data_dir(paths: &Paths) -> PathBuf {
 
 /// Скачивает архив и сверяет SHA-256.
 async fn fetch_archive(http: &NetClient, url: &str, sha256: &str) -> Result<Vec<u8>, String> {
-    let bytes = http
-        .get(url, MAX_ARCHIVE)
-        .await
-        .map_err(|e| format!("не удалось скачать Flowseal с GitHub: {e}"))?;
+    let bytes = http.get(url, MAX_ARCHIVE).await.map_err(|e| {
+        kvt_core::trf!(
+            "не удалось скачать Flowseal с GitHub: {e}",
+            "couldn't download Flowseal from GitHub: {e}"
+        )
+    })?;
     if sha256_hex(&bytes) != sha256.to_ascii_lowercase() {
-        return Err("архив не совпал с хэшем — загрузка отменена".into());
+        return Err(kvt_core::i18n::tr(
+            "архив не совпал с хэшем — загрузка отменена",
+            "the archive didn't match its hash — download cancelled",
+        )
+        .into());
     }
     Ok(bytes)
 }
@@ -379,7 +400,10 @@ fn install_bundle(
         let binaries = stage(&root, fallback_bin, &staging, version)?;
         if let Err(e) = check_bundle(&staging) {
             let _ = std::fs::remove_dir_all(&staging);
-            return Err(format!("новый комплект не прошёл проверку: {e}"));
+            return Err(kvt_core::trf!(
+                "новый комплект не прошёл проверку: {e}",
+                "the new bundle failed verification: {e}"
+            ));
         }
         let _ = std::fs::remove_dir_all(&paths.zapret_update);
         std::fs::rename(&staging, &paths.zapret_update).map_err(|e| e.to_string())?;
@@ -403,12 +427,15 @@ pub async fn fetch_update(
     paths: &Paths,
     http: &NetClient,
 ) -> Result<Result<Prepared, MaintenanceReport>, String> {
-    let release = zapret::parse_release(
-        &http
-            .get(zapret::RELEASES_API, 1024 * 1024)
-            .await
-            .map_err(|e| format!("не удалось узнать последнюю версию Flowseal на GitHub: {e}"))?,
-    )?;
+    let release =
+        zapret::parse_release(&http.get(zapret::RELEASES_API, 1024 * 1024).await.map_err(
+            |e| {
+                kvt_core::trf!(
+                    "не удалось узнать последнюю версию Flowseal на GitHub: {e}",
+                    "couldn't get the latest Flowseal version from GitHub: {e}"
+                )
+            },
+        )?)?;
     let active = active_bundle(paths);
     let current = read_version(&active);
     if !zapret::newer(&release.version, &current) {
@@ -416,7 +443,10 @@ pub async fn fetch_update(
             version: current.clone(),
             changed: false,
             binaries_updated: false,
-            steps: vec![format!("Установлена последняя версия Flowseal — {current}")],
+            steps: vec![kvt_core::trf!(
+                "Установлена последняя версия Flowseal — {current}",
+                "The latest Flowseal version is installed — {current}"
+            )],
         }));
     }
     let archive = fetch_archive(http, &release.zip_url, &release.sha256).await?;
@@ -437,19 +467,32 @@ pub fn install_update(paths: &Paths, prepared: Prepared) -> Result<MaintenanceRe
     let binaries = install_bundle(paths, &archive, &release.version, &fallback_bin)?;
     let (strategies, rejected) = scan_strategies(&paths.zapret_update);
     let mut steps = vec![
-        format!("Скачан релиз {} (SHA-256 сверен с GitHub)", release.version),
-        format!("Стратегий: {}", strategies.len()),
+        kvt_core::trf!(
+            "Скачан релиз {} (SHA-256 сверен с GitHub)",
+            "Downloaded release {} (SHA-256 checked against GitHub)",
+            release.version
+        ),
+        kvt_core::trf!("Стратегий: {}", "Strategies: {}", strategies.len()),
     ];
     if !rejected.is_empty() {
-        steps.push(format!(
+        steps.push(kvt_core::trf!(
             "Пропущены стратегии с неизвестными флагами: {}",
+            "Skipped strategies with unknown flags: {}",
             rejected.join(", ")
         ));
     }
     steps.push(if binaries {
-        "winws и WinDivert — проверенные версии".into()
+        kvt_core::i18n::tr(
+            "winws и WinDivert — проверенные версии",
+            "winws and WinDivert are verified versions",
+        )
+        .into()
     } else {
-        "winws и WinDivert в этом релизе новые — KVT оставил проверенные прежние; новые придут с обновлением KVT".into()
+        kvt_core::i18n::tr(
+            "winws и WinDivert в этом релизе новые — KVT оставил проверенные прежние; новые придут с обновлением KVT",
+            "winws and WinDivert are new in this release — KVT kept the verified older ones; the new ones will come with a KVT update",
+        )
+        .into()
     });
     Ok(MaintenanceReport {
         version: release.version,
@@ -466,17 +509,35 @@ pub async fn repair(paths: &Paths, touch_driver: bool) -> Result<MaintenanceRepo
     let mut steps = Vec::new();
     if paths.zapret_update.exists() {
         std::fs::remove_dir_all(&paths.zapret_update).map_err(|e| e.to_string())?;
-        steps.push("Обновление удалено — используется комплект из KVT".to_owned());
+        steps.push(
+            kvt_core::i18n::tr(
+                "Обновление удалено — используется комплект из KVT",
+                "Update removed — using the bundle shipped with KVT",
+            )
+            .to_owned(),
+        );
     }
     if paths.zapret_lists.exists() {
         let _ = std::fs::remove_dir_all(&paths.zapret_lists);
-        steps.push("Рабочие списки сброшены — создадутся при запуске".to_owned());
+        steps.push(
+            kvt_core::i18n::tr(
+                "Рабочие списки сброшены — создадутся при запуске",
+                "Working lists reset — they'll be recreated on start",
+            )
+            .to_owned(),
+        );
     }
     let mut version = read_version(&paths.zapret);
     match check_bundle(&paths.zapret) {
-        Ok(_) => steps.push(format!("Файлы комплекта целы (Flowseal {version})")),
+        Ok(_) => steps.push(kvt_core::trf!(
+            "Файлы комплекта целы (Flowseal {version})",
+            "Bundle files are intact (Flowseal {version})"
+        )),
         Err(problem) => {
-            steps.push(format!("Комплект повреждён: {problem}"));
+            steps.push(kvt_core::trf!(
+                "Комплект повреждён: {problem}",
+                "The bundle is damaged: {problem}"
+            ));
             version = zapret::FLOWSEAL_VERSION.to_owned();
             download_bundle(
                 paths,
@@ -486,20 +547,34 @@ pub async fn repair(paths: &Paths, touch_driver: bool) -> Result<MaintenanceRepo
                 &paths.zapret.join("bin"),
             )
             .await?;
-            steps.push(format!(
-                "Комплект Flowseal {version} скачан заново и проверен"
+            steps.push(kvt_core::trf!(
+                "Комплект Flowseal {version} скачан заново и проверен",
+                "Flowseal bundle {version} re-downloaded and verified"
             ));
         }
     }
     if touch_driver {
         match remove_driver() {
-            Ok(()) => {
-                steps.push("Драйвер WinDivert удалён — установится заново при запуске".to_owned())
-            }
-            Err(e) => steps.push(format!("Драйвер WinDivert не удалось переустановить: {e}")),
+            Ok(()) => steps.push(
+                kvt_core::i18n::tr(
+                    "Драйвер WinDivert удалён — установится заново при запуске",
+                    "WinDivert driver removed — it'll be reinstalled on start",
+                )
+                .to_owned(),
+            ),
+            Err(e) => steps.push(kvt_core::trf!(
+                "Драйвер WinDivert не удалось переустановить: {e}",
+                "Couldn't reinstall the WinDivert driver: {e}"
+            )),
         }
     } else {
-        steps.push("Драйвер WinDivert не тронут: им пользуется другая программа".to_owned());
+        steps.push(
+            kvt_core::i18n::tr(
+                "Драйвер WinDivert не тронут: им пользуется другая программа",
+                "WinDivert driver left alone: another app is using it",
+            )
+            .to_owned(),
+        );
     }
     Ok(MaintenanceReport {
         version,
@@ -530,7 +605,13 @@ fn prepare_lists(
             source.join("ipset-all.txt.backup"),
             paths.zapret_lists.join("ipset-all.txt"),
         )
-        .map_err(|_| "в комплекте нет полного IP-списка (ipset-all.txt.backup)".to_string())?;
+        .map_err(|_| {
+            kvt_core::i18n::tr(
+                "в комплекте нет полного IP-списка (ipset-all.txt.backup)",
+                "the bundle has no full IP list (ipset-all.txt.backup)",
+            )
+            .to_string()
+        })?;
     }
     for (name, text) in [
         ("list-general-user.txt", &lists.general),
@@ -538,7 +619,7 @@ fn prepare_lists(
         ("ipset-exclude-user.txt", &lists.ipset_exclude),
     ] {
         std::fs::write(paths.zapret_lists.join(name), text)
-            .map_err(|e| format!("список {name}: {e}"))?;
+            .map_err(|e| kvt_core::trf!("список {name}: {e}", "list {name}: {e}"))?;
     }
     Ok(())
 }
@@ -602,17 +683,30 @@ pub async fn start(
     log: &Log,
 ) -> Result<Winws, String> {
     if !zapret::valid_id(&plan.strategy) {
-        return Err(format!("неизвестная стратегия «{}»", plan.strategy));
+        return Err(kvt_core::trf!(
+            "неизвестная стратегия «{}»",
+            "unknown strategy “{}”",
+            plan.strategy
+        ));
     }
     let bundle = active_bundle(paths);
     let strategy = scan_strategies(&bundle)
         .0
         .into_iter()
         .find(|s| s.id == plan.strategy)
-        .ok_or_else(|| format!("стратегии «{}» нет в комплекте zapret", plan.strategy))?;
+        .ok_or_else(|| {
+            kvt_core::trf!(
+                "стратегии «{}» нет в комплекте zapret",
+                "strategy “{}” isn't in the zapret bundle",
+                plan.strategy
+            )
+        })?;
     let bin = bundle.join("bin");
     verify_binaries(&bin).map_err(|e| {
-        format!("Файлы zapret повреждены ({e}). Нажмите «Переустановить» во вкладке Zapret или запустите scripts\\fetch-zapret.ps1")
+        kvt_core::trf!(
+            "Файлы zapret повреждены ({e}). Нажмите «Переустановить» во вкладке Zapret или запустите scripts\\fetch-zapret.ps1",
+            "zapret files are damaged ({e}). Press “Reinstall” on the Zapret tab or run scripts\\fetch-zapret.ps1"
+        )
     })?;
 
     let (server_domains, server_ips) = server_addresses(servers).await;

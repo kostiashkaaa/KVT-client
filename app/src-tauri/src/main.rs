@@ -16,6 +16,7 @@ mod errors;
 mod fetch;
 mod health;
 mod journal;
+mod lang;
 mod migrate;
 mod netinfo;
 mod netprofile;
@@ -136,6 +137,8 @@ struct Choice {
     /// Автозапуск уже включался при первом запуске установленного KVT: если
     /// пользователь потом его выключил, не включать снова. Окно поле не присылает.
     autostart_offered: bool,
+    /// Язык интерфейса. Окно поле не присылает — `set_choice` сохраняет прежнее.
+    language: lang::LangChoice,
 }
 
 /// Сколько серверов помнит «Недавние» в трее.
@@ -168,6 +171,7 @@ impl Default for Choice {
             check_updates: true,
             onboarded: false,
             autostart_offered: false,
+            language: lang::LangChoice::Auto,
         }
     }
 }
@@ -217,10 +221,12 @@ pub(crate) fn update_choice(
 }
 
 fn save_choice(app: &AppHandle, choice: &Choice) -> Result<(), String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|_| "Не найдена папка настроек Windows — настройки не сохранились.")?;
+    let dir = app.path().app_config_dir().map_err(|_| {
+        kvt_core::i18n::tr(
+            "Не найдена папка настроек Windows — настройки не сохранились.",
+            "The Windows settings folder wasn't found — settings weren't saved.",
+        )
+    })?;
     settings::save(&dir, choice)
 }
 
@@ -391,6 +397,7 @@ fn set_choice(
         let mut current = state.choice.lock().map_err(crate::errors::state)?;
         choice.recent = current.recent.clone();
         choice.autostart_offered = current.autostart_offered;
+        choice.language = current.language;
         if let Some(key) = choice
             .server
             .clone()
@@ -473,7 +480,7 @@ pub(crate) async fn ping_servers(servers: &[Server]) -> Result<Vec<QuickResult>,
     match service_client::call(Request::Ping { targets }).await {
         Ok(Response::Ping { results }) if results.len() == servers.len() => Ok(results),
         Ok(Response::Error { message }) => Err(message),
-        Ok(_) => Err(crate::errors::UNEXPECTED.into()),
+        Ok(_) => Err(crate::errors::unexpected().into()),
         Err(e) => Err(e),
     }
 }
@@ -512,7 +519,7 @@ async fn send_plan(state: &AppState) -> Result<ServiceStatus, String> {
             Ok(status)
         }
         Response::Error { message } => Err(message),
-        _ => Err(crate::errors::UNEXPECTED.into()),
+        _ => Err(crate::errors::unexpected().into()),
     }
 }
 
@@ -527,7 +534,10 @@ pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
     }
     let server = state
         .selected()
-        .ok_or("Выберите сервер в списке на главной.")?
+        .ok_or(kvt_core::i18n::tr(
+            "Выберите сервер в списке на главной.",
+            "Pick a server from the list on the home page.",
+        ))?
         .server;
 
     let mut routing = presets::from_settings(&choice.routing)
@@ -546,7 +556,7 @@ pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
     }
     routing.validate().map_err(|e| {
         errors::logged(
-            "Настройки маршрутизации противоречат друг другу — проверьте раздел «Маршрутизация».",
+            kvt_core::i18n::tr("Настройки маршрутизации противоречат друг другу — проверьте раздел «Маршрутизация».", "Routing settings contradict each other — check the “Routing” section."),
             e,
         )
     })?;
@@ -561,7 +571,7 @@ pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
         kill_switch: choice.kill_switch,
         dns: DnsPlan::from_ids(&choice.dns.local, &choice.dns.remote).map_err(|e| {
             errors::logged(
-                "Выбранный DNS-сервер больше не поддерживается — выберите другой в настройках.",
+                kvt_core::i18n::tr("Выбранный DNS-сервер больше не поддерживается — выберите другой в настройках.", "The selected DNS server is no longer supported — pick another one in settings."),
                 e,
             )
         })?,
@@ -622,7 +632,7 @@ async fn disconnect_service() -> Result<ServiceStatus, String> {
     match service_client::call(Request::Disconnect).await? {
         Response::Ok => Ok(ServiceStatus::Disconnected),
         Response::Error { message } => Err(message),
-        _ => Err(crate::errors::UNEXPECTED.into()),
+        _ => Err(crate::errors::unexpected().into()),
     }
 }
 
@@ -651,7 +661,7 @@ async fn query_status() -> Result<Option<ServiceStatus>, String> {
     let (result, session) = match service_client::call(Request::Status).await {
         Ok(Response::Status { status, session }) => (Ok(Some(status)), session),
         Ok(Response::Error { message }) => (Err(message), None),
-        Ok(_) => (Err(crate::errors::UNEXPECTED.into()), None),
+        Ok(_) => (Err(crate::errors::unexpected().into()), None),
         Err(_) => (Ok(None), None),
     };
     if let Some(app) = APP.get() {
@@ -703,7 +713,7 @@ pub(crate) async fn wait_for_service() -> Result<ServiceStatus, String> {
             return Ok(status);
         }
         if service_client::version_mismatch() {
-            return Err(errors::VERSION_MISMATCH.into());
+            return Err(errors::version_mismatch().into());
         }
         if !asked {
             asked = true;
@@ -715,7 +725,7 @@ pub(crate) async fn wait_for_service() -> Result<ServiceStatus, String> {
             }
         }
         if start.elapsed() >= SERVICE_WAIT {
-            return Err(errors::NO_SERVICE.into());
+            return Err(errors::no_service().into());
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
@@ -761,7 +771,10 @@ fn spawn_connect_on_start(app: AppHandle) {
         if let Err(message) = result {
             notify::error(
                 &app,
-                &format!("Не удалось подключиться при запуске: {message}"),
+                &kvt_core::trf!(
+                    "Не удалось подключиться при запуске: {message}",
+                    "Couldn't connect on startup: {message}"
+                ),
             );
         }
         tray::invalidate(&app);
@@ -832,8 +845,11 @@ fn main() {
             if let Ok(dir) = app.path().app_local_data_dir() {
                 applog::init(&dir.join("logs"));
             }
+            // Язык системы — пока не прочитан выбор: им написаны сообщения о файле настроек.
+            kvt_core::i18n::set(lang::system());
             let loaded = load_choice(app.handle());
             let state = app.state::<AppState>();
+            lang::apply(loaded.choice.language);
             if let Ok(mut c) = state.choice.lock() {
                 *c = loaded.choice;
             }
@@ -924,7 +940,9 @@ fn main() {
             service_client::service_mismatch,
             tunnel::tunnel_state,
             diagexport::diag_preview,
-            diagexport::diag_save
+            diagexport::diag_save,
+            lang::get_language,
+            lang::set_language
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

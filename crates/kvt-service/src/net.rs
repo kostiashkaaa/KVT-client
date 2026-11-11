@@ -100,15 +100,19 @@ async fn get_with(
 ) -> Result<Vec<u8>, String> {
     let mut resp = client.get(url).send().await.map_err(describe)?;
     if !resp.status().is_success() {
-        return Err(format!("сервер ответил ошибкой {}", resp.status().as_u16()));
+        return Err(kvt_core::trf!(
+            "сервер ответил ошибкой {}",
+            "the server returned error {}",
+            resp.status().as_u16()
+        ));
     }
     if resp.content_length().is_some_and(|l| l > max_bytes as u64) {
-        return Err("слишком большой ответ".into());
+        return Err(kvt_core::i18n::tr("слишком большой ответ", "response too large").into());
     }
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(describe)? {
         if body.len() + chunk.len() > max_bytes {
-            return Err("слишком большой ответ".into());
+            return Err(kvt_core::i18n::tr("слишком большой ответ", "response too large").into());
         }
         body.extend_from_slice(&chunk);
     }
@@ -119,16 +123,29 @@ async fn get_with(
 fn describe(e: reqwest::Error) -> String {
     let e = e.without_url();
     tracing::debug!(error = %e, "ошибка сети");
+    use kvt_core::i18n::tr;
     if e.is_timeout() {
-        "сервер не ответил вовремя".into()
+        tr(
+            "сервер не ответил вовремя",
+            "the server didn't respond in time",
+        )
+        .into()
     } else if e.is_connect() {
-        "не удалось подключиться — сайт недоступен или заблокирован".into()
+        tr(
+            "не удалось подключиться — сайт недоступен или заблокирован",
+            "couldn't connect — the site is unreachable or blocked",
+        )
+        .into()
     } else if e.is_redirect() {
-        "слишком много перенаправлений".into()
+        tr("слишком много перенаправлений", "too many redirects").into()
     } else if e.is_body() || e.is_decode() {
-        "соединение оборвалось во время загрузки".into()
+        tr(
+            "соединение оборвалось во время загрузки",
+            "the connection dropped during download",
+        )
+        .into()
     } else {
-        "ошибка сети".into()
+        tr("ошибка сети", "network error").into()
     }
 }
 
@@ -137,12 +154,20 @@ fn describe(e: reqwest::Error) -> String {
 pub async fn ping(targets: Vec<Option<PingTarget>>) -> Response {
     if targets.len() > MAX_PING_TARGETS {
         return Response::Error {
-            message: "Слишком много серверов для пинга за раз".into(),
+            message: kvt_core::i18n::tr(
+                "Слишком много серверов для пинга за раз",
+                "Too many servers to ping at once",
+            )
+            .into(),
         };
     }
     let Some(local) = crate::wfp::physical_ipv4() else {
         return Response::Error {
-            message: "Не найден сетевой адаптер для пинга мимо VPN".into(),
+            message: kvt_core::i18n::tr(
+                "Не найден сетевой адаптер для пинга мимо VPN",
+                "No network adapter found to ping outside the VPN",
+            )
+            .into(),
         };
     };
     let targets: Vec<Option<(String, u16)>> = targets
@@ -168,7 +193,7 @@ pub fn record_lookup(host: &str, ok: bool, start: Instant) {
     netlog::record(
         netlog::Event::new(Origin::Service, Purpose::Dns, host, Route::Direct, outcome)
             .ms(start.elapsed())
-            .detail("адрес сервера"),
+            .detail(kvt_core::i18n::tr("адрес сервера", "server address")),
     );
 }
 

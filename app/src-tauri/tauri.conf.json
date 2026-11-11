@@ -57,8 +57,10 @@
       "nsis": {
         "installMode": "perMachine",
         "languages": [
+          "English",
           "Russian"
         ],
+        "displayLanguageSelector": false,
         "installerHooks": "windows/hooks.nsh",
         "headerImage": "windows/header.bmp",
         "sidebarImage": "windows/sidebar.bmp",

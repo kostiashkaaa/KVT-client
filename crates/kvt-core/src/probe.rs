@@ -47,18 +47,36 @@ impl Verdict {
         matches!(self, Verdict::TlsFrozen | Verdict::DataFrozen)
     }
 
-    pub fn message_ru(self) -> &'static str {
+    /// Итог для пользователя на текущем языке.
+    pub fn message(self) -> &'static str {
+        use crate::i18n::tr;
         match self {
-            Verdict::Works => "Работает",
-            Verdict::Slow => "Работает, но медленно",
-            Verdict::DnsFailed => "Не удалось найти адрес сервера — проверьте DNS",
-            Verdict::Unreachable => "Сервер недоступен — возможно, заблокирован его IP",
-            Verdict::TlsFrozen => {
-                "Провайдер притормозил соединение — подождите или выберите другой сервер"
-            }
-            Verdict::DataFrozen => "Соединение обрывается после первых килобайт — режет DPI",
-            Verdict::Rejected => "Сервер отклонил подключение — возможно, подписка устарела",
-            Verdict::ConfigError => "Этот сервер не поддерживается ядром KVT",
+            Verdict::Works => tr("Работает", "Works"),
+            Verdict::Slow => tr("Работает, но медленно", "Works, but slowly"),
+            Verdict::DnsFailed => tr(
+                "Не удалось найти адрес сервера — проверьте DNS",
+                "Couldn't find the server address — check DNS",
+            ),
+            Verdict::Unreachable => tr(
+                "Сервер недоступен — возможно, заблокирован его IP",
+                "Server unreachable — its IP may be blocked",
+            ),
+            Verdict::TlsFrozen => tr(
+                "Провайдер притормозил соединение — подождите или выберите другой сервер",
+                "Your ISP stalled the connection — wait or pick another server",
+            ),
+            Verdict::DataFrozen => tr(
+                "Соединение обрывается после первых килобайт — режет DPI",
+                "The connection drops after the first kilobytes — DPI is cutting it",
+            ),
+            Verdict::Rejected => tr(
+                "Сервер отклонил подключение — возможно, подписка устарела",
+                "The server rejected the connection — the subscription may have expired",
+            ),
+            Verdict::ConfigError => tr(
+                "Этот сервер не поддерживается ядром KVT",
+                "This server isn't supported by KVT's core",
+            ),
         }
     }
 }

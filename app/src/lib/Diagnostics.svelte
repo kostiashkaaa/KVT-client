@@ -18,6 +18,7 @@
 </script>
 
 <script lang="ts">
+  import { t } from "./i18n";
   import Icon from "./Icon.svelte";
   import DiagExport from "./DiagExport.svelte";
   import PcAudit from "./PcAudit.svelte";
@@ -73,19 +74,19 @@
   function fixLabel(fix: Fix): string {
     switch (fix.kind) {
       case "connect":
-        return "Подключить";
+        return t("Подключить", "Connect");
       case "disconnect":
-        return "Отключить";
+        return t("Отключить", "Disconnect");
       case "switch_server":
-        return `Переключиться на «${fix.name}»`;
+        return t(`Переключиться на «${fix.name}»`, `Switch to “${fix.name}”`);
       case "refresh_subscription":
-        return "Обновить подписку";
+        return t("Обновить подписку", "Update subscription");
       case "add_subscription":
-        return "Добавить подписку";
+        return t("Добавить подписку", "Add subscription");
       case "open_dns_check":
-        return "Проверить DNS";
+        return t("Проверить DNS", "Check DNS");
       case "zapret_autoselect":
-        return "Подобрать стратегию";
+        return t("Подобрать стратегию", "Pick a strategy");
     }
   }
 
@@ -125,15 +126,15 @@
   function cell(p: PathStatus): { text: string; tone: string; hint?: string } {
     switch (p.state) {
       case "works":
-        return { text: `${p.ms} мс`, tone: "ok" };
+        return { text: t(`${p.ms} мс`, `${p.ms} ms`), tone: "ok" };
       case "intercepted":
-        return { text: "перехват", tone: "warning", hint: `Отвечает ${p.by}, а не этот резолвер` };
+        return { text: t("перехват", "intercepted"), tone: "warning", hint: t(`Отвечает ${p.by}, а не этот резолвер`, `${p.by} answers, not this resolver`) };
       case "blocked":
-        return { text: "нет ответа", tone: "fail", hint: "Скорее всего, заблокирован провайдером" };
+        return { text: t("нет ответа", "no response"), tone: "fail", hint: t("Скорее всего, заблокирован провайдером", "Most likely blocked by your ISP") };
       case "failed":
-        return { text: "ошибка", tone: "fail", hint: p.reason };
+        return { text: t("ошибка", "error"), tone: "fail", hint: p.reason };
       case "not_checked":
-        return { text: "—", tone: "none", hint: "Резолвер не поддерживает этот способ" };
+        return { text: "—", tone: "none", hint: t("Резолвер не поддерживает этот способ", "The resolver doesn't support this method") };
     }
   }
 
@@ -146,14 +147,13 @@
 <section class="card block">
   <div class="row">
     <div>
-      <h2>Почему не работает?</h2>
+      <h2>{t("Почему не работает?", "Why isn't it working?")}</h2>
       <p class="muted">
-        По шагам проверяет сеть, службу KVT, подписку, сервер и туннель и говорит, что не так. К серверу — не больше
-        одного соединения.
+        {t("По шагам проверяет сеть, службу KVT, подписку, сервер и туннель и говорит, что не так. К серверу — не больше одного соединения.", "Checks the network, the KVT service, the subscription, the server and the tunnel step by step and tells you what's wrong. At most one connection to the server.")}
       </p>
     </div>
     <button class="btn btn-primary" class:busy={st.diagnosing} disabled={st.diagnosing} onclick={diagnose}>
-      <Icon name="help" size={16} />{st.diagnosis ? "Проверить снова" : "Найти причину"}
+      <Icon name="help" size={16} />{st.diagnosis ? t("Проверить снова", "Check again") : t("Найти причину", "Find the cause")}
     </button>
   </div>
 
@@ -166,7 +166,7 @@
       <div>
         <strong>{st.diagnosis.title}</strong>
         {#if st.diagnosis.detail}<p>{st.diagnosis.detail}</p>{/if}
-        {#if stale}<p class="stale-note">Подключение изменилось после проверки — проверьте снова.</p>{/if}
+        {#if stale}<p class="stale-note">{t("Подключение изменилось после проверки — проверьте снова.", "The connection changed after the check — check again.")}</p>{/if}
       </div>
       {#if st.diagnosis.fix && !stale}
         {@const fix = st.diagnosis.fix}
@@ -185,8 +185,7 @@
 
   <div class="row export">
     <p class="caption">
-      Не помогло? Сохраните диагностику — журналы и итоги проверок без ключей и адресов серверов — и приложите её к
-      сообщению об ошибке.
+      {t("Не помогло? Сохраните диагностику — журналы и итоги проверок без ключей и адресов серверов — и приложите её к сообщению об ошибке.", "Didn't help? Save diagnostics — logs and check results without keys or server addresses — and attach it to your bug report.")}
     </p>
     <DiagExport />
   </div>
@@ -195,24 +194,23 @@
 <section class="card block" id="dns-check">
   <div class="row">
     <div>
-      <h2>Проверка DNS</h2>
+      <h2>{t("Проверка DNS", "DNS check")}</h2>
       <p class="muted">
-        Какие DNS-серверы доступны из этой сети, не перехватывает ли провайдер запросы и не подменяет ли адреса
-        заблокированных сайтов. Около 30 коротких запросов.
+        {t("Какие DNS-серверы доступны из этой сети, не перехватывает ли провайдер запросы и не подменяет ли адреса заблокированных сайтов. Около 30 коротких запросов.", "Which DNS servers are reachable from this network, whether your ISP intercepts queries and spoofs addresses of blocked sites. About 30 short queries.")}
       </p>
     </div>
     <button
       class="btn"
       class:busy={st.dnsRunning}
       disabled={st.dnsRunning || connected}
-      title={connected ? "Отключите VPN: проверка смотрит на сеть провайдера напрямую" : undefined}
+      title={connected ? t("Отключите VPN: проверка смотрит на сеть провайдера напрямую", "Disconnect the VPN: the check looks at your ISP's network directly") : undefined}
       onclick={runDns}
     >
-      <Icon name="globe" size={16} />{st.dnsReport ? "Проверить снова" : "Проверить DNS"}
+      <Icon name="globe" size={16} />{st.dnsReport ? t("Проверить снова", "Check again") : t("Проверить DNS", "Check DNS")}
     </button>
   </div>
   {#if connected}
-    <p class="caption">Работает при отключённом VPN: смотрит на сеть провайдера напрямую.</p>
+    <p class="caption">{t("Работает при отключённом VPN: смотрит на сеть провайдера напрямую.", "Works with the VPN off: looks at your ISP's network directly.")}</p>
   {/if}
   {#if st.dnsError}
     <p class="error-text appear">{st.dnsError}</p>
@@ -230,7 +228,7 @@
       <table>
         <thead>
           <tr>
-            <th scope="col">Резолвер</th>
+            <th scope="col">{t("Резолвер", "Resolver")}</th>
             <th scope="col">UDP</th>
             <th scope="col">DoT</th>
             <th scope="col">DoH</th>
@@ -257,9 +255,9 @@
             <strong>{f.domain}: {f.source}</strong>
             <span>
               {#if f.kind === "denied"}
-                отвечает «такого сайта нет», хотя он существует
+                {t("отвечает «такого сайта нет», хотя он существует", "answers “no such site”, although it exists")}
               {:else}
-                возвращает {f.got.join(", ")} — адрес заглушки
+                {t(`возвращает ${f.got.join(", ")} — адрес заглушки`, `returns ${f.got.join(", ")} — a block-page address`)}
               {/if}
             </span>
           </li>
@@ -268,22 +266,22 @@
     {/if}
 
     <p class="caption">
-      DNS этой сети: {st.dnsReport.systemServer ?? "не определён"}{#if st.dnsReport.systemEgress}, на самом деле отвечает {st.dnsReport.systemEgress}{/if}.
+      {t(`DNS этой сети: ${st.dnsReport.systemServer ?? "не определён"}`, `This network's DNS: ${st.dnsReport.systemServer ?? "unknown"}`)}{#if st.dnsReport.systemEgress}{t(`, на самом деле отвечает ${st.dnsReport.systemEgress}`, `, actually answered by ${st.dnsReport.systemEgress}`)}{/if}.
     </p>
 
     {#if recommended && dns.local !== recommended.id}
       <div class="suggest appear">
-        <span>Для сайтов, которые открываются напрямую, лучше подойдёт {recommended.title}.</span>
+        <span>{t(`Для сайтов, которые открываются напрямую, лучше подойдёт ${recommended.title}.`, `For sites that open directly, ${recommended.title} is a better fit.`)}</span>
         <button
           class="btn"
           onclick={() => {
             dns = { ...dns, local: recommended.id };
             st.dnsApplied = true;
-          }}>Использовать</button
+          }}>{t("Использовать", "Use")}</button
         >
       </div>
     {:else if st.dnsApplied && recommended}
-      <p class="caption appear">{recommended.title} выбран — заработает при следующем подключении.</p>
+      <p class="caption appear">{t(`${recommended.title} выбран — заработает при следующем подключении.`, `${recommended.title} selected — it takes effect on the next connection.`)}</p>
     {/if}
   {/if}
 </section>

@@ -44,8 +44,11 @@ pub fn load(dir: &Path) -> Loaded {
             return Loaded {
                 choice: Choice::default(),
                 notice: Some(
-                    "Не удалось открыть файл настроек — KVT работает с настройками по умолчанию. Проверьте, не блокирует ли его антивирус."
-                        .into(),
+                    kvt_core::i18n::tr(
+                        "Не удалось открыть файл настроек — KVT работает с настройками по умолчанию. Проверьте, не блокирует ли его антивирус.",
+                        "Couldn't open the settings file — KVT is using default settings. Check whether antivirus is blocking it.",
+                    )
+                    .into(),
                 ),
             };
         }
@@ -60,8 +63,9 @@ pub fn load(dir: &Path) -> Loaded {
             tracing::warn!(?lost, "часть настроек не прочиталась");
             Loaded {
                 choice,
-                notice: Some(format!(
+                notice: Some(kvt_core::trf!(
                     "Часть настроек не прочиталась и сброшена: {}. Остальные на месте. Исходный файл сохранён как {BAD}.",
+                    "Some settings couldn't be read and were reset: {}. The rest are intact. The original file was saved as {BAD}.",
                     lost.join(", ")
                 )),
             }
@@ -71,8 +75,9 @@ pub fn load(dir: &Path) -> Loaded {
             tracing::error!("settings.json повреждён");
             Loaded {
                 choice: Choice::default(),
-                notice: Some(format!(
-                    "Файл настроек повреждён — KVT вернул настройки по умолчанию (kill switch, маршрутизацию, профили сетей и zapret проверьте в настройках). Исходный файл сохранён как {BAD}."
+                notice: Some(kvt_core::trf!(
+                    "Файл настроек повреждён — KVT вернул настройки по умолчанию (kill switch, маршрутизацию, профили сетей и zapret проверьте в настройках). Исходный файл сохранён как {BAD}.",
+                    "The settings file is damaged — KVT restored the defaults (check the kill switch, routing, network profiles and zapret in settings). The original file was saved as {BAD}."
                 )),
             }
         }
@@ -135,34 +140,40 @@ fn salvage(map: Map<String, Value>) -> Parsed {
 
 /// Название поля для пользователя.
 fn title(key: &str) -> String {
+    use kvt_core::i18n::tr;
     match key {
-        "server" => "выбранный сервер",
-        "mode" => "режим",
+        "server" => tr("выбранный сервер", "selected server"),
+        "mode" => tr("режим", "mode"),
         "killSwitch" => "kill switch",
-        "routing" => "маршрутизация",
+        "routing" => tr("маршрутизация", "routing"),
         "dns" => "DNS",
-        "autoSwitch" => "автопереключение",
-        "networks" => "профили сетей",
-        "zapret" => "настройки zapret",
-        "recent" => "недавние серверы",
-        "notifications" => "уведомления",
-        "connectOnStart" => "подключение при запуске",
-        "checkUpdates" => "проверка новой версии",
-        "autostartOffered" => "автозапуск",
-        "onboarded" => "подсказки первого запуска",
+        "autoSwitch" => tr("автопереключение", "auto-switch"),
+        "networks" => tr("профили сетей", "network profiles"),
+        "zapret" => tr("настройки zapret", "zapret settings"),
+        "recent" => tr("недавние серверы", "recent servers"),
+        "notifications" => tr("уведомления", "notifications"),
+        "connectOnStart" => tr("подключение при запуске", "connect on startup"),
+        "checkUpdates" => tr("проверка новой версии", "update check"),
+        "autostartOffered" => tr("автозапуск", "autostart"),
+        "onboarded" => tr("подсказки первого запуска", "first-run tips"),
+        "language" => tr("язык", "language"),
         other => other,
     }
     .into()
 }
 
 pub fn save(dir: &Path, choice: &Choice) -> Result<(), String> {
-    std::fs::create_dir_all(dir)
-        .map_err(|e| crate::errors::io("Не удалось сохранить настройки", &e))?;
-    let mut value = serde_json::to_value(choice).map_err(|_| crate::errors::STATE)?;
+    std::fs::create_dir_all(dir).map_err(|e| {
+        crate::errors::io(
+            kvt_core::i18n::tr("Не удалось сохранить настройки", "Couldn't save settings"),
+            &e,
+        )
+    })?;
+    let mut value = serde_json::to_value(choice).map_err(|_| crate::errors::state_text())?;
     if let Value::Object(map) = &mut value {
         map.insert("version".into(), VERSION.into());
     }
-    let bytes = serde_json::to_vec_pretty(&value).map_err(|_| crate::errors::STATE)?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|_| crate::errors::state_text())?;
     // Сохраняют окно, трей, автопереключение и профиль сети — из разных потоков.
     // Общий .tmp при одновременной записи давал бы битый JSON (хвост длинной
     // записи после короткой), а битый файл при запуске сбросил бы kill switch.
@@ -171,7 +182,12 @@ pub fn save(dir: &Path, choice: &Choice) -> Result<(), String> {
     let tmp = dir.join(format!("{FILE}.tmp"));
     std::fs::write(&tmp, bytes)
         .and_then(|()| std::fs::rename(&tmp, dir.join(FILE)))
-        .map_err(|e| crate::errors::io("Не удалось сохранить настройки", &e))
+        .map_err(|e| {
+            crate::errors::io(
+                kvt_core::i18n::tr("Не удалось сохранить настройки", "Couldn't save settings"),
+                &e,
+            )
+        })
 }
 
 #[cfg(test)]

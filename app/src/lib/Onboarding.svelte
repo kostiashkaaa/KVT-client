@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "./i18n";
   import type { Mode } from "./api";
 
   // Первый запуск — три коротких шага поверх главной: подписка → режим → подключение.
@@ -35,39 +36,38 @@
   const finished = $derived(step === 3 && active);
 
   const modes: { id: Mode; title: string; text: string }[] = [
-    { id: "vpn", title: "VPN", text: "Заблокированное — через VPN-сервер, российские сайты — напрямую." },
-    { id: "hybrid", title: "Гибрид", text: "YouTube и Discord — через zapret без VPN, Telegram Desktop — через прокси, остальное заблокированное — через VPN." },
-    { id: "zapret", title: "Zapret", text: "Без VPN-сервера: обход замедления YouTube и Discord, Telegram Desktop — через прокси." },
+    { id: "vpn", title: "VPN", text: t("Заблокированное — через VPN-сервер, российские сайты — напрямую.", "Blocked sites go through the VPN server, Russian sites go direct.") },
+    { id: "hybrid", title: t("Гибрид", "Hybrid"), text: t("YouTube и Discord — через zapret без VPN, Telegram Desktop — через прокси, остальное заблокированное — через VPN.", "YouTube and Discord go through zapret without the VPN, Telegram Desktop through the proxy, other blocked sites through the VPN.") },
+    { id: "zapret", title: "Zapret", text: t("Без VPN-сервера: обход замедления YouTube и Discord, Telegram Desktop — через прокси.", "No VPN server: bypasses YouTube and Discord throttling, Telegram Desktop goes through the proxy.") },
   ];
 </script>
 
 <section class="card onboarding appear" aria-labelledby="onboarding-title">
   <div class="head">
-    <p class="caption steps" aria-label="Шаг {step} из 3">
+    <p class="caption steps" aria-label={t(`Шаг ${step} из 3`, `Step ${step} of 3`)}>
       {#each [1, 2, 3] as n (n)}
         <span class="dot" class:done={n < step || finished} class:current={n === step && !finished}></span>
       {/each}
-      Шаг {step} из 3
+      {t(`Шаг ${step} из 3`, `Step ${step} of 3`)}
     </p>
     {#if !finished}
-      <button class="skip" onclick={ondone}>Пропустить</button>
+      <button class="skip" onclick={ondone}>{t("Пропустить", "Skip")}</button>
     {/if}
   </div>
 
   {#if step === 1}
-    <h2 id="onboarding-title">Добавьте подписку или ключ</h2>
+    <h2 id="onboarding-title">{t("Добавьте подписку или ключ", "Add a subscription or key")}</h2>
     <p class="muted">
-      Ссылку на подписку (https://…) или ключ (vless://, vmess://, trojan://, hy2://…) даёт ваш VPN-провайдер. Пользуетесь
-      v2rayN, Hiddify или NekoRay — KVT перенесёт подписки из них.
+      {t("Ссылку на подписку (https://…) или ключ (vless://, vmess://, trojan://, hy2://…) даёт ваш VPN-провайдер. Пользуетесь v2rayN, Hiddify или NekoRay — KVT перенесёт подписки из них.", "Your VPN provider gives you a subscription link (https://…) or a key (vless://, vmess://, trojan://, hy2://…). Using v2rayN, Hiddify or NekoRay? KVT will import subscriptions from them.")}
     </p>
     <div class="actions">
-      <button class="btn btn-primary" onclick={onadd}>Вставить ссылку</button>
-      <button class="btn" onclick={onmigrate}>Перенести из другого клиента</button>
-      <button class="btn link" onclick={() => ((mode = "zapret"), (step = 2))}>У меня нет VPN — только zapret</button>
+      <button class="btn btn-primary" onclick={onadd}>{t("Вставить ссылку", "Paste link")}</button>
+      <button class="btn" onclick={onmigrate}>{t("Перенести из другого клиента", "Import from another client")}</button>
+      <button class="btn link" onclick={() => ((mode = "zapret"), (step = 2))}>{t("У меня нет VPN — только zapret", "I have no VPN — just zapret")}</button>
     </div>
   {:else if step === 2}
-    <h2 id="onboarding-title">Выберите режим</h2>
-    <div class="modes" role="radiogroup" aria-label="Режим работы">
+    <h2 id="onboarding-title">{t("Выберите режим", "Choose a mode")}</h2>
+    <div class="modes" role="radiogroup" aria-label={t("Режим работы", "Mode")}>
       {#each modes as m (m.id)}
         <button
           class="mode"
@@ -82,31 +82,29 @@
         </button>
       {/each}
     </div>
-    <p class="caption">Режим можно сменить в любой момент — на главной и в меню трея.</p>
+    <p class="caption">{t("Режим можно сменить в любой момент — на главной и в меню трея.", "You can change the mode any time — on the home page and in the tray menu.")}</p>
     <div class="actions">
-      <button class="btn btn-primary" onclick={() => (step = 3)}>Дальше</button>
+      <button class="btn btn-primary" onclick={() => (step = 3)}>{t("Дальше", "Next")}</button>
     </div>
   {:else if !finished}
-    <h2 id="onboarding-title">Подключитесь</h2>
+    <h2 id="onboarding-title">{t("Подключитесь", "Connect")}</h2>
     <p class="muted">
-      KVT поднимет защищённое соединение и проверит, что сайты открываются. Закрытое окно не выключает VPN: KVT
-      остаётся в трее, оттуда же можно сменить сервер и режим.
+      {t("KVT поднимет защищённое соединение и проверит, что сайты открываются. Закрытое окно не выключает VPN: KVT остаётся в трее, оттуда же можно сменить сервер и режим.", "KVT will set up a secure connection and check that sites open. Closing the window doesn't turn off the VPN: KVT stays in the tray, where you can also change the server and mode.")}
     </p>
     <div class="actions">
       <button class="btn btn-primary" disabled={busy} onclick={onconnect}>
         {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
-        {busy ? "Подключение…" : "Подключить"}
+        {busy ? t("Подключение…", "Connecting…") : t("Подключить", "Connect")}
       </button>
-      <button class="btn" onclick={() => (step = 2)}>Назад</button>
+      <button class="btn" onclick={() => (step = 2)}>{t("Назад", "Back")}</button>
     </div>
   {:else}
-    <h2 id="onboarding-title">Готово</h2>
+    <h2 id="onboarding-title">{t("Готово", "Done")}</h2>
     <p class="muted">
-      KVT подключён. Если что-то не открывается — «Почему не работает?» на главной найдёт причину. Подсказки можно
-      показать снова в «Настройках».
+      {t("KVT подключён. Если что-то не открывается — «Почему не работает?» на главной найдёт причину. Подсказки можно показать снова в «Настройках».", "KVT is connected. If something doesn't open, “Why isn't it working?” on the home page will find the cause. You can show these tips again in Settings.")}
     </p>
     <div class="actions">
-      <button class="btn btn-primary" onclick={ondone}>Понятно</button>
+      <button class="btn btn-primary" onclick={ondone}>{t("Понятно", "Got it")}</button>
     </div>
   {/if}
 </section>

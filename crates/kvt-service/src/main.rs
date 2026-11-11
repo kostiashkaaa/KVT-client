@@ -146,7 +146,12 @@ mod service {
             }
             Err(_) => manager.create_service(&info, access)?,
         };
-        service.set_description("Служба KVT: запуск VPN-ядер, TUN и защита от утечек")?;
+        // Описание в «Службах» — на языке Windows того, кто ставит KVT.
+        kvt_core::i18n::set(crate::win::ui_lang());
+        service.set_description(kvt_core::i18n::tr(
+            "Служба KVT: запуск VPN-ядер, TUN и защита от утечек",
+            "KVT service: runs VPN cores, TUN and leak protection",
+        ))?;
         // Отложенный запуск: не задерживает загрузку Windows, сеть к этому времени есть.
         service.set_delayed_auto_start(true)?;
         // Упала — перезапуск через 5, 10 и 30 с; счётчик сбрасывается через сутки.

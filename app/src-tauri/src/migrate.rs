@@ -169,9 +169,17 @@ fn open_copy(db: &Path) -> Result<DbCopy, String> {
         kvt_core::netlog::now_ms()
     ));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let name = db.file_name().ok_or("нет имени базы")?;
+    let name = db.file_name().ok_or(kvt_core::i18n::tr(
+        "нет имени базы",
+        "the database has no name",
+    ))?;
     let copy = dir.join(name);
-    std::fs::copy(db, &copy).map_err(|e| format!("не удалось прочитать базу: {e}"))?;
+    std::fs::copy(db, &copy).map_err(|e| {
+        kvt_core::trf!(
+            "не удалось прочитать базу: {e}",
+            "couldn't read the database: {e}"
+        )
+    })?;
     for suffix in ["-wal", "-shm"] {
         let mut side = db.as_os_str().to_owned();
         side.push(suffix);
@@ -182,8 +190,13 @@ fn open_copy(db: &Path) -> Result<DbCopy, String> {
             let _ = std::fs::copy(&side, PathBuf::from(target));
         }
     }
-    let conn = Connection::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|e| format!("не удалось открыть базу: {e}"))?;
+    let conn =
+        Connection::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|e| {
+            kvt_core::trf!(
+                "не удалось открыть базу: {e}",
+                "couldn't open the database: {e}"
+            )
+        })?;
     Ok(DbCopy { dir, conn })
 }
 
@@ -245,15 +258,22 @@ fn collect(client: Client, dir: &Path) -> Collected {
         Client::Hiddify => hiddify(&mut c, dir),
         Client::Happ => {
             c.note = Some(
-                "Happ хранит подписки в зашифрованном виде — KVT их не читает. Скопируйте в Happ \
-                 ссылку на подписку и добавьте её в KVT кнопкой «+»."
-                    .into(),
+                kvt_core::i18n::tr(
+                    "Happ хранит подписки в зашифрованном виде — KVT их не читает. Скопируйте в Happ \
+                     ссылку на подписку и добавьте её в KVT кнопкой «+».",
+                    "Happ stores subscriptions encrypted — KVT can't read them. Copy the subscription \
+                     link in Happ and add it to KVT with the “+” button.",
+                )
+                .into(),
             );
             Ok(())
         }
     };
     if let Err(e) = result {
-        c.note = Some(format!("Не удалось прочитать данные: {e}"));
+        c.note = Some(kvt_core::trf!(
+            "Не удалось прочитать данные: {e}",
+            "Couldn't read the data: {e}"
+        ));
     }
     c
 }
@@ -289,8 +309,11 @@ fn v2rayn(c: &mut Collected, dir: &Path) -> Result<(), String> {
 
 /// Старые версии v2rayN: всё в `guiNConfig.json`, ключи с маленькой буквы.
 fn v2rayn_legacy(c: &mut Collected, dir: &Path) -> Result<(), String> {
-    let cfg = read_json(&dir.join("guiConfigs").join("guiNConfig.json"))
-        .ok_or("guiNConfig.json не читается")?;
+    let cfg =
+        read_json(&dir.join("guiConfigs").join("guiNConfig.json")).ok_or(kvt_core::i18n::tr(
+            "guiNConfig.json не читается",
+            "guiNConfig.json can't be read",
+        ))?;
     let pascal = |v: &Value| -> Map<String, Value> {
         v.as_object()
             .map(|o| {
@@ -413,7 +436,11 @@ fn nekoray(c: &mut Collected, dir: &Path) -> Result<(), String> {
 fn hiddify(c: &mut Collected, dir: &Path) -> Result<(), String> {
     let db = open_copy(&dir.join("db.sqlite"))?;
     if !table_exists(&db.conn, "profile_entries") {
-        return Err("в базе Hiddify нет профилей".into());
+        return Err(kvt_core::i18n::tr(
+            "в базе Hiddify нет профилей",
+            "the Hiddify database has no profiles",
+        )
+        .into());
     }
     for row in rows(&db.conn, "SELECT id, type, name, url FROM profile_entries")? {
         let url = s(&row, "url");
@@ -439,7 +466,7 @@ pub async fn migrate_scan(state: State<'_, AppState>) -> Result<Vec<Preview>, St
             .collect::<Vec<_>>()
     })
     .await
-    .map_err(|_| "Поиск прервался")?;
+    .map_err(|_| kvt_core::i18n::tr("Поиск прервался", "The search was interrupted"))?;
     let previews = found.iter().map(Collected::preview).collect();
     *state.migration.lock().map_err(crate::errors::state)? = found;
     Ok(previews)
@@ -452,11 +479,19 @@ pub async fn migrate_pick_folder(
 ) -> Result<Option<Vec<Preview>>, String> {
     let picked = tokio::task::spawn_blocking(|| {
         rfd::FileDialog::new()
-            .set_title("Папка другого VPN-клиента")
+            .set_title(kvt_core::i18n::tr(
+                "Папка другого VPN-клиента",
+                "Another VPN client's folder",
+            ))
             .pick_folder()
     })
     .await
-    .map_err(|_| "Окно выбора папки закрылось с ошибкой")?;
+    .map_err(|_| {
+        kvt_core::i18n::tr(
+            "Окно выбора папки закрылось с ошибкой",
+            "The folder picker closed with an error",
+        )
+    })?;
     let Some(dir) = picked else {
         return Ok(None);
     };
@@ -470,8 +505,16 @@ pub async fn migrate_pick_folder(
         .find_map(|d| detect(&d).map(|client| collect(client, &d)))
     })
     .await
-    .map_err(|_| "Чтение папки прервалось")?
-    .ok_or("В этой папке нет данных v2rayN, Throne, NekoRay или Hiddify")?;
+    .map_err(|_| {
+        kvt_core::i18n::tr(
+            "Чтение папки прервалось",
+            "Reading the folder was interrupted",
+        )
+    })?
+    .ok_or(kvt_core::i18n::tr(
+        "В этой папке нет данных v2rayN, Throne, NekoRay или Hiddify",
+        "This folder has no v2rayN, Throne, NekoRay or Hiddify data",
+    ))?;
     let mut found = state.migration.lock().map_err(crate::errors::state)?;
     found.retain(|c| c.location != collected.location);
     found.push(collected);
@@ -514,7 +557,11 @@ pub async fn migrate_import(
         .cloned()
         .collect();
     if chosen.is_empty() {
-        return Err("Выберите, откуда перенести".into());
+        return Err(kvt_core::i18n::tr(
+            "Выберите, откуда перенести",
+            "Choose where to import from",
+        )
+        .into());
     }
     let mut report = ImportReport::default();
     let mut seen = HashSet::new();

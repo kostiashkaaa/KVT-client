@@ -29,7 +29,10 @@ impl State {
         };
         if let Some(mut reason) = reason {
             if self.supervisor.kill_switch_active() {
-                reason.push_str(" Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново.");
+                reason.push_str(kvt_core::i18n::tr(
+                    " Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново.",
+                    " The kill switch is keeping the internet blocked — press “Disconnect” or connect again.",
+                ));
             }
             self.status = ServiceStatus::Failed {
                 reason,
@@ -82,15 +85,23 @@ impl State {
 /// Ответ на Hello: сверка версии протокола, состояние не нужно.
 pub fn hello(request: &Request) -> Response {
     match request {
-        Request::Hello { protocol_version } if *protocol_version == PROTOCOL_VERSION => {
+        Request::Hello {
+            protocol_version,
+            lang,
+        } if *protocol_version == PROTOCOL_VERSION => {
+            // Тексты для окна — на его языке. Клиент у службы один (kvt.exe).
+            kvt_core::i18n::set(*lang);
             Response::Hello {
                 protocol_version: PROTOCOL_VERSION,
                 service_version: env!("CARGO_PKG_VERSION").to_owned(),
             }
         }
         _ => Response::Error {
-            message: "Окно KVT и служба разных версий. Переустановите KVT — они обновятся вместе."
-                .into(),
+            message: kvt_core::i18n::tr(
+                "Окно KVT и служба разных версий. Переустановите KVT — они обновятся вместе.",
+                "The KVT window and service are different versions. Reinstall KVT so they update together.",
+            )
+            .into(),
         },
     }
 }
@@ -133,9 +144,11 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
                 Ok(Ok(())) => Response::Ok,
                 Ok(Err(message)) => Response::Error { message },
                 Err(_) => Response::Error {
-                    message:
-                        "Исправление прервалось. Повторите; если не выйдет — сохраните диагностику."
-                            .into(),
+                    message: kvt_core::i18n::tr(
+                        "Исправление прервалось. Повторите; если не выйдет — сохраните диагностику.",
+                        "The fix was interrupted. Try again; if it fails, save diagnostics.",
+                    )
+                    .into(),
                 },
             }
         }
@@ -182,7 +195,7 @@ pub async fn handle_or_cancel(
             state.status = ServiceStatus::Disconnected;
             state.session = None;
             Response::Error {
-                message: kvt_core::ipc::CANCELLED.into(),
+                message: kvt_core::ipc::cancelled().into(),
             }
         }
     }
@@ -225,13 +238,17 @@ async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
 /// Проверка до запуска чего-либо: имя стратегии и домены — без путей и спецсимволов.
 fn invalid_zapret(plan: &ZapretPlan) -> Option<String> {
     if !kvt_core::zapret::valid_id(&plan.strategy) {
-        return Some(format!("неизвестная стратегия «{}»", plan.strategy));
+        return Some(kvt_core::trf!(
+            "неизвестная стратегия «{}»",
+            "unknown strategy “{}”",
+            plan.strategy
+        ));
     }
     plan.domains
         .iter()
         .chain(&plan.exclude_domains)
         .find(|d| !kvt_core::zapret::valid_domain(d))
-        .map(|d| format!("недопустимый домен «{d}»"))
+        .map(|d| kvt_core::trf!("недопустимый домен «{d}»", "invalid domain “{d}”"))
 }
 
 /// Обновление и переустановка трогают файлы, которыми пользуется winws, поэтому
@@ -327,6 +344,7 @@ mod tests {
             &mut st,
             Request::Hello {
                 protocol_version: PROTOCOL_VERSION + 1,
+                lang: kvt_core::i18n::Lang::Ru,
             },
         )
         .await;
@@ -390,7 +408,7 @@ mod tests {
         assert_eq!(
             resp,
             Response::Error {
-                message: kvt_core::ipc::CANCELLED.into()
+                message: kvt_core::ipc::cancelled().into()
             }
         );
         assert_eq!(st.status, ServiceStatus::Disconnected);

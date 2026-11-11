@@ -4,6 +4,14 @@
 #![allow(unsafe_code)]
 
 use std::ffi::{c_void, OsString};
+
+/// Язык интерфейса Windows у того, кто запустил установку службы.
+pub fn ui_lang() -> kvt_core::i18n::Lang {
+    // SAFETY: функция без аргументов, только читает настройку.
+    let langid = unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() };
+    kvt_core::i18n::Lang::from_langid(langid)
+}
+
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsRawHandle, RawHandle};

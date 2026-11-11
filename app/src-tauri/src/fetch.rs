@@ -78,21 +78,51 @@ enum Reply {
     HwidRequired,
 }
 
-const HWID_REQUIRED: &str = "Провайдер ограничивает число устройств и ждёт ID устройства — разрешите его в «Расширенных» у подписки";
-const HWID_REJECTED: &str =
-    "Провайдер не принял ID устройства — проверьте ID в «Расширенных» у подписки";
-const HWID_LIMIT: &str = "У провайдера достигнут лимит устройств — удалите лишнее устройство в личном кабинете провайдера";
+fn hwid_required() -> &'static str {
+    kvt_core::i18n::tr(
+        "Провайдер ограничивает число устройств и ждёт ID устройства — разрешите его в «Расширенных» у подписки",
+        "The provider limits devices and expects a device ID — allow it in the subscription's “Advanced”",
+    )
+}
+
+fn hwid_rejected() -> &'static str {
+    kvt_core::i18n::tr(
+        "Провайдер не принял ID устройства — проверьте ID в «Расширенных» у подписки",
+        "The provider rejected the device ID — check the ID in the subscription's “Advanced”",
+    )
+}
+
+fn hwid_limit() -> &'static str {
+    kvt_core::i18n::tr(
+        "У провайдера достигнут лимит устройств — удалите лишнее устройство в личном кабинете провайдера",
+        "The provider's device limit is reached — remove an extra device in your provider's account",
+    )
+}
 
 pub fn validate_url(raw: &str) -> Result<Url, String> {
     // Ссылки «добавить в Happ / INCY / v2RayTun …» — в исходный адрес подписки.
     let unwrapped = kvt_core::subscription::unwrap_app_link(raw).map_err(str::to_owned)?;
     let raw = unwrapped.as_deref().unwrap_or(raw);
-    let url = Url::parse(raw.trim()).map_err(|_| "Ссылка на подписку повреждена".to_string())?;
+    let url = Url::parse(raw.trim()).map_err(|_| {
+        kvt_core::i18n::tr(
+            "Ссылка на подписку повреждена",
+            "The subscription link is broken",
+        )
+        .to_string()
+    })?;
     if url.scheme() != "https" {
-        return Err("Подписка загружается только по https".into());
+        return Err(kvt_core::i18n::tr(
+            "Подписка загружается только по https",
+            "Subscriptions load over https only",
+        )
+        .into());
     }
     if url.host_str().is_none() {
-        return Err("В ссылке нет адреса сервера".into());
+        return Err(kvt_core::i18n::tr(
+            "В ссылке нет адреса сервера",
+            "The link has no server address",
+        )
+        .into());
     }
     Ok(url)
 }
@@ -143,12 +173,14 @@ fn settle(host: &str, decision: Decision, now: Instant) -> Result<(), String> {
     );
     match decision {
         Decision::Allowed => Ok(()),
-        Decision::RetryAt(at) => Err(format!(
+        Decision::RetryAt(at) => Err(kvt_core::trf!(
             "Слишком частые запросы к серверу подписки — повторите через {} с",
+            "Too many requests to the subscription server — try again in {} s",
             at.saturating_duration_since(now).as_secs().max(1)
         )),
-        Decision::Frozen { until } => Err(format!(
+        Decision::Frozen { until } => Err(kvt_core::trf!(
             "Провайдер интернета притормозил соединения с этим сервером — подождите {} с",
+            "Your ISP stalled connections to this server — wait {} s",
             until.saturating_duration_since(now).as_secs().max(1)
         )),
     }
@@ -158,7 +190,7 @@ fn settle(host: &str, decision: Decision, now: Instant) -> Result<(), String> {
 pub async fn fetch(url: &Url, hints: &Hints<'_>) -> Result<Fetched, String> {
     match load(url, hints).await? {
         Loaded::Fresh(fetched) => Ok(fetched),
-        Loaded::NotModified(_) => Err(crate::errors::UNEXPECTED.into()),
+        Loaded::NotModified(_) => Err(crate::errors::unexpected().into()),
     }
 }
 
@@ -182,7 +214,9 @@ pub async fn load(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
     .ms(start.elapsed());
     match &result {
         Err(e) => event = event.detail(e),
-        Ok(Loaded::NotModified(_)) => event = event.detail("не изменилась"),
+        Ok(Loaded::NotModified(_)) => {
+            event = event.detail(kvt_core::i18n::tr("не изменилась", "not changed"))
+        }
         Ok(Loaded::Fresh(_)) => {}
     }
     netlog::record(event);
@@ -263,9 +297,9 @@ async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
             // Другой клиент тут не поможет.
             Ok(Reply::HwidRequired) => {
                 return Err(if hwid.is_some() {
-                    HWID_REJECTED
+                    hwid_rejected()
                 } else {
-                    HWID_REQUIRED
+                    hwid_required()
                 }
                 .into())
             }
@@ -294,7 +328,13 @@ async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
     }
     // Ни один вариант не дал серверов: вернуть первое, что было (ошибку или ответ —
     // тогда «не нашлось серверов» скажет проверка подписки).
-    first_error.unwrap_or_else(|| Err("Не удалось загрузить подписку".into()))
+    first_error.unwrap_or_else(|| {
+        Err(kvt_core::i18n::tr(
+            "Не удалось загрузить подписку",
+            "Couldn't load the subscription",
+        )
+        .into())
+    })
 }
 
 async fn fetch_as(
@@ -340,7 +380,7 @@ async fn fetch_as(
         .collect();
     let pairs = || headers.iter().map(|(k, v)| (k.as_str(), v.as_str()));
     match hwid_signal(pairs()) {
-        Some(HwidSignal::LimitReached) => return Err(HWID_LIMIT.into()),
+        Some(HwidSignal::LimitReached) => return Err(hwid_limit().into()),
         Some(HwidSignal::Required) if hwid.is_none() => return Ok(Reply::HwidRequired),
         _ => {}
     }
@@ -350,8 +390,9 @@ async fn fetch_as(
         return Ok(Reply::NotModified(meta));
     }
     if !resp.status().is_success() {
-        return Err(format!(
+        return Err(kvt_core::trf!(
             "Сервер подписки ответил ошибкой {}",
+            "The subscription server returned error {}",
             resp.status().as_u16()
         ));
     }
@@ -359,13 +400,21 @@ async fn fetch_as(
         .content_length()
         .is_some_and(|len| len > MAX_BODY_BYTES as u64)
     {
-        return Err("Подписка слишком большая".into());
+        return Err(kvt_core::i18n::tr(
+            "Подписка слишком большая",
+            "The subscription is too large",
+        )
+        .into());
     }
 
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(describe)? {
         if body.len() + chunk.len() > MAX_BODY_BYTES {
-            return Err("Подписка слишком большая".into());
+            return Err(kvt_core::i18n::tr(
+                "Подписка слишком большая",
+                "The subscription is too large",
+            )
+            .into());
         }
         body.extend_from_slice(&chunk);
     }
@@ -379,14 +428,30 @@ async fn fetch_as(
 /// Человеческое описание ошибки без URL (в нём токен подписки).
 fn describe(e: reqwest::Error) -> String {
     let e = e.without_url();
+    use kvt_core::i18n::tr;
     if e.is_timeout() {
-        "Сервер подписки не ответил вовремя".into()
+        tr(
+            "Сервер подписки не ответил вовремя",
+            "The subscription server didn't respond in time",
+        )
+        .into()
     } else if e.is_connect() {
-        "Не удалось подключиться к серверу подписки — возможно, он заблокирован. Включите VPN и повторите".into()
+        tr(
+            "Не удалось подключиться к серверу подписки — возможно, он заблокирован. Включите VPN и повторите",
+            "Couldn't connect to the subscription server — it may be blocked. Turn on the VPN and try again",
+        )
+        .into()
     } else if e.is_redirect() {
-        "Сервер подписки перенаправляет слишком много раз".into()
+        tr(
+            "Сервер подписки перенаправляет слишком много раз",
+            "The subscription server redirects too many times",
+        )
+        .into()
     } else {
-        format!("Не удалось загрузить подписку: {e}")
+        kvt_core::trf!(
+            "Не удалось загрузить подписку: {e}",
+            "Couldn't load the subscription: {e}"
+        )
     }
 }
 

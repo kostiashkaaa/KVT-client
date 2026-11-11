@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { t } from "./i18n";
   import Flag from "./Flag.svelte";
+  import Icon from "./Icon.svelte";
   import ServerName from "./ServerName.svelte";
   import {
     formatBytes,
@@ -78,24 +80,24 @@
   );
   const title = $derived(
     serviceStarting
-      ? "Запускаем службу KVT…"
+      ? t("Запускаем службу KVT…", "Starting the KVT service…")
       : tone === "pending"
-      ? "Подключение…"
+      ? t("Подключение…", "Connecting…")
       : zapretOnly
-        ? "Zapret работает"
+        ? t("Zapret работает", "Zapret is on")
         : noData
-          ? "Сайты не открываются"
+          ? t("Сайты не открываются", "Sites don't open")
           : connected
-            ? "Подключено"
+            ? t("Подключено", "Connected")
             : blocked
-              ? "Интернет закрыт"
+              ? t("Интернет закрыт", "Internet blocked")
               : serviceDown && mismatch
-              ? "Окно и служба KVT разных версий"
+              ? t("Окно и служба KVT разных версий", "KVT window and service versions differ")
               : serviceDown
-              ? "Служба KVT не запущена"
+              ? t("Служба KVT не запущена", "The KVT service isn't running")
               : tone === "error"
-                ? "Ошибка"
-                : "Отключено",
+                ? t("Ошибка", "Error")
+                : t("Отключено", "Disconnected"),
   );
   // Служба отвечает раз в 3 с, а секунды тикают здесь: от последнего ответа.
   let received = $state({ secs: 0, at: 0 });
@@ -121,8 +123,8 @@
   );
   const sessionTitle = $derived(
     traffic
-      ? `Принято ${traffic.rx}, отправлено ${traffic.tx} с момента подключения — весь трафик через KVT, включая сайты, которые открываются напрямую`
-      : "Время с момента подключения",
+      ? t(`Принято ${traffic.rx}, отправлено ${traffic.tx} с момента подключения — весь трафик через KVT, включая сайты, которые открываются напрямую`, `Received ${traffic.rx}, sent ${traffic.tx} since connecting — all traffic through KVT, including sites that open directly`)
+      : t("Время с момента подключения", "Time since connecting"),
   );
 
   /** Вид круглой кнопки: выключено, идёт подключение, подключено (или без данных). */
@@ -130,26 +132,26 @@
   /** Нажатие отключает: работает VPN или zapret, либо kill switch держит интернет. */
   const stops = $derived(connected || blocked);
   const actionLabel = $derived(
-    cancelable ? "Отменить подключение" : stops ? "Отключить" : busy ? "Подключение…" : "Подключить",
+    cancelable ? t("Отменить подключение", "Cancel connection") : stops ? t("Отключить", "Disconnect") : busy ? t("Подключение…", "Connecting…") : t("Подключить", "Connect"),
   );
 
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
   const modes: { id: Mode; label: string; hint: string }[] = $derived([
-    { id: "vpn", label: "VPN", hint: "Весь заблокированный трафик через VPN" },
+    { id: "vpn", label: "VPN", hint: t("Весь заблокированный трафик через VPN", "All blocked traffic via VPN") },
     {
       id: "hybrid",
-      label: "Гибрид",
+      label: t("Гибрид", "Hybrid"),
       hint: telegram
-        ? "YouTube и Discord через zapret, остальное через VPN; Telegram — через прокси"
-        : "YouTube и Discord через zapret, остальное через VPN",
+        ? t("YouTube и Discord через zapret, остальное через VPN; Telegram — через прокси", "YouTube and Discord via zapret, the rest via VPN; Telegram via the proxy")
+        : t("YouTube и Discord через zapret, остальное через VPN", "YouTube and Discord via zapret, the rest via VPN"),
     },
     {
       id: "zapret",
       label: "Zapret",
       hint: telegram
-        ? "Без VPN: YouTube и Discord через zapret, Telegram Desktop через прокси"
-        : "Без VPN: только обход DPI для YouTube и Discord",
+        ? t("Без VPN: YouTube и Discord через zapret, Telegram Desktop через прокси", "No VPN: YouTube and Discord via zapret, Telegram Desktop via the proxy")
+        : t("Без VPN: только обход DPI для YouTube и Discord", "No VPN: only the DPI bypass for YouTube and Discord"),
     },
   ]);
   const modeIndex = $derived(Math.max(0, modes.findIndex((m) => m.id === mode)));
@@ -163,17 +165,17 @@
       <h2>{#key title}<span class="appear">{title}</span>{/key}</h2>
       <p class="muted">
         {#if serviceDown && mismatch}
-          Похоже, обновление прервалось. Установите KVT заново — настройки и подписки сохранятся.
+          {t("Похоже, обновление прервалось. Установите KVT заново — настройки и подписки сохранятся.", "The update seems to have been interrupted. Install KVT again — your settings and subscriptions will be kept.")}
         {:else if serviceStarting}
-          Обычно это несколько секунд.
+          {t("Обычно это несколько секунд.", "This usually takes a few seconds.")}
         {:else if serviceDown}
-          Без неё KVT не подключится. Нажмите «Запустить службу».
+          {t("Без неё KVT не подключится. Нажмите «Запустить службу».", "KVT can't connect without it. Press “Start service”.")}
         {:else if blocked}
-          VPN остановился, а kill switch не выпускает трафик мимо туннеля. Отключите, чтобы вернуть интернет.
+          {t("VPN остановился, а kill switch не выпускает трафик мимо туннеля. Отключите, чтобы вернуть интернет.", "The VPN stopped, and the kill switch blocks traffic outside the tunnel. Disconnect to restore the internet.")}
         {:else if zapretOnly}
-          Стратегия {strategyTitle(zapretOnly.strategy)} · без VPN
+          {t(`Стратегия ${strategyTitle(zapretOnly.strategy)} · без VPN`, `Strategy ${strategyTitle(zapretOnly.strategy)} · no VPN`)}
         {:else if mode === "zapret" && !connected}
-          Сервер не нужен — только обход DPI
+          {t("Сервер не нужен — только обход DPI", "No server needed — just the DPI bypass")}
         {:else if server}
           <!-- Без флага — без пустого места перед названием. -->
           <span class="server"
@@ -181,15 +183,15 @@
             >{#if coreName}<span class="caption">· {coreName}</span>{/if}</span
           >
         {:else}
-          Выберите сервер ниже
+          {t("Выберите сервер ниже", "Pick a server below")}
         {/if}
       </p>
       <!-- Строка сеанса занимает место всегда и только проявляется: карточка не
            меняет высоту при подключении, кнопка не съезжает. -->
       {#if noData}
         <p class="caption session warn-text appear">
-          <span class="clip">Сервер принял подключение, но данные не идут</span>
-          <button class="why" onclick={onwhy}>Почему?</button>
+          <span class="clip">{t("Сервер принял подключение, но данные не идут", "The server accepted the connection, but no data is flowing")}</span>
+          <button class="why" onclick={onwhy}>{t("Почему?", "Why?")}</button>
         </p>
       {:else}
         <p class="caption session" class:shown={showSession} title={showSession ? sessionTitle : undefined}>
@@ -197,8 +199,8 @@
             <span>{elapsed}</span>
             {#if traffic}
               <span class="sep" aria-hidden="true">·</span>
-              <span aria-label="Принято">↓&nbsp;{traffic.rx}</span>
-              <span aria-label="Отправлено">↑&nbsp;{traffic.tx}</span>
+              <span aria-label={t("Принято", "Received")}>↓&nbsp;{traffic.rx}</span>
+              <span aria-label={t("Отправлено", "Sent")}>↑&nbsp;{traffic.tx}</span>
             {/if}
           {:else}&nbsp;{/if}
         </p>
@@ -209,11 +211,11 @@
   <!-- Одно место для кнопки во всех состояниях: она не прыгает и не меняет размер. -->
   <div class="action">
     {#if serviceDown && mismatch}
-      <button class="btn btn-primary" onclick={onreinstall}>Страница загрузки</button>
+      <button class="btn btn-primary" onclick={onreinstall}>{t("Страница загрузки", "Download page")}</button>
     {:else if serviceDown && !connected}
       <button class="btn btn-primary" disabled={busy || starting} onclick={onstartservice}>
         {#if starting}<span class="spinner" aria-hidden="true"></span>{/if}
-        {starting ? "Запуск…" : "Запустить службу"}
+        {starting ? t("Запуск…", "Starting…") : t("Запустить службу", "Start service")}
       </button>
     {:else}
       <button
@@ -243,7 +245,7 @@
     {/if}
   </div>
 
-  <div class="modes" role="radiogroup" aria-label="Режим работы" style:--i={modeIndex}>
+  <div class="modes" role="radiogroup" aria-label={t("Режим работы", "Mode")} style:--i={modeIndex}>
     <span class="thumb" aria-hidden="true"></span>
     {#each modes as m (m.id)}
       <button
@@ -259,7 +261,7 @@
   </div>
   <p class="caption hint">
     {modes.find((m) => m.id === mode)?.hint}
-    <button class="why" onclick={onwhy}>Почему не работает?</button>
+    <button class="btn ghost" onclick={onwhy}><Icon name="help" size={14} />{t("Почему не работает?", "Why isn't it working?")}</button>
   </p>
 </section>
 
@@ -604,11 +606,30 @@
 
   .hint {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: var(--space-4);
     grid-column: 1 / -1;
     margin: calc(-1 * var(--space-2)) 0 0;
+  }
+
+  /* Тихая кнопка, как «Пинг» и «Проверить» у списка серверов: не спорит с главной.
+     Правый край текста — по краю карточки, отступ кнопки уходит в поле. */
+  .hint .ghost {
+    flex: none;
+    gap: 6px;
+    min-height: 26px;
+    margin-right: calc(-1 * var(--space-2));
+    padding: 0 var(--space-2);
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12px;
+  }
+
+  .hint .ghost:hover {
+    background: var(--surface-hover);
+    color: var(--text);
   }
 
   .why {
@@ -694,6 +715,10 @@
       align-items: center;
       gap: var(--space-1);
       margin: 0;
+    }
+
+    .hint .ghost {
+      margin-right: 0;
     }
   }
 </style>

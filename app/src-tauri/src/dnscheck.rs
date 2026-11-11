@@ -42,7 +42,11 @@ fn log_query(host: &str, via: &str, result: &QueryResult) {
     use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
     let (outcome, ms, detail) = match result {
         QueryResult::Answer { ms, .. } => (Outcome::Ok, Some(*ms), via.to_owned()),
-        QueryResult::Timeout => (Outcome::Failed, None, format!("{via}: нет ответа")),
+        QueryResult::Timeout => (
+            Outcome::Failed,
+            None,
+            kvt_core::trf!("{via}: нет ответа", "{via}: no response"),
+        ),
         QueryResult::Failed(e) => (Outcome::Failed, None, format!("{via}: {e}")),
     };
     let mut event =
@@ -62,7 +66,7 @@ async fn udp_to(server: SocketAddr, name: &str) -> QueryResult {
 async fn udp_query(server: SocketAddr, name: &str) -> QueryResult {
     let id = random_id();
     let Ok(q) = wire::query(id, name, wire::TYPE_A) else {
-        return failed("некорректное имя");
+        return failed(kvt_core::i18n::tr("некорректное имя", "invalid name"));
     };
     let attempt = async {
         let bind = if server.is_ipv4() {
@@ -101,7 +105,7 @@ async fn dot(endpoint: dns::Endpoint, name: &str) -> QueryResult {
 async fn dot_query(endpoint: dns::Endpoint, name: &str) -> QueryResult {
     let id = random_id();
     let Ok(q) = wire::query(id, name, wire::TYPE_A) else {
-        return failed("некорректное имя");
+        return failed(kvt_core::i18n::tr("некорректное имя", "invalid name"));
     };
     let attempt = async {
         let start = Instant::now();
@@ -154,7 +158,7 @@ async fn doh(client: &reqwest::Client, endpoint: dns::Endpoint, name: &str) -> Q
 async fn doh_query(client: &reqwest::Client, endpoint: dns::Endpoint, name: &str) -> QueryResult {
     let id = 0; // RFC 8484: в DoH id = 0, ответ привязан к HTTP-запросу.
     let Ok(q) = wire::query(id, name, wire::TYPE_A) else {
-        return failed("некорректное имя");
+        return failed(kvt_core::i18n::tr("некорректное имя", "invalid name"));
     };
     let start = Instant::now();
     let response = client
@@ -188,7 +192,7 @@ async fn ask(client: &reqwest::Client, r: &Resolver, via: Via, name: &str) -> Qu
         Via::Dot => dot(r.dot, name).await,
         Via::Doh => match r.doh {
             Some(endpoint) => doh(client, endpoint, name).await,
-            None => failed("не поддерживается"),
+            None => failed(kvt_core::i18n::tr("не поддерживается", "not supported")),
         },
     }
 }
@@ -266,7 +270,11 @@ pub async fn dns_check(state: State<'_, AppState>) -> Result<dns::DnsReport, Str
         query_status().await,
         Ok(Some(ServiceStatus::Connected { .. }))
     ) {
-        return Err("Отключите VPN: проверка DNS смотрит на сеть провайдера напрямую.".into());
+        return Err(kvt_core::i18n::tr(
+            "Отключите VPN: проверка DNS смотрит на сеть провайдера напрямую.",
+            "Disconnect the VPN: the DNS check looks at your ISP's network directly.",
+        )
+        .into());
     }
     if let Some((at, report)) = state
         .dns_report

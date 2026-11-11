@@ -251,9 +251,10 @@ impl Store {
 
     pub fn save(&self) -> io::Result<()> {
         if self.read_only {
-            return Err(io::Error::other(
+            return Err(io::Error::other(kvt_core::i18n::tr(
                 "файл подписок не прочитался при запуске — перезапустите KVT, иначе подписки сотрутся",
-            ));
+                "the subscriptions file couldn't be read at startup — restart KVT, otherwise your subscriptions will be erased",
+            )));
         }
         let mut subscriptions = self
             .subscriptions

@@ -96,23 +96,34 @@ pub fn parse_release(json: &[u8]) -> Result<Release, String> {
         tag_name: String,
         assets: Vec<Asset>,
     }
-    let raw: Raw = serde_json::from_slice(json).map_err(|e| format!("ответ GitHub: {e}"))?;
+    let raw: Raw = serde_json::from_slice(json)
+        .map_err(|e| crate::trf!("ответ GitHub: {e}", "GitHub response: {e}"))?;
     let version = raw.tag_name.trim_start_matches('v').to_owned();
     if !valid_version(&version) {
-        return Err(format!("непонятная версия «{}»", raw.tag_name));
+        return Err(crate::trf!(
+            "непонятная версия «{}»",
+            "unrecognized version “{}”",
+            raw.tag_name
+        ));
     }
     let expected = archive_url(&version);
     let asset = raw
         .assets
         .into_iter()
         .find(|a| a.name.ends_with(".zip") && a.browser_download_url == expected)
-        .ok_or("в релизе нет архива zip")?;
+        .ok_or(crate::i18n::tr(
+            "в релизе нет архива zip",
+            "the release has no zip archive",
+        ))?;
     let sha256 = asset
         .digest
         .as_deref()
         .and_then(|d| d.strip_prefix("sha256:"))
         .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-        .ok_or("у архива нет SHA-256 от GitHub")?
+        .ok_or(crate::i18n::tr(
+            "у архива нет SHA-256 от GitHub",
+            "the archive has no SHA-256 from GitHub",
+        ))?
         .to_ascii_lowercase();
     Ok(Release {
         version,
@@ -236,17 +247,26 @@ const GAME_UDP: &str = "%GameFilterUDP%";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ZapretError {
-    #[error("в файле стратегии нет запуска winws.exe")]
+    #[error(
+        "{}",
+        crate::i18n::tr(
+            "в файле стратегии нет запуска winws.exe",
+            "the strategy file doesn't run winws.exe"
+        )
+    )]
     NoWinws,
-    #[error("незакрытая кавычка в аргументах")]
+    #[error(
+        "{}",
+        crate::i18n::tr("незакрытая кавычка в аргументах", "unclosed quote in arguments")
+    )]
     Quote,
-    #[error("флаг «{0}» не разрешён")]
+    #[error("{}", crate::trf!("флаг «{}» не разрешён", "flag “{}” isn't allowed", .0))]
     Flag(String),
-    #[error("недопустимое значение «{1}» у флага {0}")]
+    #[error("{}", crate::trf!("недопустимое значение «{}» у флага {}", "invalid value “{}” for flag {}", .1, .0))]
     Value(String, String),
-    #[error("неизвестная стратегия «{0}»")]
+    #[error("{}", crate::trf!("неизвестная стратегия «{}»", "unknown strategy “{}”", .0))]
     UnknownStrategy(String),
-    #[error("недопустимый домен «{0}»")]
+    #[error("{}", crate::trf!("недопустимый домен «{}»", "invalid domain “{}”", .0))]
     Domain(String),
 }
 
@@ -272,7 +292,7 @@ pub fn title(id: &str) -> String {
         .and_then(|s| s.strip_suffix(')'))
     {
         Some(inner) => inner.to_owned(),
-        None if id == "general" => "Основная".to_owned(),
+        None if id == "general" => crate::i18n::tr("Основная", "Main").to_owned(),
         None => id.to_owned(),
     }
 }

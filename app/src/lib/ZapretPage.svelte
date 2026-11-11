@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "./i18n";
   import Icon from "./Icon.svelte";
   import DiagExport from "./DiagExport.svelte";
   import {
@@ -67,7 +68,7 @@
     status?.state === "zapret"
       ? { mode: "Zapret", strategy: status.strategy }
       : status?.state === "connected" && mode === "hybrid"
-        ? { mode: "Гибрид", strategy: strategyFor(zapret, networkKey) }
+        ? { mode: t("Гибрид", "Hybrid"), strategy: strategyFor(zapret, networkKey) }
         : null,
   );
   const vpnConnected = $derived(status?.state === "connected");
@@ -80,10 +81,10 @@
 
   function ago(unix: number): string {
     const min = Math.max(0, Math.round((Date.now() / 1000 - unix) / 60));
-    if (min < 1) return "только что";
-    if (min < 60) return `${min} мин назад`;
+    if (min < 1) return t("только что", "just now");
+    if (min < 60) return t(`${min} мин назад`, `${min} min ago`);
     const h = Math.round(min / 60);
-    return h < 24 ? `${h} ч назад` : `${Math.round(h / 24)} дн назад`;
+    return h < 24 ? t(`${h} ч назад`, `${h} h ago`) : t(`${Math.round(h / 24)} дн назад`, `${Math.round(h / 24)} d ago`);
   }
 
   const shownCheck = $derived<ZapretCheck | null>(diagnosis.result?.check ?? check.last?.check ?? null);
@@ -91,15 +92,15 @@
   function fixLabel(fix: ZapretFix): string {
     switch (fix) {
       case "repair":
-        return "Переустановить zapret";
+        return t("Переустановить zapret", "Reinstall zapret");
       case "stop_conflicts":
-        return "Остановить другие обходы";
+        return t("Остановить другие обходы", "Stop other bypasses");
       case "autoselect":
-        return "Подобрать стратегию";
+        return t("Подобрать стратегию", "Pick a strategy");
       case "allow_timestamps":
-        return "Разрешить TCP timestamps";
+        return t("Разрешить TCP timestamps", "Allow TCP timestamps");
       case "enable":
-        return vpnConnected ? "Включить «Гибрид»" : "Включить zapret";
+        return vpnConnected ? t("Включить «Гибрид»", "Turn on Hybrid") : t("Включить zapret", "Turn on zapret");
     }
   }
 
@@ -216,7 +217,7 @@
     conflictError = null;
     try {
       conflicts = await zapretStopConflicts();
-      if (conflicts.length > 0) conflictError = "Остановить не вышло — закройте эти программы сами.";
+      if (conflicts.length > 0) conflictError = t("Остановить не вышло — закройте эти программы сами.", "Couldn't stop them — close these apps yourself.");
     } catch (e) {
       conflictError = message(e);
     } finally {
@@ -240,7 +241,7 @@
     tgMessage = null;
     try {
       await tgProxyOpen();
-      tgMessage = "В Telegram откроется окно «Подключить прокси» — нажмите «Подключиться».";
+      tgMessage = t("В Telegram откроется окно «Подключить прокси» — нажмите «Подключиться».", "Telegram will open a “Connect proxy” window — press “Connect”.");
     } catch (e) {
       tgMessage = message(e);
     }
@@ -250,25 +251,25 @@
     tgMessage = null;
     try {
       await navigator.clipboard.writeText(await tgProxyLink());
-      tgMessage = "Ссылка скопирована. Отправьте её себе в «Избранное» в Telegram и нажмите на неё.";
+      tgMessage = t("Ссылка скопирована. Отправьте её себе в «Избранное» в Telegram и нажмите на неё.", "Link copied. Send it to your “Saved Messages” in Telegram and tap it.");
     } catch (e) {
       tgMessage = message(e);
     }
   }
 
-  const driverText = { missing: "не установлен (установится при запуске)", stopped: "установлен", running: "работает" };
+  const driverText = { missing: t("не установлен (установится при запуске)", "not installed (installs on start)"), stopped: t("установлен", "installed"), running: t("работает", "works") };
   const gameFilters: { id: GameFilter; label: string }[] = [
-    { id: "off", label: "Выключен" },
+    { id: "off", label: t("Выключен", "Off") },
     { id: "tcp", label: "TCP" },
     { id: "udp", label: "UDP" },
-    { id: "all", label: "TCP и UDP" },
+    { id: "all", label: t("TCP и UDP", "TCP and UDP") },
   ];
   /** Подпись про перезапуск: в «Гибриде» вместе с zapret переподключается VPN. */
   const restartNote = $derived(
-    running?.mode === "Гибрид"
-      ? "Изменения применяются сразу: VPN и zapret переподключатся на пару секунд."
+    running && running.mode !== "Zapret"
+      ? t("Изменения применяются сразу: VPN и zapret переподключатся на пару секунд.", "Changes apply immediately: the VPN and zapret will reconnect for a couple of seconds.")
       : running
-        ? "Изменения применяются сразу: zapret перезапустится на пару секунд."
+        ? t("Изменения применяются сразу: zapret перезапустится на пару секунд.", "Changes apply immediately: zapret will restart for a couple of seconds.")
         : null,
   );
 </script>
@@ -280,21 +281,21 @@
       <div class="state">
         <span class="dot" class:on={running !== null} aria-hidden="true"></span>
         <div>
-          <h2>{running ? `Работает · режим ${running.mode}` : "Zapret выключен"}</h2>
+          <h2>{running ? t(`Работает · режим ${running.mode}`, `Running · ${running.mode} mode`) : t("Zapret выключен", "Zapret is off")}</h2>
           <p class="muted">
             {#if running}
-              Стратегия {strategyTitle(running.strategy)}{#if networkLabel} · сеть {networkLabel}{/if}
+              {t(`Стратегия ${strategyTitle(running.strategy)}`, `Strategy ${strategyTitle(running.strategy)}`)}{#if networkLabel} {t(`· сеть ${networkLabel}`, `· network ${networkLabel}`)}{/if}
             {:else if vpnConnected}
-              Сейчас работает только VPN. «Гибрид» добавит zapret для YouTube и Discord, не отключая VPN.
+              {t("Сейчас работает только VPN. «Гибрид» добавит zapret для YouTube и Discord, не отключая VPN.", "Only the VPN is running now. Hybrid adds zapret for YouTube and Discord without turning off the VPN.")}
             {:else}
-              Обход DPI для YouTube и Discord без VPN или вместе с ним (режим «Гибрид»).
+              {t("Обход DPI для YouTube и Discord без VPN или вместе с ним (режим «Гибрид»).", "DPI bypass for YouTube and Discord without the VPN or together with it (Hybrid mode).")}
             {/if}
           </p>
         </div>
       </div>
       {#if !running}
         <button class="btn btn-primary" class:busy disabled={busy} onclick={enable}>
-          {vpnConnected ? "Включить «Гибрид»" : "Включить zapret"}
+          {vpnConnected ? t("Включить «Гибрид»", "Turn on Hybrid") : t("Включить zapret", "Turn on zapret")}
         </button>
       {/if}
     </div>
@@ -303,32 +304,31 @@
       <div class="conflict appear" role="alert">
         <Icon name="warning" size={16} />
         <div>
-          <strong>Работает другой обход блокировок</strong>
+          <strong>{t("Работает другой обход блокировок", "Another block bypass is running")}</strong>
           <p>
-            {conflicts.map((c) => c.name).join(", ")} — вместе с ним zapret ничего не откроет. KVT остановит их, ничего не
-            удаляя.
+            {t(`${conflicts.map((c) => c.name).join(", ")} — вместе с ним zapret ничего не откроет. KVT остановит их, ничего не удаляя.`, `${conflicts.map((c) => c.name).join(", ")} — with it running, zapret won't open anything. KVT will stop them without deleting anything.`)}
           </p>
           {#if conflictError}<p class="bad">{conflictError}</p>{/if}
         </div>
-        <button class="btn" class:busy={stopping} disabled={stopping} onclick={stopConflicts}>Остановить</button>
+        <button class="btn" class:busy={stopping} disabled={stopping} onclick={stopConflicts}>{t("Остановить", "Stop")}</button>
       </div>
     {/if}
 
     <div class="last">
       <span class="caption">
         {#if check.last}
-          Проверка {ago(check.last.at)}: {check.last.check.passed} из {check.last.check.max}
-          {#if check.last.strategy}со стратегией {strategyTitle(check.last.strategy)}{:else}без zapret{/if}
+          {t(`Проверка ${ago(check.last.at)}: ${check.last.check.passed} из ${check.last.check.max}`, `Checked ${ago(check.last.at)}: ${check.last.check.passed} of ${check.last.check.max}`)}
+          {#if check.last.strategy}{t(`со стратегией ${strategyTitle(check.last.strategy)}`, `with strategy ${strategyTitle(check.last.strategy)}`)}{:else}{t("без zapret", "without zapret")}{/if}
         {:else}
-          Ещё не проверялось
+          {t("Ещё не проверялось", "Not checked yet")}
         {/if}
       </span>
       <div class="actions">
         <button class="btn" class:busy={check.running} disabled={check.running || pick.running} onclick={runCheck}>
-          <Icon name="pulse" size={16} />Проверить
+          <Icon name="pulse" size={16} />{t("Проверить", "Check")}
         </button>
         <button class="btn" class:busy={diagnosis.running} disabled={diagnosis.running || pick.running} onclick={runDiagnosis}>
-          <Icon name="help" size={16} />Почему не работает?
+          <Icon name="help" size={16} />{t("Почему не работает?", "Why isn't it working?")}
         </button>
         {#if diagnosis.result}<DiagExport />{/if}
       </div>
@@ -359,21 +359,21 @@
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th scope="col">Что проверяется</th><th scope="col">TLS 1.3</th><th scope="col">TLS 1.2</th></tr>
+            <tr><th scope="col">{t("Что проверяется", "What's checked")}</th><th scope="col">TLS 1.3</th><th scope="col">TLS 1.2</th></tr>
           </thead>
           <tbody>
-            {#each shownCheck.targets as t (t.name)}
+            {#each shownCheck.targets as target (target.name)}
               <tr>
-                <th scope="row">{t.name}</th>
-                {#each [t.tls13, t.tls12] as ms, i (i)}
-                  <td class={ms === null ? "fail" : "ok"}>{ms === null ? "не открылось" : `${ms} мс`}</td>
+                <th scope="row">{target.name}</th>
+                {#each [target.tls13, target.tls12] as ms, i (i)}
+                  <td class={ms === null ? "fail" : "ok"}>{ms === null ? t("не открылось", "didn't open") : t(`${ms} мс`, `${ms} ms`)}</td>
                 {/each}
               </tr>
             {/each}
             <tr>
-              <th scope="row">Загрузка больше 32 КБ</th>
+              <th scope="row">{t("Загрузка больше 32 КБ", "Download over 32 KB")}</th>
               <td colspan="2" class={shownCheck.download ? "ok" : "fail"}>
-                {shownCheck.download ? "без обрыва" : "обрыв — похоже на заморозку DPI"}
+                {shownCheck.download ? t("без обрыва", "no drop") : t("обрыв — похоже на заморозку DPI", "dropped — looks like DPI throttling")}
               </td>
             </tr>
           </tbody>
@@ -386,11 +386,11 @@
   <section class="card block">
     <div class="row">
       <div>
-        <h2>Стратегия</h2>
-        <p class="muted">Провайдеры блокируют по-разному, поэтому для каждой сети KVT запоминает свою.</p>
+        <h2>{t("Стратегия", "Strategy")}</h2>
+        <p class="muted">{t("Провайдеры блокируют по-разному, поэтому для каждой сети KVT запоминает свою.", "ISPs block in different ways, so KVT remembers a strategy for each network.")}</p>
       </div>
       <select
-        aria-label="Стратегия"
+        aria-label={t("Стратегия", "Strategy")}
         value={current}
         disabled={pick.running || strategies.length === 0}
         onchange={(e) => choose(e.currentTarget.value)}
@@ -402,7 +402,7 @@
           <option value={s.id}>{s.title}</option>
         {/each}
         {#if others.length > 0}
-          <optgroup label="Flowseal не рекомендует">
+          <optgroup label={t("Flowseal не рекомендует", "Not recommended by Flowseal")}>
             {#each others as s (s.id)}
               <option value={s.id}>{s.title}</option>
             {/each}
@@ -412,12 +412,12 @@
     </div>
     <p class="caption">
       {#if pickedForNetwork}
-        Подобрана автоматически{networkLabel ? ` для сети ${networkLabel}` : " для этой сети"}.
+        {t(`Подобрана автоматически${networkLabel ? ` для сети ${networkLabel}` : " для этой сети"}.`, `Picked automatically${networkLabel ? ` for network ${networkLabel}` : " for this network"}.`)}
       {:else}
-        Выбрана для всех сетей.
+        {t("Выбрана для всех сетей.", "Chosen for all networks.")}
       {/if}
-      {#if currentInfo?.needsTimestamps}Нужны TCP timestamps.{/if}
-      {#if currentInfo && !currentInfo.recommended}Flowseal не рекомендует эту стратегию.{/if}
+      {#if currentInfo?.needsTimestamps}{t("Нужны TCP timestamps.", "Needs TCP timestamps.")}{/if}
+      {#if currentInfo && !currentInfo.recommended}{t("Flowseal не рекомендует эту стратегию.", "Flowseal doesn't recommend this strategy.")}{/if}
     </p>
 
     <div class="pick">
@@ -429,22 +429,22 @@
           <span class="caption">
             {#if pick.progress}
               {pick.progress.index === 0
-                ? "Проверка без zapret…"
-                : `Стратегия ${pick.progress.title} (${pick.progress.index} из ${pick.progress.total})`}
-              {#if pick.progress.score !== null}· {pick.progress.score} из {pick.progress.max}{/if}
+                ? t("Проверка без zapret…", "Checking without zapret…")
+                : t(`Стратегия ${pick.progress.title} (${pick.progress.index} из ${pick.progress.total})`, `Strategy ${pick.progress.title} (${pick.progress.index} of ${pick.progress.total})`)}
+              {#if pick.progress.score !== null}{t(`· ${pick.progress.score} из ${pick.progress.max}`, `· ${pick.progress.score} of ${pick.progress.max}`)}{/if}
             {:else}
-              Подготовка…
+              {t("Подготовка…", "Preparing…")}
             {/if}
           </span>
         </div>
-        <button class="btn" onclick={() => void zapretAutoselectCancel()}>Остановить подбор</button>
+        <button class="btn" onclick={() => void zapretAutoselectCancel()}>{t("Остановить подбор", "Stop picking")}</button>
       {:else}
         <p class="caption">
           {vpnConnected
-            ? "Подбор проверяет сайты напрямую — сначала отключите VPN."
-            : "Проверка без zapret, затем стратегии по порядку Flowseal до первой, с которой открывается всё. До трёх минут."}
+            ? t("Подбор проверяет сайты напрямую — сначала отключите VPN.", "Picking checks sites directly — disconnect the VPN first.")
+            : t("Проверка без zapret, затем стратегии по порядку Flowseal до первой, с которой открывается всё. До трёх минут.", "A check without zapret, then strategies in Flowseal's order until the first one that opens everything. Up to three minutes.")}
         </p>
-        <button class="btn" disabled={vpnConnected} onclick={startAutoselect}>Подобрать автоматически</button>
+        <button class="btn" disabled={vpnConnected} onclick={startAutoselect}>{t("Подобрать автоматически", "Pick automatically")}</button>
       {/if}
     </div>
     {#if pick.error}<p class="note">{pick.error}</p>{/if}
@@ -453,27 +453,26 @@
       <div class="result appear" class:good={r.best !== null || r.baseline === r.max}>
         <p>
           {#if r.cancelled && !r.best}
-            Подбор остановлен.
+            {t("Подбор остановлен.", "Picking stopped.")}
           {:else if r.best}
-            Лучше всего работает {r.bestTitle}: {r.score} из {r.max} (без zapret — {r.baseline}). Выбрана для этой сети.
+            {t(`Лучше всего работает ${r.bestTitle}: ${r.score} из ${r.max} (без zapret — ${r.baseline}). Выбрана для этой сети.`, `${r.bestTitle} works best: ${r.score} of ${r.max} (without zapret — ${r.baseline}). Chosen for this network.`)}
           {:else if r.baseline === r.max}
-            Discord и YouTube открываются и без zapret — в этой сети он не нужен.
+            {t("Discord и YouTube открываются и без zapret — в этой сети он не нужен.", "Discord and YouTube open even without zapret — it isn't needed on this network.")}
           {:else}
-            Ни одна стратегия не помогла ({r.baseline} из {r.max} без zapret). Нажмите «Почему не работает?» или
-            переустановите zapret.
+            {t(`Ни одна стратегия не помогла (${r.baseline} из ${r.max} без zapret). Нажмите «Почему не работает?» или переустановите zapret.`, `No strategy helped (${r.baseline} of ${r.max} without zapret). Press “Why isn't it working?” or reinstall zapret.`)}
           {/if}
         </p>
         {#if r.best && !running && !vpnConnected}
-          <button class="btn btn-primary" class:busy disabled={busy} onclick={enable}>Включить zapret</button>
+          <button class="btn btn-primary" class:busy disabled={busy} onclick={enable}>{t("Включить zapret", "Turn on zapret")}</button>
         {/if}
       </div>
       {#if r.tried.length > 0}
         <ul class="tried">
-          {#each r.tried as t (t.id)}
-            <li class:best={t.id === r.best}>
-              <span class="name" title={t.title}>{t.title}</span>
-              <span class="meter"><span style:width={`${(t.passed / r.max) * 100}%`}></span></span>
-              <span class="caption">{t.passed} из {r.max}</span>
+          {#each r.tried as tried (tried.id)}
+            <li class:best={tried.id === r.best}>
+              <span class="name" title={tried.title}>{tried.title}</span>
+              <span class="meter"><span style:width={`${(tried.passed / r.max) * 100}%`}></span></span>
+              <span class="caption">{t(`${tried.passed} из ${r.max}`, `${tried.passed} of ${r.max}`)}</span>
             </li>
           {/each}
         </ul>
@@ -483,18 +482,18 @@
     <div class="divider"></div>
     <div class="row">
       <div>
-        <span>Проверять, работает ли zapret</span>
-        <p class="caption">Раз в полчаса и после смены сети — 13 коротких запросов к Discord и YouTube.</p>
+        <span>{t("Проверять, работает ли zapret", "Check whether zapret works")}</span>
+        <p class="caption">{t("Раз в полчаса и после смены сети — 13 коротких запросов к Discord и YouTube.", "Every half hour and after a network change — 13 short requests to Discord and YouTube.")}</p>
       </div>
       <label class="switch">
         <input type="checkbox" role="switch" checked={zapret.autoCheck} onchange={(e) => (zapret = { ...zapret, autoCheck: e.currentTarget.checked })} />
-        <span aria-hidden="true"></span><span class="sr">Проверять, работает ли zapret</span>
+        <span aria-hidden="true"></span><span class="sr">{t("Проверять, работает ли zapret", "Check whether zapret works")}</span>
       </label>
     </div>
     <div class="row" class:disabled={!zapret.autoCheck}>
       <div>
-        <span>Подбирать новую, если текущая перестала работать</span>
-        <p class="caption">Только в режиме «Zapret». В «Гибриде» KVT предупредит: подбор остановил бы VPN.</p>
+        <span>{t("Подбирать новую, если текущая перестала работать", "Pick a new one if the current one stops working")}</span>
+        <p class="caption">{t("Только в режиме «Zapret». В «Гибриде» KVT предупредит: подбор остановил бы VPN.", "Zapret mode only. In Hybrid, KVT will warn you instead: picking would stop the VPN.")}</p>
       </div>
       <label class="switch">
         <input
@@ -504,7 +503,7 @@
           checked={zapret.autoPick}
           onchange={(e) => (zapret = { ...zapret, autoPick: e.currentTarget.checked })}
         />
-        <span aria-hidden="true"></span><span class="sr">Подбирать стратегию автоматически</span>
+        <span aria-hidden="true"></span><span class="sr">{t("Подбирать стратегию автоматически", "Pick a strategy automatically")}</span>
       </label>
     </div>
   </section>
@@ -515,13 +514,12 @@
       <div>
         <h2>Telegram</h2>
         <p class="muted">
-          Telegram Desktop ходит через прокси KVT в любом режиме — подключите его один раз. Работают сообщения, фото и
-          видео; звонки через прокси не идут.
+          {t("Telegram Desktop ходит через прокси KVT в любом режиме — подключите его один раз. Работают сообщения, фото и видео; звонки через прокси не идут.", "Telegram Desktop goes through KVT's proxy in any mode — connect it once. Messages, photos and videos work; calls don't go through the proxy.")}
         </p>
       </div>
       <label class="switch">
         <input type="checkbox" role="switch" checked={zapret.telegram} onchange={(e) => (zapret = { ...zapret, telegram: e.currentTarget.checked })} />
-        <span aria-hidden="true"></span><span class="sr">Прокси для Telegram</span>
+        <span aria-hidden="true"></span><span class="sr">{t("Прокси для Telegram", "Telegram proxy")}</span>
       </label>
     </div>
     {#if zapret.telegram}
@@ -530,59 +528,58 @@
           <span class="dot" class:on={tg?.running} aria-hidden="true"></span>
           <div>
             {#if tg?.running}
-              <strong>Прокси работает</strong>
+              <strong>{t("Прокси работает", "Proxy is running")}</strong>
             {:else if tg?.error}
-              <strong>Прокси не запустился</strong>
+              <strong>{t("Прокси не запустился", "The proxy didn't start")}</strong>
               <p class="caption">{tg.error}</p>
             {:else if status?.state === "connected" || status?.state === "zapret"}
-              <strong>Прокси запускается…</strong>
+              <strong>{t("Прокси запускается…", "The proxy is starting…")}</strong>
             {:else}
-              <strong>Прокси выключен</strong>
-              <p class="caption">Запустится, когда KVT подключится.</p>
+              <strong>{t("Прокси выключен", "Proxy is off")}</strong>
+              <p class="caption">{t("Запустится, когда KVT подключится.", "It starts when KVT connects.")}</p>
             {/if}
           </div>
         </div>
         <div class="actions">
-          <button class="btn btn-primary" disabled={!tg?.running} onclick={connectTelegram}>Подключить Telegram</button>
-          <button class="btn" onclick={copyTelegramLink}>Скопировать ссылку</button>
+          <button class="btn btn-primary" disabled={!tg?.running} onclick={connectTelegram}>{t("Подключить Telegram", "Connect Telegram")}</button>
+          <button class="btn" onclick={copyTelegramLink}>{t("Скопировать ссылку", "Copy link")}</button>
         </div>
       </div>
       {#if tgMessage}<p class="caption">{tgMessage}</p>{/if}
       <div class="row">
         <div>
-          <span>Путь Telegram в «Гибриде»</span>
+          <span>{t("Путь Telegram в «Гибриде»", "Telegram's route in Hybrid")}</span>
           <p class="caption">
             {zapret.telegramRoute === "direct"
-              ? "Мимо VPN, как в «Zapret»: сервер не нагружается. Если прямой путь закрыт — запасной через Cloudflare."
-              : "Через VPN; если сервер не отвечает, прокси сам уйдёт на запасной путь через Cloudflare, без переподключения."}
+              ? t("Мимо VPN, как в «Zapret»: сервер не нагружается. Если прямой путь закрыт — запасной через Cloudflare.", "Around the VPN, as in Zapret mode: the server isn't loaded. If the direct route is blocked, a fallback goes through Cloudflare.")
+              : t("Через VPN; если сервер не отвечает, прокси сам уйдёт на запасной путь через Cloudflare, без переподключения.", "Via the VPN; if the server doesn't respond, the proxy switches to the Cloudflare fallback itself, without reconnecting.")}
           </p>
         </div>
         <select
-          aria-label="Путь Telegram в «Гибриде»"
+          aria-label={t("Путь Telegram в «Гибриде»", "Telegram's route in Hybrid")}
           value={zapret.telegramRoute}
           onchange={(e) => (zapret = { ...zapret, telegramRoute: e.currentTarget.value as TelegramRoute })}
         >
-          <option value="direct">Мимо VPN</option>
-          <option value="vpn_first">Сначала VPN</option>
+          <option value="direct">{t("Мимо VPN", "Around the VPN")}</option>
+          <option value="vpn_first">{t("Сначала VPN", "VPN first")}</option>
         </select>
       </div>
       <p class="caption">
-        Прокси работает, пока запущен KVT (и в трее). Если закрыть KVT или выключить прокси здесь, уберите прокси и в
-        настройках Telegram — иначе он не подключится.
+        {t("Прокси работает, пока запущен KVT (и в трее). Если закрыть KVT или выключить прокси здесь, уберите прокси и в настройках Telegram — иначе он не подключится.", "The proxy runs while KVT is running (including in the tray). If you quit KVT or turn off the proxy here, remove the proxy in Telegram's settings too — otherwise it won't connect.")}
       </p>
     {/if}
   </section>
 
   <!-- Параметры -->
   <section class="card block">
-    <h2>Параметры</h2>
+    <h2>{t("Параметры", "Options")}</h2>
     <div class="row">
       <div>
-        <span>Игровой фильтр</span>
-        <p class="caption">Обход на всех портах выше 1024 — для игр и голоса. Без нужды не включайте.</p>
+        <span>{t("Игровой фильтр", "Game filter")}</span>
+        <p class="caption">{t("Обход на всех портах выше 1024 — для игр и голоса. Без нужды не включайте.", "Bypass on all ports above 1024 — for games and voice. Don't turn on unless needed.")}</p>
       </div>
       <select
-        aria-label="Игровой фильтр"
+        aria-label={t("Игровой фильтр", "Game filter")}
         value={zapret.gameFilter}
         onchange={(e) => (zapret = { ...zapret, gameFilter: e.currentTarget.value as GameFilter })}
       >
@@ -593,23 +590,21 @@
     </div>
     <div class="row">
       <div>
-        <span>Обход по IP-списку Flowseal</span>
+        <span>{t("Обход по IP-списку Flowseal", "Bypass by Flowseal's IP list")}</span>
         <p class="caption">
-          Не только по доменам, а по всем адресам из ipset-all. Помогает, когда сервис ходит по IP (игры, голос), но может
-          замедлить другие сайты.
+          {t("Не только по доменам, а по всем адресам из ipset-all. Помогает, когда сервис ходит по IP (игры, голос), но может замедлить другие сайты.", "Not just by domain but by every address in ipset-all. Helps when a service connects by IP (games, voice), but may slow down other sites.")}
         </p>
       </div>
       <label class="switch">
         <input type="checkbox" role="switch" checked={zapret.ipset} onchange={(e) => (zapret = { ...zapret, ipset: e.currentTarget.checked })} />
-        <span aria-hidden="true"></span><span class="sr">Обход по IP-списку</span>
+        <span aria-hidden="true"></span><span class="sr">{t("Обход по IP-списку", "Bypass by IP list")}</span>
       </label>
     </div>
     <div class="row">
       <div>
-        <span>Разрешить включать TCP timestamps</span>
+        <span>{t("Разрешить включать TCP timestamps", "Allow turning on TCP timestamps")}</span>
         <p class="caption">
-          Они нужны части стратегий. Flowseal включает их при каждом запуске, KVT — только с разрешения. Это обычная
-          настройка TCP, она остаётся включённой.
+          {t("Они нужны части стратегий. Flowseal включает их при каждом запуске, KVT — только с разрешения. Это обычная настройка TCP, она остаётся включённой.", "Some strategies need them. Flowseal turns them on at every start, KVT only with your permission. It's a regular TCP setting and stays on.")}
         </p>
       </div>
       <label class="switch">
@@ -619,7 +614,7 @@
           checked={zapret.tcpTimestamps}
           onchange={(e) => (zapret = { ...zapret, tcpTimestamps: e.currentTarget.checked })}
         />
-        <span aria-hidden="true"></span><span class="sr">Разрешить включать TCP timestamps</span>
+        <span aria-hidden="true"></span><span class="sr">{t("Разрешить включать TCP timestamps", "Allow turning on TCP timestamps")}</span>
       </label>
     </div>
     {#if restartNote}<p class="caption">{restartNote}</p>{/if}
@@ -627,7 +622,7 @@
 
   <!-- Версия и обслуживание -->
   <section class="card block" id="zapret-maintenance">
-    <h2>Версия и обслуживание</h2>
+    <h2>{t("Версия и обслуживание", "Version and maintenance")}</h2>
     {#if info}
       <dl class="facts">
         <dt>Flowseal</dt>
@@ -635,30 +630,30 @@
           {info.version}
           <span class="caption">
             {#if updateAvailable && latest}
-              · доступна {latest.version}
+              {t(`· доступна ${latest.version}`, `· ${latest.version} available`)}
             {:else if latest}
-              · последняя
+              {t("· последняя", "· latest")}
             {:else if latestError}
-              · новую версию узнать не вышло
+              {t("· новую версию узнать не вышло", "· couldn't check for a new version")}
             {:else if checkingLatest}
-              · проверка…
+              {t("· проверка…", "· checking…")}
             {/if}
-            {info.updated ? `(в поставке KVT — ${info.bundledVersion})` : ""}
+            {info.updated ? t(`(в поставке KVT — ${info.bundledVersion})`, `(shipped with KVT: ${info.bundledVersion})`) : ""}
           </span>
         </dd>
-        <dt>Файлы</dt>
-        <dd class:bad={!info.ok}>{info.ok ? `целы, стратегий: ${info.strategies}` : `повреждены: ${info.problem}`}</dd>
-        <dt>Драйвер WinDivert</dt>
+        <dt>{t("Файлы", "Files")}</dt>
+        <dd class:bad={!info.ok}>{info.ok ? t(`целы, стратегий: ${info.strategies}`, `intact, strategies: ${info.strategies}`) : t(`повреждены: ${info.problem}`, `damaged: ${info.problem}`)}</dd>
+        <dt>{t("Драйвер WinDivert", "WinDivert driver")}</dt>
         <dd>{driverText[info.driver]}</dd>
         {#if info.rejected.length > 0}
-          <dt>Пропущены</dt>
-          <dd class="caption">{info.rejected.join(", ")} — неизвестные флаги winws</dd>
+          <dt>{t("Пропущены", "Skipped")}</dt>
+          <dd class="caption">{t(`${info.rejected.join(", ")} — неизвестные флаги winws`, `${info.rejected.join(", ")} — unknown winws flags`)}</dd>
         {/if}
       </dl>
     {:else}
-      <p class="caption">Служба KVT не отвечает — сведения о комплекте недоступны.</p>
+      <p class="caption">{t("Служба KVT не отвечает — сведения о комплекте недоступны.", "The KVT service doesn't respond — bundle information is unavailable.")}</p>
     {/if}
-    {#if latestError}<p class="caption" title={latestError}>GitHub не ответил: {latestError}</p>{/if}
+    {#if latestError}<p class="caption" title={latestError}>{t(`GitHub не ответил: ${latestError}`, `GitHub didn't respond: ${latestError}`)}</p>{/if}
 
     <div class="actions">
       {#if canUpdate}
@@ -668,7 +663,7 @@
           disabled={maintaining !== null || pick.running}
           onclick={() => maintain("update")}
         >
-          {updateAvailable && latest ? `Обновить до ${latest.version}` : "Обновить zapret"}
+          {updateAvailable && latest ? t(`Обновить до ${latest.version}`, `Update to ${latest.version}`) : t("Обновить zapret", "Update zapret")}
         </button>
       {:else}
         <button
@@ -677,7 +672,7 @@
           disabled={checkingLatest || maintaining !== null}
           onclick={() => checkLatest(true)}
         >
-          Проверить обновления
+          {t("Проверить обновления", "Check for updates")}
         </button>
       {/if}
       <button
@@ -686,23 +681,21 @@
         disabled={maintaining !== null || pick.running}
         onclick={() => (confirmRepair = true)}
       >
-        Переустановить
+        {t("Переустановить", "Reinstall")}
       </button>
     </div>
     <p class="caption">
-      Обновляются стратегии и списки Flowseal, с проверкой SHA-256 и белым списком флагов. winws и WinDivert работают с
-      правами системы — их новые версии приходят только с обновлением KVT.
+      {t("Обновляются стратегии и списки Flowseal, с проверкой SHA-256 и белым списком флагов. winws и WinDivert работают с правами системы — их новые версии приходят только с обновлением KVT.", "Flowseal strategies and lists are updated, with SHA-256 checks and a flag allowlist. winws and WinDivert run with system rights — their new versions only come with KVT updates.")}
     </p>
 
     {#if confirmRepair}
-      <div class="confirm appear" role="alertdialog" aria-label="Переустановить zapret">
+      <div class="confirm appear" role="alertdialog" aria-label={t("Переустановить zapret", "Reinstall zapret")}>
         <p>
-          Вернётся проверенный комплект из поставки KVT (обновление удалится), рабочие списки и драйвер WinDivert
-          поставятся заново. Настройки и подобранные стратегии сохранятся. Если zapret работал — он перезапустится.
+          {t("Вернётся проверенный комплект из поставки KVT (обновление удалится), рабочие списки и драйвер WinDivert поставятся заново. Настройки и подобранные стратегии сохранятся. Если zapret работал — он перезапустится.", "The verified bundle shipped with KVT comes back (the update is removed), and the working lists and WinDivert driver are set up again. Settings and picked strategies are kept. If zapret was running, it restarts.")}
         </p>
         <div class="actions">
-          <button class="btn btn-primary" onclick={() => maintain("repair")}>Переустановить</button>
-          <button class="btn" onclick={() => (confirmRepair = false)}>Отмена</button>
+          <button class="btn btn-primary" onclick={() => maintain("repair")}>{t("Переустановить", "Reinstall")}</button>
+          <button class="btn" onclick={() => (confirmRepair = false)}>{t("Отмена", "Cancel")}</button>
         </div>
       </div>
     {/if}
@@ -715,14 +708,12 @@
           {/each}
         </ul>
       {:else}
-        <p class="caption">{report.steps[0] ?? "Обновлять нечего."}</p>
+        <p class="caption">{report.steps[0] ?? t("Обновлять нечего.", "Nothing to update.")}</p>
       {/if}
     {/if}
 
     <p class="caption">
-      zapret работает через драйвер WinDivert. Антивирус Касперского помечает его как RiskTool — добавьте папку KVT в
-      исключения. Античиты некоторых игр тоже реагируют на WinDivert: на время игры выберите режим «VPN». Стратегии и winws
-      — проекты Flowseal/zapret-discord-youtube и bol-van/zapret (MIT).
+      {t("zapret работает через драйвер WinDivert. Антивирус Касперского помечает его как RiskTool — добавьте папку KVT в исключения. Античиты некоторых игр тоже реагируют на WinDivert: на время игры выберите режим «VPN». Стратегии и winws — проекты Flowseal/zapret-discord-youtube и bol-van/zapret (MIT).", "zapret works through the WinDivert driver. Kaspersky antivirus flags it as RiskTool — add the KVT folder to exclusions. Some games' anti-cheats also react to WinDivert: switch to VPN mode while playing. Strategies and winws come from the Flowseal/zapret-discord-youtube and bol-van/zapret projects (MIT).")}
     </p>
   </section>
 </div>

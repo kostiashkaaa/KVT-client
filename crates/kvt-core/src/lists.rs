@@ -9,6 +9,7 @@
 //! В `Matcher::RuleSet` набор записывается как `itdog:<id>` или `rf:<имя>`
 //! (`rf:geoip-<код>` — IP-набор).
 
+use crate::i18n::Text;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -23,18 +24,13 @@ pub enum ListKind {
 pub struct ListInfo {
     /// Имя как в релизах itdoginfo: `<id>.srs`.
     pub id: &'static str,
-    pub title: &'static str,
+    pub title: Text,
     pub kind: ListKind,
     /// Что входит в список — подсказка под названием. Пусто, если нечего добавить.
-    pub hint: &'static str,
+    pub hint: Text,
 }
 
-const fn list(
-    id: &'static str,
-    title: &'static str,
-    kind: ListKind,
-    hint: &'static str,
-) -> ListInfo {
+const fn list(id: &'static str, title: Text, kind: ListKind, hint: Text) -> ListInfo {
     ListInfo {
         id,
         title,
@@ -49,104 +45,176 @@ use ListKind::{Category, Region, Service};
 pub const ITDOG_LISTS: &[ListInfo] = &[
     list(
         "russia_inside",
-        "Заблокировано в России",
+        Text::new("Заблокировано в России", "Blocked in Russia"),
         Region,
-        "Сайты и сервисы из реестра блокировок и замедленные",
+        Text::new(
+            "Сайты и сервисы из реестра блокировок и замедленные",
+            "Sites and services from the block registry, plus throttled ones",
+        ),
     ),
     list(
         "russia_outside",
-        "Российские сайты, закрытые для зарубежа",
+        Text::new(
+            "Российские сайты, закрытые для зарубежа",
+            "Russian sites closed to foreign visitors",
+        ),
         Region,
-        "Госуслуги, банки, магазины — не открываются с зарубежных IP",
+        Text::new(
+            "Госуслуги, банки, магазины — не открываются с зарубежных IP",
+            "Gosuslugi, banks, shops — don't open from foreign IPs",
+        ),
     ),
     list(
         "ukraine_inside",
-        "Заблокировано в Украине",
+        Text::new("Заблокировано в Украине", "Blocked in Ukraine"),
         Region,
-        "Российские сервисы, закрытые в Украине",
+        Text::new(
+            "Российские сервисы, закрытые в Украине",
+            "Russian services blocked in Ukraine",
+        ),
     ),
     list(
         "geoblock",
-        "Сервисы, закрытые для России",
+        Text::new("Сервисы, закрытые для России", "Services closed to Russia"),
         Category,
-        "ИИ, стриминг и магазины, которые сами не пускают из России",
+        Text::new(
+            "ИИ, стриминг и магазины, которые сами не пускают из России",
+            "AI, streaming and shops that refuse visitors from Russia",
+        ),
     ),
-    list("block", "Заблокированные сайты", Category, ""),
-    list("news", "Новости", Category, "Заблокированные СМИ"),
-    list("anime", "Аниме", Category, "Сайты с аниме"),
-    list("porn", "18+", Category, "Сайты для взрослых"),
+    list(
+        "block",
+        Text::new("Заблокированные сайты", "Blocked sites"),
+        Category,
+        Text::same(""),
+    ),
+    list(
+        "news",
+        Text::new("Новости", "News"),
+        Category,
+        Text::new("Заблокированные СМИ", "Blocked media"),
+    ),
+    list(
+        "anime",
+        Text::new("Аниме", "Anime"),
+        Category,
+        Text::new("Сайты с аниме", "Anime sites"),
+    ),
+    list(
+        "porn",
+        Text::same("18+"),
+        Category,
+        Text::new("Сайты для взрослых", "Adult sites"),
+    ),
     list(
         "hodca",
-        "Хостинги",
+        Text::new("Хостинги", "Hosting"),
         Category,
-        "Hetzner, OVH, DigitalOcean, Cloudflare, AWS — адреса целиком",
+        Text::new(
+            "Hetzner, OVH, DigitalOcean, Cloudflare, AWS — адреса целиком",
+            "Hetzner, OVH, DigitalOcean, Cloudflare, AWS — whole address ranges",
+        ),
     ),
     list(
         "youtube",
-        "YouTube",
+        Text::same("YouTube"),
         Service,
-        "youtube.com, googlevideo.com, ytimg.com",
+        Text::same("youtube.com, googlevideo.com, ytimg.com"),
     ),
     list(
         "discord",
-        "Discord",
+        Text::same("Discord"),
         Service,
-        "discord.com, discord.gg, голосовые серверы",
+        Text::new(
+            "discord.com, discord.gg, голосовые серверы",
+            "discord.com, discord.gg, voice servers",
+        ),
     ),
     list(
         "telegram",
-        "Telegram",
+        Text::same("Telegram"),
         Service,
-        "t.me, telegram.org и адреса серверов",
+        Text::new(
+            "t.me, telegram.org и адреса серверов",
+            "t.me, telegram.org and server addresses",
+        ),
     ),
     list(
         "meta",
-        "Meta",
+        Text::same("Meta"),
         Service,
-        "Instagram, Facebook, WhatsApp, Threads",
+        Text::same("Instagram, Facebook, WhatsApp, Threads"),
     ),
     list(
         "twitter",
-        "X (Twitter)",
+        Text::same("X (Twitter)"),
         Service,
-        "x.com, twitter.com, twimg.com",
+        Text::same("x.com, twitter.com, twimg.com"),
     ),
     list(
         "tiktok",
-        "TikTok",
+        Text::same("TikTok"),
         Service,
-        "tiktok.com и сеть доставки видео",
+        Text::new(
+            "tiktok.com и сеть доставки видео",
+            "tiktok.com and its video CDN",
+        ),
     ),
-    list("hdrezka", "HDRezka", Service, "Сайт и зеркала"),
+    list(
+        "hdrezka",
+        Text::same("HDRezka"),
+        Service,
+        Text::new("Сайт и зеркала", "Site and mirrors"),
+    ),
     list(
         "google_ai",
-        "Google AI",
+        Text::same("Google AI"),
         Service,
-        "Gemini, AI Studio, NotebookLM",
+        Text::same("Gemini, AI Studio, NotebookLM"),
     ),
     list(
         "google_play",
-        "Google Play",
+        Text::same("Google Play"),
         Service,
-        "Магазин приложений и загрузки",
+        Text::new("Магазин приложений и загрузки", "App store and downloads"),
     ),
-    list("google_meet", "Google Meet", Service, "Видеозвонки Google"),
-    list("roblox", "Roblox", Service, ""),
+    list(
+        "google_meet",
+        Text::same("Google Meet"),
+        Service,
+        Text::new("Видеозвонки Google", "Google video calls"),
+    ),
+    list("roblox", Text::same("Roblox"), Service, Text::same("")),
     list(
         "cloudflare",
-        "Cloudflare",
+        Text::same("Cloudflare"),
         Service,
-        "Адреса сети Cloudflare",
+        Text::new("Адреса сети Cloudflare", "Cloudflare network addresses"),
     ),
     list(
         "cloudfront",
-        "Amazon CloudFront",
+        Text::same("Amazon CloudFront"),
         Service,
-        "Адреса сети CloudFront",
+        Text::new("Адреса сети CloudFront", "CloudFront network addresses"),
     ),
-    list("digitalocean", "DigitalOcean", Service, "Адреса хостинга"),
-    list("hetzner", "Hetzner", Service, "Адреса хостинга"),
-    list("ovh", "OVH", Service, "Адреса хостинга"),
+    list(
+        "digitalocean",
+        Text::same("DigitalOcean"),
+        Service,
+        Text::new("Адреса хостинга", "Hosting addresses"),
+    ),
+    list(
+        "hetzner",
+        Text::same("Hetzner"),
+        Service,
+        Text::new("Адреса хостинга", "Hosting addresses"),
+    ),
+    list(
+        "ovh",
+        Text::same("OVH"),
+        Service,
+        Text::new("Адреса хостинга", "Hosting addresses"),
+    ),
 ];
 
 /// Ссылка на набор правил в `Matcher::RuleSet`.

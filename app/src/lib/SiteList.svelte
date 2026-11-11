@@ -1,4 +1,5 @@
 <script lang="ts" generics="A extends string">
+  import { t } from "./i18n";
   // Свои сайты: поле с кнопкой «Добавить» и список с выбором действия у каждого.
   // Общий для «Маршрутизации» и Zapret; адрес проверяет Rust (`check`).
   import Icon from "./Icon.svelte";
@@ -54,7 +55,7 @@
         // Уже есть — меняем действие, а не заводим второй.
         if (i >= 0) next.splice(i, 1);
         else if (next.length >= max) {
-          firstError ??= `Не больше ${max} адресов.`;
+          firstError ??= t(`Не больше ${max} адресов.`, `No more than ${max} addresses.`);
           failed.push(part);
           continue;
         }
@@ -90,7 +91,7 @@
       aria-describedby={error ? errorId : undefined}
     />
     <select
-      aria-label="Действие для нового адреса"
+      aria-label={t("Действие для нового адреса", "Action for the new address")}
       value={newAction}
       class="tone-{toneOf(newAction)}"
       onchange={(e) => onnewaction(e.currentTarget.value as A)}
@@ -100,7 +101,7 @@
       {/each}
     </select>
     <button type="submit" class="btn btn-primary" class:busy={adding} disabled={adding || draft.trim() === ""}>
-      <Icon name="plus" size={16} />Добавить
+      <Icon name="plus" size={16} />{t("Добавить", "Add")}
     </button>
   </form>
   {#if error}
@@ -113,7 +114,7 @@
         <li class="appear">
           <span class="target" title={c.target}>{c.target}</span>
           <select
-            aria-label={`Действие: ${c.target}`}
+            aria-label={t(`Действие: ${c.target}`, `Action: ${c.target}`)}
             value={c.action}
             class="tone-{toneOf(c.action)}"
             onchange={(e) => setAction(c.target, e.currentTarget.value as A)}
@@ -122,7 +123,7 @@
               <option value={a.value}>{a.title}</option>
             {/each}
           </select>
-          <button class="btn subtle icon" onclick={() => remove(c.target)} aria-label={`Удалить ${c.target}`} title="Удалить">
+          <button class="btn subtle icon" onclick={() => remove(c.target)} aria-label={t(`Удалить ${c.target}`, `Delete ${c.target}`)} title={t("Удалить", "Delete")}>
             <Icon name="trash" size={16} />
           </button>
         </li>

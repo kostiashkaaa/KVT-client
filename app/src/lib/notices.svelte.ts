@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 // Сообщения окна — через одно место (шаг 5.8).
 //
 // - Одинаковое сообщение (тот же ключ или тот же текст) не дублируется, а
@@ -99,7 +100,7 @@ export function push(input: NoticeInput): number {
     existing.tone = tone;
     existing.sticky = sticky;
     existing.actions = input.actions ?? [];
-    existing.closeLabel = input.closeLabel ?? "Понятно";
+    existing.closeLabel = input.closeLabel ?? t("Понятно", "Got it");
     existing.onclose = input.onclose;
     arm(existing);
     return existing.id;
@@ -111,7 +112,7 @@ export function push(input: NoticeInput): number {
     tone,
     sticky,
     actions: input.actions ?? [],
-    closeLabel: input.closeLabel ?? "Понятно",
+    closeLabel: input.closeLabel ?? t("Понятно", "Got it"),
     onclose: input.onclose,
     count: 1,
   };

@@ -233,11 +233,16 @@ fn cores_dir() -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())?
         .parent()
         .map(|p| p.join("cores"))
-        .ok_or("не найден каталог программы")?;
+        .ok_or(kvt_core::i18n::tr(
+            "не найден каталог программы",
+            "the app folder wasn't found",
+        ))?;
     if !dir.join("xray.exe").exists() || !dir.join("sing-box.exe").exists() {
-        return Err(
-            "Не найдены ядра Xray и sing-box. Для разработки: scripts\\fetch-cores.ps1".into(),
-        );
+        return Err(kvt_core::i18n::tr(
+            "Не найдены ядра Xray и sing-box. Для разработки: scripts\\fetch-cores.ps1",
+            "The Xray and sing-box cores weren't found. For development: scripts\\fetch-cores.ps1",
+        )
+        .into());
     }
     Ok(dir)
 }
@@ -255,11 +260,11 @@ pub async fn full_check(
         Ok(Some(ServiceStatus::Connected { .. }))
     ) {
         return Err(
-            "Отключите VPN: полная проверка идёт напрямую, иначе туннель исказит результат.".into(),
+            kvt_core::i18n::tr("Отключите VPN: полная проверка идёт напрямую, иначе туннель исказит результат.", "Disconnect the VPN: the full check runs directly, otherwise the tunnel distorts the result.").into(),
         );
     }
     if state.checking.swap(true, Ordering::SeqCst) {
-        return Err("Проверка уже идёт".into());
+        return Err(kvt_core::i18n::tr("Проверка уже идёт", "A check is already running").into());
     }
     let result = async {
         let (keys, servers) = crate::servers_of(&state, group.as_deref())?;

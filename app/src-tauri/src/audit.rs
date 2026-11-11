@@ -42,7 +42,12 @@ fn facts() -> Result<audit::Facts, String> {
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .output()
-        .map_err(|e| format!("Не удалось запустить PowerShell: {e}"))?;
+        .map_err(|e| {
+            kvt_core::trf!(
+                "Не удалось запустить PowerShell: {e}",
+                "Couldn't start PowerShell: {e}"
+            )
+        })?;
     audit::parse_facts(&String::from_utf8_lossy(&out.stdout))
 }
 
@@ -58,8 +63,9 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!(
+        Err(kvt_core::trf!(
             "{program} завершился с кодом {}",
+            "{program} exited with code {}",
             status.code().unwrap_or(-1)
         ))
     }
@@ -68,9 +74,12 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
 #[tauri::command]
 pub async fn pc_audit() -> Result<AuditReport, String> {
     let start = Instant::now();
-    let facts = tokio::task::spawn_blocking(facts)
-        .await
-        .map_err(|_| "Сбор сведений прервался")??;
+    let facts = tokio::task::spawn_blocking(facts).await.map_err(|_| {
+        kvt_core::i18n::tr(
+            "Сбор сведений прервался",
+            "Collecting information was interrupted",
+        )
+    })??;
     Ok(AuditReport {
         findings: audit::analyze(&facts, &own()),
         ms: start.elapsed().as_millis() as u64,
@@ -82,20 +91,24 @@ pub async fn pc_audit_fix(fix: Fix) -> Result<(), String> {
     match fix {
         Fix::StopZapret => match service_client::call(Request::StopConflicts).await? {
             Response::Conflicts { conflicts } if conflicts.is_empty() => Ok(()),
-            Response::Conflicts { .. } => {
-                Err("Не всё удалось остановить — проверьте ещё раз через несколько секунд".into())
-            }
+            Response::Conflicts { .. } => Err(kvt_core::i18n::tr(
+                "Не всё удалось остановить — проверьте ещё раз через несколько секунд",
+                "Not everything could be stopped — check again in a few seconds",
+            )
+            .into()),
             Response::Error { message } => Err(message),
-            _ => Err(crate::errors::UNEXPECTED.into()),
+            _ => Err(crate::errors::unexpected().into()),
         },
         Fix::Service(request) => match service_client::call(Request::AuditFix(request)).await? {
             Response::Ok => Ok(()),
             Response::Error { message } => Err(message),
-            _ => Err(crate::errors::UNEXPECTED.into()),
+            _ => Err(crate::errors::unexpected().into()),
         },
         other => tokio::task::spawn_blocking(move || fix_here(&other))
             .await
-            .map_err(|_| "Исправление прервалось".to_string())?,
+            .map_err(|_| {
+                kvt_core::i18n::tr("Исправление прервалось", "The fix was interrupted").to_string()
+            })?,
     }
 }
 
@@ -130,11 +143,14 @@ fn fix_here(fix: &Fix) -> Result<(), String> {
             let facts = facts()?;
             let entry = audit::zapret_autostart_by_id(&facts, id, &own())
                 .filter(|a| !a.location.machine_wide())
-                .ok_or("Запись автозагрузки не найдена — возможно, её уже убрали")?;
-            let key = entry
-                .location
-                .approved_key()
-                .ok_or("Эту запись нельзя отключить")?;
+                .ok_or(kvt_core::i18n::tr(
+                    "Запись автозагрузки не найдена — возможно, её уже убрали",
+                    "The autostart entry wasn't found — it may have been removed already",
+                ))?;
+            let key = entry.location.approved_key().ok_or(kvt_core::i18n::tr(
+                "Эту запись нельзя отключить",
+                "This entry can't be disabled",
+            ))?;
             run(
                 "reg.exe",
                 &[
@@ -150,7 +166,11 @@ fn fix_here(fix: &Fix) -> Result<(), String> {
                 ],
             )
         }
-        Fix::StopZapret | Fix::Service(_) => Err("Это исправление выполняет служба".into()),
+        Fix::StopZapret | Fix::Service(_) => Err(kvt_core::i18n::tr(
+            "Это исправление выполняет служба",
+            "This fix is done by the service",
+        )
+        .into()),
     }
 }
 
@@ -172,9 +192,16 @@ fn image_name(pid: u32) -> Option<String> {
 /// Закрывает другой VPN-клиент: сначала просьбой закрыться, потом принудительно.
 /// Закрывается только процесс из списка VPN-клиентов — PID проверяется заново.
 fn close_process(pid: u32) -> Result<(), String> {
-    let name = image_name(pid).ok_or("Программа уже закрыта")?;
+    let name = image_name(pid).ok_or(kvt_core::i18n::tr(
+        "Программа уже закрыта",
+        "The app is already closed",
+    ))?;
     if !audit::is_vpn_process_name(&name) {
-        return Err("Этот процесс не похож на VPN-клиент — KVT его не закрывает".into());
+        return Err(kvt_core::i18n::tr(
+            "Этот процесс не похож на VPN-клиент — KVT его не закрывает",
+            "This process doesn't look like a VPN client — KVT won't close it",
+        )
+        .into());
     }
     let pid_arg = pid.to_string();
     let _ = run("taskkill.exe", &["/PID", &pid_arg]);
@@ -190,8 +217,9 @@ fn close_process(pid: u32) -> Result<(), String> {
     if image_name(pid).is_none() {
         Ok(())
     } else {
-        Err(format!(
-            "Не удалось закрыть {name} — закройте программу вручную (она может быть запущена от администратора)"
+        Err(kvt_core::trf!(
+            "Не удалось закрыть {name} — закройте программу вручную (она может быть запущена от администратора)",
+            "Couldn't close {name} — close it manually (it may be running as administrator)"
         ))
     }
 }
