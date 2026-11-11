@@ -161,6 +161,17 @@ pub async fn ping(targets: Vec<Option<PingTarget>>) -> Response {
     }
 }
 
+/// Системный DNS-запрос имени VPN-сервера (для маскировки журналов и исключений
+/// zapret) — в журнал запросов, как и всё, что служба отправляет в сеть.
+pub fn record_lookup(host: &str, ok: bool, start: Instant) {
+    let outcome = if ok { Outcome::Ok } else { Outcome::Failed };
+    netlog::record(
+        netlog::Event::new(Origin::Service, Purpose::Dns, host, Route::Direct, outcome)
+            .ms(start.elapsed())
+            .detail("адрес сервера"),
+    );
+}
+
 /// Ответил ли по HTTPS хоть один DoH-резолвер из каталога KVT. IP задан заранее,
 /// сертификат проверяется по имени — такой ответ не подделает ни страница входа,
 /// ни провайдер. HTTP провайдер подменить может: у пользователя с перехватом DNS

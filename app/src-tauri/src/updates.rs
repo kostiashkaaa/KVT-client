@@ -20,7 +20,7 @@ const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// Первая проверка — не сразу: при запуске с Windows сеть ещё поднимается.
 const FIRST_DELAY: Duration = Duration::from_secs(2 * 60);
 const INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
-/// Кнопка «Проверить» чаще раза в минуту в сеть не ходит.
+/// Кнопка «Проверить» после удачной проверки чаще раза в минуту в сеть не ходит.
 const MANUAL_GAP: Duration = Duration::from_secs(60);
 /// Окно перечитывает `update_status`.
 pub const EVENT: &str = "update-available";
@@ -82,7 +82,7 @@ async fn fetch_latest() -> Result<String, String> {
         .timeout(Duration::from_secs(20))
         .user_agent(concat!("KVT/", env!("CARGO_PKG_VERSION")))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(describe)?;
     let start = Instant::now();
     let body = async {
         let resp = client
@@ -90,11 +90,11 @@ async fn fetch_latest() -> Result<String, String> {
             .header("Accept", "application/vnd.github+json")
             .send()
             .await
-            .map_err(|e| e.without_url().to_string())?;
+            .map_err(describe)?;
         if !resp.status().is_success() {
             return Err(format!("GitHub ответил ошибкой {}", resp.status().as_u16()));
         }
-        resp.bytes().await.map_err(|e| e.without_url().to_string())
+        resp.bytes().await.map_err(describe)
     }
     .await;
     netlog::record(
@@ -115,6 +115,17 @@ async fn fetch_latest() -> Result<String, String> {
     parse_latest(&body?)
 }
 
+/// Ошибка запроса — по-русски, без адреса (он и так известен).
+fn describe(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "GitHub не ответил вовремя".into()
+    } else if e.is_connect() {
+        "нет связи с GitHub".into()
+    } else {
+        "запрос к GitHub не прошёл".into()
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -132,7 +143,8 @@ async fn check(app: &AppHandle) -> UpdateStatus {
     };
     let fresh = with_cache(|c| {
         c.status = status.clone();
-        c.at = Some(Instant::now());
+        // После ошибки «Проверить сейчас» повторяет сразу, а не через минуту.
+        c.at = status.error.is_none().then(Instant::now);
         let fresh = status.available && c.notified != status.latest;
         if fresh {
             c.notified = status.latest.clone();

@@ -720,12 +720,17 @@ fn hide_server_addresses(server: &kvt_core::Server) {
     if server.address.parse::<std::net::IpAddr>().is_ok() {
         return;
     }
-    let host = (server.address.clone(), server.port);
+    let (host, port) = (server.address.clone(), server.port);
     tokio::spawn(async move {
-        let lookup = tokio::net::lookup_host(host);
-        if let Ok(Ok(addrs)) = tokio::time::timeout(Duration::from_secs(5), lookup).await {
-            kvt_core::redact::add_servers(addrs.map(|a| a.ip().to_string()));
-        }
+        let start = std::time::Instant::now();
+        let lookup = tokio::net::lookup_host((host.as_str(), port));
+        let found: Option<Vec<String>> = tokio::time::timeout(Duration::from_secs(5), lookup)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .map(|addrs| addrs.map(|a| a.ip().to_string()).collect());
+        crate::net::record_lookup(&host, found.is_some(), start);
+        kvt_core::redact::add_servers(found.unwrap_or_default());
     });
 }
 

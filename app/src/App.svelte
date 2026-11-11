@@ -183,7 +183,13 @@
         // переподключил с новым режимом, автоподбор zapret сам перезапустил службу
         // с новой стратегией — второй раз из окна не нужно.
         if (connectedWith)
-          connectedWith = { server: snap.choice.server, mode, zapret: zapretKey(), routing: routingKey() };
+          connectedWith = {
+            server: snap.choice.server,
+            mode,
+            zapret: zapretKey(),
+            routing: routingKey(),
+            settings: settingsKey(),
+          };
       });
     }),
   );
@@ -497,18 +503,26 @@
       ...$state.snapshot(routing),
       overrides: Object.entries(routing.overrides).sort(([a], [b]) => a.localeCompare(b)),
     });
+  /** Kill switch и DNS: служба применяет их только при подключении. */
+  const settingsKey = () => JSON.stringify({ killSwitch, dns: $state.snapshot(dns) });
   /** В режиме «VPN» из настроек zapret на подключение влияет только прокси Telegram. */
   const telegramOf = (key: string) => {
     const z = JSON.parse(key) as ZapretChoice;
     return `${z.telegram}:${z.telegramRoute}`;
   };
   /** С каким сервером, режимом и настройками zapret сейчас подключены. */
-  let connectedWith = $state<{ server: string | null; mode: Mode; zapret: string; routing: string } | null>(null);
+  let connectedWith = $state<{
+    server: string | null;
+    mode: Mode;
+    zapret: string;
+    routing: string;
+    settings: string;
+  } | null>(null);
 
   async function onconnect() {
     busy = true;
     dismissKey("error");
-    const target = { server: selected, mode, zapret: zapretKey(), routing: routingKey() };
+    const target = { server: selected, mode, zapret: zapretKey(), routing: routingKey(), settings: settingsKey() };
     try {
       await setChoice(currentChoice());
       status = await connect();
@@ -564,7 +578,7 @@
       if (!nextActive) connectedWith = null;
       // Подключились из трея или профиля сети — считаем, что с текущим выбором.
       else if (!connectedWith && restored)
-        connectedWith = { server: selected, mode, zapret: zapretKey(), routing: routingKey() };
+        connectedWith = { server: selected, mode, zapret: zapretKey(), routing: routingKey(), settings: settingsKey() };
       const nextMismatch = next === null && (await serviceMismatch().catch(() => false));
       // Служба в отложенном автозапуске: после входа в Windows она поднимается
       // минуты через две, а окно из автозагрузки открывается раньше. Не ждём —
@@ -677,6 +691,7 @@
       <h1>Проверка</h1>
       <Diagnostics
         connected={status?.state === "connected"}
+        vpnState={status?.state ?? "none"}
         bind:dns
         {onfix}
         autorun={autoDiagnose}
@@ -686,6 +701,10 @@
       <h1>Настройки</h1>
       <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks bind:notifications bind:connectOnStart
         bind:checkUpdates
+        connected={status?.state === "connected"}
+        pending={status?.state === "connected" && !!connectedWith && connectedWith.settings !== settingsKey()}
+        {busy}
+        onapply={onconnect}
         onrestartonboarding={() => {
           onboarded = false;
           page = "home";

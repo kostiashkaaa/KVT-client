@@ -564,14 +564,17 @@ async fn server_addresses(servers: &[String]) -> (Vec<String>, Vec<IpAddr>) {
         }
         let host = s.to_ascii_lowercase();
         if zapret::valid_domain(&host) {
-            if let Ok(Ok(found)) = tokio::time::timeout(
+            let start = std::time::Instant::now();
+            let found: Option<Vec<IpAddr>> = tokio::time::timeout(
                 Duration::from_secs(5),
                 tokio::net::lookup_host((host.as_str(), 443)),
             )
             .await
-            {
-                ips.extend(found.map(|a| a.ip()));
-            }
+            .ok()
+            .and_then(Result::ok)
+            .map(|addrs| addrs.map(|a| a.ip()).collect());
+            crate::net::record_lookup(&host, found.is_some(), start);
+            ips.extend(found.unwrap_or_default());
             domains.push(host);
         }
     }

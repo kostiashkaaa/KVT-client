@@ -28,6 +28,10 @@
     notifications = $bindable(),
     connectOnStart = $bindable(),
     checkUpdates = $bindable(),
+    connected,
+    pending,
+    busy,
+    onapply,
     onrestartonboarding,
   }: {
     killSwitch: boolean;
@@ -37,6 +41,13 @@
     notifications: boolean;
     connectOnStart: boolean;
     checkUpdates: boolean;
+    /** Работает VPN (в режиме «VPN» или «Гибрид»). */
+    connected: boolean;
+    /** Kill switch или DNS изменены после подключения. */
+    pending: boolean;
+    busy: boolean;
+    /** Переподключить с новыми настройками. */
+    onapply: () => void;
     /** Показать подсказки первого запуска снова. */
     onrestartonboarding: () => void;
   } = $props();
@@ -45,7 +56,9 @@
   let flowseal = $state<string | null>(null);
   let linkError = $state<string | null>(null);
   $effect(() => {
-    void aboutInfo().then((a) => (about = a));
+    void aboutInfo()
+      .then((a) => (about = a))
+      .catch(() => (about = null));
     void zapretInfo()
       .then((z) => (flowseal = z.version))
       .catch(() => (flowseal = null));
@@ -76,28 +89,36 @@
   let autostart = $state(false);
   let autostartError = $state<string | null>(null);
   $effect(() => {
-    void autostartEnabled().then((v) => (autostart = v));
+    void autostartEnabled()
+      .then((v) => (autostart = v))
+      .catch(() => (autostart = false));
   });
-  async function toggleAutostart(enabled: boolean) {
+  async function toggleAutostart(input: HTMLInputElement) {
     autostartError = null;
     try {
-      await setAutostart(enabled);
-      autostart = enabled;
+      await setAutostart(input.checked);
     } catch (e) {
       autostartError = String(e);
-      autostart = await autostartEnabled();
     }
+    // Источник правды — реестр. Переключатель ставим и сам: если значение не
+    // изменилось (запись не удалась), Svelte его не перерисует.
+    autostart = await autostartEnabled().catch(() => !input.checked);
+    input.checked = autostart;
   }
 
   let resolvers = $state<Resolver[]>([]);
   $effect(() => {
-    void dnsCatalog().then((r) => (resolvers = r));
+    void dnsCatalog()
+      .then((r) => (resolvers = r))
+      .catch(() => (resolvers = []));
   });
   const tunnelResolvers = $derived(resolvers.filter((r) => r.tunnel));
 
   let here = $state<NetworkView>({ network: null, profile: null });
   $effect(() => {
-    void currentNetwork().then((v) => (here = v));
+    void currentNetwork()
+      .then((v) => (here = v))
+      .catch(() => {});
     return onNetworkChanged((v) => (here = v));
   });
 
@@ -111,6 +132,16 @@
 
   function update(key: string, patch: Partial<NetworkProfile>) {
     networks = networks.map((p) => (p.key === key ? { ...p, ...patch } : p));
+  }
+
+  /** Пустое название не сохраняем: поле возвращается к прежнему. */
+  function rename(p: NetworkProfile, input: HTMLInputElement) {
+    const name = input.value.trim();
+    if (!name) {
+      input.value = p.name;
+      return;
+    }
+    update(p.key, { name });
   }
 
   function forget(key: string) {
@@ -131,6 +162,7 @@
   ];
 </script>
 
+<div class="page">
 <section class="card block">
   <div class="row">
     <div>
@@ -146,7 +178,7 @@
       <span class="sr">Kill switch</span>
     </label>
   </div>
-  <p class="caption">Изменение применится при следующем подключении.</p>
+  <p class="caption">Действует в режимах «VPN» и «Гибрид».</p>
 </section>
 
 <section class="card block">
@@ -178,7 +210,7 @@
         type="checkbox"
         role="switch"
         checked={autostart}
-        onchange={(e) => void toggleAutostart(e.currentTarget.checked)}
+        onchange={(e) => void toggleAutostart(e.currentTarget)}
       />
       <span aria-hidden="true"></span>
       <span class="sr">Запускать вместе с Windows</span>
@@ -238,7 +270,7 @@
       {/each}
     </select>
   </div>
-  <p class="caption">Изменения применятся при следующем подключении. Подсказку даст «Проверка DNS» в разделе «Проверка».</p>
+  <p class="caption">Какой DNS быстрее в вашей сети, подскажет «Проверка DNS» в разделе «Проверка».</p>
 </section>
 
 <section class="card block">
@@ -268,7 +300,7 @@
             aria-label="Название сети"
             value={p.name}
             maxlength="40"
-            onchange={(e) => update(p.key, { name: e.currentTarget.value.trim() || p.name })}
+            onchange={(e) => rename(p, e.currentTarget)}
           />
           <select
             aria-label="При подключении к сети"
@@ -292,6 +324,7 @@
         </li>
       {/each}
     </ul>
+    <p class="caption">Действие срабатывает, когда компьютер подключается к сети.</p>
   {/if}
 </section>
 
@@ -360,7 +393,27 @@
   {/if}
 </section>
 
+{#if pending}
+  <div class="apply card appear" role="status">
+    <Icon name="info" size={16} />
+    <span>Kill switch и DNS заработают после переподключения.</span>
+    <button class="btn btn-primary" class:busy disabled={busy} onclick={onapply}>
+      <Icon name="refresh" size={16} />Переподключить
+    </button>
+  </div>
+{:else if connected}
+  <p class="caption hint">Kill switch и DNS применяются при переподключении — кнопка появится здесь.</p>
+{/if}
+</div>
+
 <style>
+  .page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    container-type: inline-size;
+  }
+
   .block {
     display: flex;
     flex-direction: column;
@@ -486,7 +539,31 @@
     background: var(--surface);
   }
 
-  @media (max-width: 720px) {
+  .hint {
+    margin: 0;
+  }
+
+  /* Переподключение — внизу экрана, пока правят настройки выше. */
+  .apply {
+    position: sticky;
+    bottom: var(--space-3);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-color: var(--accent);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
+  }
+
+  .apply > span {
+    flex: 1;
+  }
+
+  .apply .btn {
+    flex: none;
+  }
+
+  @container (max-width: 620px) {
     .field {
       flex-direction: column;
       align-items: stretch;

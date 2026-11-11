@@ -1,18 +1,19 @@
 <script lang="ts" module>
-  import type { Diagnosis, DnsReport, LeakReport } from "./api";
+  import type { Diagnosis, DnsReport } from "./api";
 
   // Результаты живут дольше страницы: вкладку можно сменить, а начатая проверка
   // допишет итог сюда и он будет на месте при возврате.
   const st = $state({
     diagnosis: null as Diagnosis | null,
+    /** Состояние службы, при котором шла проверка «Почему не работает?». */
+    diagnosedIn: null as string | null,
     diagnosing: false,
     diagnoseError: null as string | null,
     dnsReport: null as DnsReport | null,
     dnsRunning: false,
     dnsError: null as string | null,
-    leaks: null as LeakReport | null,
-    leaking: false,
-    leakError: null as string | null,
+    /** Резолвер из подсказки уже выбран — показать, когда он заработает. */
+    dnsApplied: false,
   });
 </script>
 
@@ -23,9 +24,7 @@
   import {
     dnsCatalog,
     dnsCheck,
-    leakTest,
     troubleshoot,
-    type CheckResult,
     type DnsChoice,
     type Fix,
     type PathStatus,
@@ -34,12 +33,15 @@
 
   let {
     connected,
+    vpnState,
     dns = $bindable(),
     onfix,
     autorun,
     onautorun,
   }: {
     connected: boolean;
+    /** Состояние службы (`status.state`): итог проверки устаревает, когда оно меняется. */
+    vpnState: string;
     dns: DnsChoice;
     onfix: (fix: Fix) => void;
     /** «Почему не работает?» нажали с главной: запустить проверку сразу. */
@@ -47,13 +49,14 @@
     onautorun: () => void;
   } = $props();
 
-
   async function diagnose() {
     if (st.diagnosing) return;
     st.diagnosing = true;
     st.diagnoseError = null;
+    const before = vpnState;
     try {
       st.diagnosis = await troubleshoot();
+      st.diagnosedIn = before;
     } catch (e) {
       st.diagnoseError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -86,10 +89,14 @@
     }
   }
 
+  /** Подключились, отключились или включили zapret после проверки: вывод и кнопка уже не про сейчас. */
+  const stale = $derived(st.diagnosis !== null && st.diagnosedIn !== vpnState);
+
   function applyFix(fix: Fix) {
     if (fix.kind === "open_dns_check") {
       document.getElementById("dns-check")?.scrollIntoView({ behavior: "smooth" });
-      void runDns();
+      // При VPN проверка DNS не запустится — подсказка об этом у её кнопки.
+      if (!connected) void runDns();
       return;
     }
     onfix(fix);
@@ -101,11 +108,11 @@
     void dnsCatalog().then((r) => (resolvers = r));
   });
 
-
   async function runDns() {
     if (st.dnsRunning) return;
     st.dnsRunning = true;
     st.dnsError = null;
+    st.dnsApplied = false;
     try {
       st.dnsReport = await dnsCheck();
     } catch (e) {
@@ -133,43 +140,20 @@
   const recommended = $derived(
     st.dnsReport ? (resolvers.find((r) => r.id === st.dnsReport?.recommendedLocal) ?? null) : null,
   );
-
-  // ── Утечки ──
-
-  async function runLeaks() {
-    st.leaking = true;
-    st.leakError = null;
-    try {
-      st.leaks = await leakTest(connected);
-    } catch (e) {
-      st.leakError = e instanceof Error ? e.message : String(e);
-    } finally {
-      st.leaking = false;
-    }
-  }
-
-  const leakRows = $derived<[string, CheckResult][]>(
-    st.leaks
-      ? [
-          ["Маршрут IPv4", st.leaks.ipv4Route],
-          ["Маршрут IPv6", st.leaks.ipv6Route],
-          ["DNS", st.leaks.dns],
-        ]
-      : [],
-  );
 </script>
 
+<div class="page">
 <section class="card block">
   <div class="row">
     <div>
       <h2>Почему не работает?</h2>
       <p class="muted">
-        Проверяет по шагам сеть, службу KVT, подписку, сервер и туннель и говорит, что именно не так. К серверу уходит
-        не больше одного соединения.
+        По шагам проверяет сеть, службу KVT, подписку, сервер и туннель и говорит, что не так. К серверу — не больше
+        одного соединения.
       </p>
     </div>
     <button class="btn btn-primary" class:busy={st.diagnosing} disabled={st.diagnosing} onclick={diagnose}>
-      <Icon name="help" size={16} />Найти причину
+      <Icon name="help" size={16} />{st.diagnosis ? "Проверить снова" : "Найти причину"}
     </button>
   </div>
 
@@ -178,18 +162,19 @@
   {/if}
 
   {#if st.diagnosis}
-    <div class="verdict appear {st.diagnosis.tone}" role="status">
+    <div class="verdict appear {st.diagnosis.tone}" class:stale role="status">
       <div>
         <strong>{st.diagnosis.title}</strong>
         {#if st.diagnosis.detail}<p>{st.diagnosis.detail}</p>{/if}
+        {#if stale}<p class="stale-note">Подключение изменилось после проверки — проверьте снова.</p>{/if}
       </div>
-      {#if st.diagnosis.fix}
+      {#if st.diagnosis.fix && !stale}
         {@const fix = st.diagnosis.fix}
         <button class="btn btn-primary" onclick={() => applyFix(fix)}>{fixLabel(fix)}</button>
       {/if}
     </div>
     <ol class="results steps">
-      {#each st.diagnosis.steps as step (step.title)}
+      {#each st.diagnosis.steps as step, i (i)}
         <li class={step.state}>
           <strong>{step.title}</strong>
           <span>{step.detail}</span>
@@ -213,7 +198,7 @@
       <h2>Проверка DNS</h2>
       <p class="muted">
         Какие DNS-серверы доступны из этой сети, не перехватывает ли провайдер запросы и не подменяет ли адреса
-        заблокированных сайтов. Около 30 коротких DNS-запросов.
+        заблокированных сайтов. Около 30 коротких запросов.
       </p>
     </div>
     <button
@@ -223,11 +208,11 @@
       title={connected ? "Отключите VPN: проверка смотрит на сеть провайдера напрямую" : undefined}
       onclick={runDns}
     >
-      <Icon name="globe" size={16} />Проверить DNS
+      <Icon name="globe" size={16} />{st.dnsReport ? "Проверить снова" : "Проверить DNS"}
     </button>
   </div>
   {#if connected}
-    <p class="caption">Проверка DNS работает при отключённом VPN.</p>
+    <p class="caption">Работает при отключённом VPN: смотрит на сеть провайдера напрямую.</p>
   {/if}
   {#if st.dnsError}
     <p class="error-text appear">{st.dnsError}</p>
@@ -289,62 +274,32 @@
     {#if recommended && dns.local !== recommended.id}
       <div class="suggest appear">
         <span>Для сайтов, которые открываются напрямую, лучше подойдёт {recommended.title}.</span>
-        <button class="btn" onclick={() => (dns = { ...dns, local: recommended.id })}>Использовать</button>
+        <button
+          class="btn"
+          onclick={() => {
+            dns = { ...dns, local: recommended.id };
+            st.dnsApplied = true;
+          }}>Использовать</button
+        >
       </div>
+    {:else if st.dnsApplied && recommended}
+      <p class="caption appear">{recommended.title} выбран — заработает при следующем подключении.</p>
     {/if}
   {/if}
 </section>
 
-<section class="card block">
-  <div class="row">
-    <div>
-      <h2>Проверка утечек</h2>
-      <p class="muted">
-        Ищет на компьютере открытые прокси других VPN-клиентов, проверяет маршруты IPv4/IPv6 и DNS. Почти всё
-        проверяется локально — в интернет уходит один DNS-запрос.
-      </p>
-    </div>
-    <button class="btn" class:busy={st.leaking} disabled={st.leaking} onclick={runLeaks}>
-      <Icon name="shield" size={16} />Проверить
-    </button>
-  </div>
-
-  {#if st.leakError}
-    <p class="error-text appear">{st.leakError}</p>
-  {/if}
-  {#if st.leaks}
-    <ul class="results">
-      {#if st.leaks.openProxies.length === 0}
-        <li class="ok">
-          <strong>Открытые прокси</strong>
-          <span>Не найдено. Программы на компьютере не смогут узнать адрес VPN-сервера через локальный порт.</span>
-        </li>
-      {:else}
-        {#each st.leaks.openProxies as p (p.port)}
-          <li class="warning">
-            <strong>Открытый SOCKS5 на порту {p.port}</strong>
-            <span>
-              {p.process ?? "Неизвестная программа"} принимает подключения без пароля: любое приложение может узнать
-              через него IP вашего VPN-сервера.{#if p.knownScanPort}
-                Этот порт из списка, по которому ищут прокси.{/if}
-              Включите в той программе пароль для локального прокси или используйте режим TUN.
-            </span>
-          </li>
-        {/each}
-      {/if}
-      {#each leakRows as [label, r] (label)}
-        <li class={r.verdict}>
-          <strong>{label}</strong>
-          <span>{r.detail}</span>
-        </li>
-      {/each}
-    </ul>
-  {/if}
-</section>
-
-<PcAudit />
+<PcAudit {connected} />
+</div>
 
 <style>
+  /* Карточки перестраиваются по ширине самой страницы, а не окна. */
+  .page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    container-type: inline-size;
+  }
+
   .block {
     display: flex;
     flex-direction: column;
@@ -493,12 +448,32 @@
     background: var(--accent-subtle);
   }
 
-  @media (max-width: 720px) {
+  .stale-note {
+    color: var(--text-2);
+  }
+
+  @container (max-width: 620px) {
     .row,
     .verdict,
     .suggest {
       flex-direction: column;
       align-items: stretch;
+    }
+
+    .row .btn,
+    .verdict .btn,
+    .suggest .btn,
+    .row.export :global(.btn) {
+      align-self: flex-start;
+    }
+
+    .steps li {
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .steps li strong {
+      width: auto;
     }
   }
 </style>

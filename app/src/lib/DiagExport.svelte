@@ -53,10 +53,19 @@
   function close() {
     if (saving) return;
     open = false;
+    // Фокус возвращается на кнопку, с которой открыли окно.
+    opener?.focus();
+  }
+
+  let opener = $state<HTMLButtonElement>();
+
+  /** Фокус в окно при открытии: так работают Esc и Tab, а не кнопки под затемнением. */
+  function focusOnOpen(node: HTMLElement) {
+    node.focus();
   }
 </script>
 
-<button class="btn" onclick={start}><Icon name="log" size={16} />Сохранить диагностику</button>
+<button class="btn" bind:this={opener} onclick={start}><Icon name="log" size={16} />Сохранить диагностику</button>
 
 {#if open}
   <div
@@ -65,6 +74,7 @@
     aria-modal="true"
     aria-labelledby="diag-title"
     tabindex="-1"
+    use:focusOnOpen
     transition:fade={{ duration: 150 }}
     onclick={(e) => {
       if (e.target === e.currentTarget) close();

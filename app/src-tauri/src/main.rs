@@ -574,10 +574,22 @@ fn take_notices(state: State<'_, AppState>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Проверка утечек: открытые прокси на этом компьютере, маршруты и DNS.
+/// Проверка утечек: открытые прокси на этом компьютере, маршруты и DNS. Подключён
+/// ли VPN, решает служба, а не окно: его статус мог устареть.
 #[tauri::command]
-async fn leak_test(connected: bool) -> diagnostics::LeakReport {
-    diagnostics::run(connected).await
+async fn leak_test(state: State<'_, AppState>) -> Result<diagnostics::LeakReport, String> {
+    let connected = matches!(
+        query_status().await,
+        Ok(Some(ServiceStatus::Connected { .. }))
+    );
+    let remote = state
+        .choice
+        .lock()
+        .map_err(crate::errors::state)?
+        .dns
+        .remote
+        .clone();
+    Ok(diagnostics::run(connected, &remote).await)
 }
 
 async fn disconnect_service() -> Result<ServiceStatus, String> {

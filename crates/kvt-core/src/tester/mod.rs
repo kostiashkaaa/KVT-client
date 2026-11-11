@@ -220,7 +220,10 @@ pub async fn ping_all(
         let sem = Arc::clone(&semaphore);
         set.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            (i, ping_logged(&host, port, local, origin, timeout).await)
+            (
+                i,
+                ping_logged(&host, port, local, origin, Purpose::ServerPing, timeout).await,
+            )
         });
     }
     let mut out = vec![QuickResult::NotApplicable; targets.len()];
@@ -232,7 +235,17 @@ pub async fn ping_all(
 
 // TODO(этап 3): резолвить имена серверов через выбранный DoH, а не системный DNS.
 pub async fn tcp_ping(host: &str, port: u16, timeout: Duration) -> QuickResult {
-    ping_logged(host, port, None, Origin::App, timeout).await
+    ping_logged(host, port, None, Origin::App, Purpose::ServerPing, timeout).await
+}
+
+/// TCP-пинг не VPN-сервера (например, «есть ли интернет»): в журнале — с этой целью.
+pub async fn tcp_ping_for(
+    purpose: Purpose,
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> QuickResult {
+    ping_logged(host, port, None, Origin::App, purpose, timeout).await
 }
 
 async fn ping_logged(
@@ -240,12 +253,12 @@ async fn ping_logged(
     port: u16,
     local: Option<Ipv4Addr>,
     origin: Origin,
+    purpose: Purpose,
     timeout: Duration,
 ) -> QuickResult {
     let result = tcp_ping_inner(host, port, local, timeout).await;
     let target = format!("{host}:{port}");
-    let event =
-        |outcome| netlog::Event::new(origin, Purpose::ServerPing, &target, Route::Direct, outcome);
+    let event = |outcome| netlog::Event::new(origin, purpose, &target, Route::Direct, outcome);
     netlog::record(match &result {
         QuickResult::Reachable { latency_ms } => {
             event(netlog::Outcome::Ok).ms(Duration::from_millis(*latency_ms))

@@ -6,8 +6,9 @@
 //! - **маршруты IPv4/IPv6**: какой исходный адрес выбирает система для выхода в
 //!   интернет (UDP «connect» не отправляет пакетов);
 //! - **DNS**: один запрос `whoami.akamai.net` показывает, чей резолвер на самом деле
-//!   отвечает на запросы системы.
+//!   отвечает на запросы системы (запрос пишется в `netlog`).
 
+use kvt_core::dns::{self, in_nets, RESOLVERS, WHOAMI};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -38,20 +39,24 @@ pub enum Check {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeakReport {
+    /// Проверка шла при подключённом VPN: иначе маршруты и DNS только для сведения.
+    pub connected: bool,
     pub open_proxies: Vec<OpenProxy>,
     pub ipv4_route: Check,
     pub ipv6_route: Check,
     pub dns: Check,
 }
 
-pub async fn run(connected: bool) -> LeakReport {
+/// `remote` — id резолвера DoH в туннеле из настроек.
+pub async fn run(connected: bool, remote: &str) -> LeakReport {
     let (open_proxies, ipv4_route, ipv6_route, dns) = tokio::join!(
         open_proxies(),
         ipv4_route(connected),
         ipv6_route(connected),
-        dns(connected)
+        dns(connected, remote)
     );
     LeakReport {
+        connected,
         open_proxies,
         ipv4_route,
         ipv6_route,
@@ -219,40 +224,53 @@ async fn ipv6_route(connected: bool) -> Check {
     }
 }
 
-/// Диапазоны Cloudflare: DoH 1.1.1.1 ходит в интернет с этих адресов.
-const CLOUDFLARE: &[(Ipv4Addr, u8)] = &[
-    (Ipv4Addr::new(173, 245, 48, 0), 20),
-    (Ipv4Addr::new(103, 21, 244, 0), 22),
-    (Ipv4Addr::new(103, 22, 200, 0), 22),
-    (Ipv4Addr::new(103, 31, 4, 0), 22),
-    (Ipv4Addr::new(141, 101, 64, 0), 18),
-    (Ipv4Addr::new(108, 162, 192, 0), 18),
-    (Ipv4Addr::new(190, 93, 240, 0), 20),
-    (Ipv4Addr::new(188, 114, 96, 0), 20),
-    (Ipv4Addr::new(197, 234, 240, 0), 22),
-    (Ipv4Addr::new(198, 41, 128, 0), 17),
-    (Ipv4Addr::new(162, 158, 0, 0), 15),
-    (Ipv4Addr::new(104, 16, 0, 0), 13),
-    (Ipv4Addr::new(104, 24, 0, 0), 14),
-    (Ipv4Addr::new(172, 64, 0, 0), 13),
-    (Ipv4Addr::new(131, 0, 72, 0), 22),
-];
-
-fn in_cidr(ip: Ipv4Addr, net: Ipv4Addr, prefix: u8) -> bool {
-    let mask = if prefix == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix)
+/// Чей резолвер ответил на `whoami.akamai.net` и есть ли утечка. При подключённом
+/// VPN запросы должны уходить в DoH внутри туннеля: Cloudflare, Google или Quad9 —
+/// какой выбран в настройках, плюс запасной.
+fn classify_dns(connected: bool, resolver: Option<Ipv4Addr>, remote: &str) -> Check {
+    let Some(resolver) = resolver else {
+        return Check::Info {
+            detail: "Не удалось определить DNS-резолвер".into(),
+        };
     };
-    u32::from(ip) & mask == u32::from(net) & mask
+    if !connected {
+        return Check::Info {
+            detail: format!("VPN выключен: DNS обслуживает {resolver}"),
+        };
+    }
+    let known = RESOLVERS.iter().find(|r| in_nets(resolver, r.egress));
+    let remote = dns::resolver(remote);
+    match known {
+        Some(r) if r.tunnel => Check::Ok {
+            detail: format!("DNS идёт через DoH {} в туннеле", r.title),
+        },
+        Some(r) => Check::Warning {
+            detail: format!(
+                "На DNS отвечает {} ({resolver}), а не DoH в туннеле — возможна утечка DNS",
+                r.title
+            ),
+        },
+        // Адресов, с которых ходит Quad9, KVT не знает: подтвердить нельзя, но и
+        // тревогу поднимать не из-за чего.
+        None if remote.is_some_and(|r| r.egress.is_empty()) => Check::Info {
+            detail: format!(
+                "На DNS отвечает {resolver}. Адресов {} KVT не знает — подтвердить,                  что это DoH в туннеле, нельзя",
+                remote.map_or("этого резолвера", |r| r.title)
+            ),
+        },
+        None => Check::Warning {
+            detail: format!(
+                "На DNS отвечает {resolver}, а не DoH в туннеле — возможна утечка DNS"
+            ),
+        },
+    }
 }
 
-async fn dns(connected: bool) -> Check {
-    let lookup = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::net::lookup_host(("whoami.akamai.net", 0)),
-    )
-    .await;
+async fn dns(connected: bool, remote: &str) -> Check {
+    use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
+    let start = std::time::Instant::now();
+    let lookup =
+        tokio::time::timeout(Duration::from_secs(5), tokio::net::lookup_host((WHOAMI, 0))).await;
     let resolver = match lookup {
         Ok(Ok(addrs)) => addrs.map(|a| a.ip()).find_map(|ip| match ip {
             IpAddr::V4(v4) => Some(v4),
@@ -260,27 +278,20 @@ async fn dns(connected: bool) -> Check {
         }),
         _ => None,
     };
-    let Some(resolver) = resolver else {
-        return Check::Info {
-            detail: "Не удалось определить DNS-резолвер".into(),
-        };
+    let route = if connected {
+        Route::Tunnel
+    } else {
+        Route::Direct
     };
-    let via_doh = CLOUDFLARE
-        .iter()
-        .any(|(net, p)| in_cidr(resolver, *net, *p));
-    match (connected, via_doh) {
-        (true, true) => Check::Ok {
-            detail: format!("DNS идёт через DoH в туннеле (резолвер {resolver})"),
-        },
-        (true, false) => Check::Warning {
-            detail: format!(
-                "DNS отвечает резолвер {resolver}, а не DoH в туннеле — возможна утечка DNS"
-            ),
-        },
-        (false, _) => Check::Info {
-            detail: format!("VPN выключен: DNS обслуживает {resolver}"),
-        },
-    }
+    let event = |outcome| {
+        netlog::Event::new(Origin::App, Purpose::Dns, WHOAMI, route, outcome)
+            .detail("проверка утечек")
+    };
+    netlog::record(match resolver {
+        Some(_) => event(Outcome::Ok).ms(start.elapsed()),
+        None => event(Outcome::Failed),
+    });
+    classify_dns(connected, resolver, remote)
 }
 
 #[cfg(test)]
@@ -302,20 +313,65 @@ mod tests {
     }
 
     #[test]
-    fn cloudflare_ranges() {
-        assert!(CLOUDFLARE
-            .iter()
-            .any(|(n, p)| in_cidr(Ipv4Addr::new(172, 68, 1, 1), *n, *p)));
-        assert!(!CLOUDFLARE
-            .iter()
-            .any(|(n, p)| in_cidr(Ipv4Addr::new(77, 88, 8, 8), *n, *p)));
+    fn dns_through_chosen_or_reserve_doh_is_ok() {
+        let cloudflare = Some(Ipv4Addr::new(172, 68, 1, 1));
+        let google = Some(Ipv4Addr::new(74, 125, 18, 5));
+        // Выбран Google, но ответил запасной Cloudflare — тоже туннель.
+        assert!(matches!(
+            classify_dns(true, cloudflare, "google"),
+            Check::Ok { .. }
+        ));
+        assert!(matches!(
+            classify_dns(true, google, "google"),
+            Check::Ok { .. }
+        ));
+        assert!(matches!(
+            classify_dns(true, google, "cloudflare"),
+            Check::Ok { .. }
+        ));
+    }
+
+    #[test]
+    fn dns_through_provider_or_yandex_is_a_leak() {
+        let yandex = Some(Ipv4Addr::new(77, 88, 8, 8));
+        let provider = Some(Ipv4Addr::new(212, 48, 193, 5));
+        assert!(matches!(
+            classify_dns(true, yandex, "quad9"),
+            Check::Warning { .. }
+        ));
+        assert!(matches!(
+            classify_dns(true, provider, "cloudflare"),
+            Check::Warning { .. }
+        ));
+    }
+
+    #[test]
+    fn unknown_resolver_with_quad9_is_not_an_alarm() {
+        let unknown = Some(Ipv4Addr::new(149, 112, 112, 10));
+        assert!(matches!(
+            classify_dns(true, unknown, "quad9"),
+            Check::Info { .. }
+        ));
+    }
+
+    #[test]
+    fn dns_without_vpn_is_info() {
+        let provider = Some(Ipv4Addr::new(212, 48, 193, 5));
+        assert!(matches!(
+            classify_dns(false, provider, "cloudflare"),
+            Check::Info { .. }
+        ));
+        assert!(matches!(
+            classify_dns(true, None, "cloudflare"),
+            Check::Info { .. }
+        ));
     }
 
     /// Отчёт по текущему компьютеру: `cargo test -p kvt-app real_machine -- --ignored --nocapture`.
     #[tokio::test]
     #[ignore = "проверяет реальный компьютер"]
     async fn real_machine_report() {
-        let report = run(false).await;
+        let report = run(false, "cloudflare").await;
         println!("{}", serde_json::to_string_pretty(&report).unwrap());
     }
 

@@ -270,6 +270,8 @@ export type CheckResult =
   | { verdict: "info"; detail: string };
 
 export interface LeakReport {
+  /** VPN был подключён: без него маршруты и DNS проверять не на что. */
+  connected: boolean;
   openProxies: {
     port: number;
     process: string | null;
@@ -280,10 +282,11 @@ export interface LeakReport {
   dns: CheckResult;
 }
 
-export async function leakTest(connected: boolean): Promise<LeakReport> {
+export async function leakTest(): Promise<LeakReport> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 500));
     return {
+      connected: false,
       openProxies: [
         { port: 10808, process: "example-vpn.exe", knownScanPort: false },
       ],
@@ -301,7 +304,7 @@ export async function leakTest(connected: boolean): Promise<LeakReport> {
       },
     };
   }
-  return invoke<LeakReport>("leak_test", { connected });
+  return invoke<LeakReport>("leak_test");
 }
 
 export async function disconnect(): Promise<ServiceStatus> {
@@ -895,7 +898,7 @@ export async function troubleshoot(): Promise<Diagnosis> {
       tone: "error",
       title: "Провайдер блокирует этот сервер",
       detail:
-        "Соединение обрывается после первых килобайт — режет DPI. Можно переключиться на «DE Frankfurt».",
+        "Соединение обрывается после первых килобайт — режет DPI. Можно переключиться на «Германия ⚡».",
       steps: [
         { title: "Сеть", state: "ok", detail: "Подключение к сети есть" },
         { title: "Служба KVT", state: "ok", detail: "Служба работает" },

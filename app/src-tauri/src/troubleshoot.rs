@@ -298,10 +298,11 @@ pub fn conclude(f: &Facts) -> Diagnosis {
     }
 
     if connected && f.captive {
+        // Своё название шага: «Сеть» уже есть в начале списка.
         out.step(
-            "Сеть",
+            "Вход в сеть",
             StepState::Fail,
-            "Сеть просит войти: вместо проверочного ответа пришла страница входа",
+            "Вместо проверочного ответа пришла страница входа",
         );
         return out.finish(
             Tone::Warning,
@@ -433,13 +434,16 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Есть ли интернет мимо VPN. В журнале запросов — «Проверка сети», не пинг сервера.
 async fn internet_direct() -> bool {
+    use kvt_core::netlog::Purpose;
+    use kvt_core::tester::tcp_ping_for;
     let timeout = Duration::from_secs(3);
     matches!(
-        tcp_ping("ya.ru", 443, timeout).await,
+        tcp_ping_for(Purpose::Captive, "ya.ru", 443, timeout).await,
         QuickResult::Reachable { .. }
     ) || matches!(
-        tcp_ping("77.88.8.8", 53, timeout).await,
+        tcp_ping_for(Purpose::Captive, "77.88.8.8", 53, timeout).await,
         QuickResult::Reachable { .. }
     )
 }
@@ -591,6 +595,10 @@ mod tests {
         let d = conclude(&f);
         assert_eq!(d.title, "Сеть просит войти");
         assert_eq!(d.fix, Some(Fix::Disconnect));
+        assert_eq!(failing_step(&d), Some("Вход в сеть"));
+        let mut titles: Vec<_> = d.steps.iter().map(|s| s.title).collect();
+        titles.dedup();
+        assert_eq!(titles.len(), d.steps.len(), "названия шагов повторяются");
     }
 
     fn failing_step(d: &Diagnosis) -> Option<&'static str> {
