@@ -119,7 +119,7 @@ fn split_port_ranges(input: &str) -> Result<(String, Option<String>), ParseError
 
 /// `443,20000-30000` или `20000:30000` → `443,20000-30000`. Порты 1–65535, начало
 /// диапазона не больше конца.
-fn normalize_ranges(spec: &str) -> Result<String, ParseError> {
+pub(super) fn normalize_ranges(spec: &str) -> Result<String, ParseError> {
     let bad = || ParseError::InvalidField {
         field: crate::i18n::tr("порты", "ports"),
         reason: crate::i18n::tr(

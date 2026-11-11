@@ -233,10 +233,12 @@ fn stream_settings(s: &Server) -> Result<Value, CompileError> {
         } => {
             let mut v =
                 json!({ "path": path, "host": host, "mode": mode.as_deref().unwrap_or("auto") });
-            // `extra` проверен парсером по белому списку (`parser::xhttp_extra`).
+            // `extra` — заново через белый список (`parser::xhttp_extra`): модель
+            // приходит в службу от окна, которому служба не доверяет.
             if let Some(extra) = extra
                 .as_deref()
-                .and_then(|e| serde_json::from_str::<Value>(e).ok())
+                .and_then(crate::parser::sanitized_extra)
+                .and_then(|e| serde_json::from_str::<Value>(&e).ok())
             {
                 v["extra"] = extra;
             }

@@ -13,7 +13,6 @@ use kvt_core::ipc::{ConnectPlan, ZapretPlan};
 use kvt_core::rulesync;
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -113,39 +112,21 @@ impl Paths {
     }
 }
 
-/// Каталог только для SYSTEM (S-1-5-18) и администраторов (S-1-5-32-544).
-/// SID вместо имён — имена групп локализованы («Администраторы»).
+/// Каталог только для SYSTEM и администраторов, владелец — администраторы
+/// (`win::private_dir`). Внутри `ProgramData\KVT` сначала проверяются родители:
+/// пока родитель чужой, в нём можно подложить что угодно.
 pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| {
+    let data = data_dir();
+    if let Some(parent) = dir.parent().filter(|p| p.starts_with(&data)) {
+        secure_dir(parent)?;
+    }
+    crate::win::private_dir(dir).map_err(|e| {
         kvt_core::trf!(
-            "не удалось создать {}: {e}",
-            "couldn't create {}: {e}",
+            "не удалось подготовить каталог {}: {e}",
+            "couldn't prepare the folder {}: {e}",
             dir.display()
         )
-    })?;
-    let status = std::process::Command::new("icacls")
-        .arg(dir)
-        .args([
-            "/inheritance:r",
-            "/grant:r",
-            "*S-1-5-18:(OI)(CI)F",
-            "*S-1-5-32-544:(OI)(CI)F",
-            "/Q",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map_err(|e| format!("icacls: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(kvt_core::trf!(
-            "не удалось ограничить доступ к {}",
-            "couldn't restrict access to {}",
-            dir.display()
-        ))
-    }
+    })
 }
 
 pub type Log = Arc<Mutex<VecDeque<String>>>;

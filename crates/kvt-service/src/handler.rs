@@ -216,6 +216,13 @@ async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
     if let Some(message) = plan.zapret.as_ref().and_then(invalid_zapret) {
         return Response::Error { message };
     }
+    // Конфиг ядра служба соберёт из этих полей и запустит от SYSTEM: `extra` XHTTP
+    // мог бы задать пути к файлам (`masterKeyLog`), адрес — что угодно.
+    if let Err(e) = kvt_core::parser::check_server(&plan.server) {
+        return Response::Error {
+            message: kvt_core::compile::CompileError::from(e).to_string(),
+        };
+    }
     state.begin();
     state.status = ServiceStatus::Connecting;
     match state.supervisor.start(plan).await {
@@ -389,6 +396,30 @@ mod tests {
             panic!("ожидалась ошибка")
         };
         assert!(message.contains("DNS"));
+        assert_eq!(st.status, ServiceStatus::Disconnected);
+    }
+
+    /// Окну служба не доверяет: сервер, который парсер не пропустил бы, отвергается
+    /// до запуска чего-либо.
+    #[tokio::test]
+    async fn forged_server_is_rejected_before_anything_runs() {
+        let Entry::Server(server) = parse_uri("trojan://p@vpn.example.com:443").expect("ссылка")
+        else {
+            panic!("ожидался сервер")
+        };
+        let mut server = *server;
+        server.address = "vpn.example.com\n\"evil".into();
+        let plan = ConnectPlan {
+            core: CoreKind::Xray,
+            server,
+            routing: RoutingPlan::new(Action::Proxy),
+            kill_switch: false,
+            dns: Default::default(),
+            zapret: None,
+        };
+        let mut st = state();
+        let resp = handle(&mut st, Request::Connect(Box::new(plan))).await;
+        assert!(matches!(resp, Response::Error { .. }), "{resp:?}");
         assert_eq!(st.status, ServiceStatus::Disconnected);
     }
 

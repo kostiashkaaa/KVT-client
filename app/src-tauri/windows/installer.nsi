@@ -419,9 +419,8 @@ Function PageLeaveReinstall
   reinst_done:
 FunctionEnd
 
-; 5. Choose install directory page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-!insertmacro MUI_PAGE_DIRECTORY
+; 5. Choose install directory page — KVT: страницы нет, каталог всегда Program Files
+; (см. ForceProgramFiles).
 
 ; 6. Start menu shortcut page
 Var AppStartMenuFolder
@@ -558,6 +557,8 @@ Function .onInit
 
     Call RestorePreviousInstallLocation
   ${EndIf}
+  ; KVT: и после /D=, и после прежней установки в другом месте.
+  Call ForceProgramFiles
 
 
   !if "${INSTALLMODE}" == "both"
@@ -952,6 +953,21 @@ Function RestorePreviousInstallLocation
   ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
   StrCmp $4 "" +2 0
     StrCpy $INSTDIR $4
+FunctionEnd
+
+; KVT: только Program Files. Служба работает от SYSTEM и запускает kvt-service.exe,
+; ядра и winws из каталога установки. В другом месте файлы наследуют права родителя
+; (у C:\ и у вторых дисков — изменение для всех пользователей), и любая программа
+; пользователя подменила бы их и получила права SYSTEM. Прежняя установка в другом
+; каталоге удаляется шагом переустановки (по пути из реестра), новая встаёт сюда.
+Function ForceProgramFiles
+  !if "${INSTALLMODE}" == "perMachine"
+    ${If} ${RunningX64}
+      StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCTNAME}"
+    ${Else}
+      StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
+    ${EndIf}
+  !endif
 FunctionEnd
 
 Function Skip

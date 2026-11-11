@@ -37,9 +37,15 @@ use windows_sys::Win32::System::Threading::{
 };
 
 /// Права на pipe службы: SYSTEM и администраторы — полный доступ, пользователи,
-/// вошедшие в систему интерактивно, — чтение и запись. Остальным (сетевым,
+/// вошедшие в систему интерактивно, — чтение и запись данных. Остальным (сетевым,
 /// анонимным, службам других учётных записей) доступа нет.
-const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
+///
+/// Не `GRGW`: в `GENERIC_WRITE` входит `FILE_APPEND_DATA` = `FILE_CREATE_PIPE_INSTANCE`,
+/// и любой пользователь мог бы создать свой экземпляр `\\.\pipe\kvt-service` и
+/// принимать команды окна (с ключами серверов) вместо службы. `0x12019b` —
+/// `FILE_GENERIC_READ`, `FILE_WRITE_DATA`, `FILE_WRITE_EA`, `FILE_WRITE_ATTRIBUTES`.
+/// Окно открывает pipe ровно с такими правами (`service_client::ACCESS`).
+const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)";
 
 /// Дескриптор безопасности создаётся один раз и живёт до конца процесса.
 struct Descriptor(*mut c_void);
@@ -150,6 +156,172 @@ pub fn is_elevated() -> bool {
     // SAFETY: закрываем открытый выше token один раз.
     unsafe { CloseHandle(token) };
     ok != 0 && elevation.TokenIsElevated != 0
+}
+
+/// Каталоги KVT в `ProgramData`: владелец — администраторы, доступ только у SYSTEM
+/// и администраторов, вложенное наследует то же.
+const PRIVATE_DIR_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+
+/// Дескриптор безопасности, выделенный системой; освобождается в Drop.
+struct LocalSd(*mut c_void);
+
+impl Drop for LocalSd {
+    fn drop(&mut self) {
+        // SAFETY: дескриптор выделен через LocalAlloc (Convert…/GetNamedSecurityInfoW)
+        // и освобождается один раз.
+        unsafe { windows_sys::Win32::Foundation::LocalFree(self.0) };
+    }
+}
+
+fn wide_path(path: &std::path::Path) -> Vec<u16> {
+    path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
+fn parse_sddl(sddl: &str) -> io::Result<LocalSd> {
+    let wide: Vec<u16> = std::ffi::OsStr::new(sddl)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut sd: *mut c_void = std::ptr::null_mut();
+    // SAFETY: строка заканчивается нулём; sd освобождает LocalSd.
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(LocalSd(sd))
+}
+
+/// Владелец объекта — SYSTEM или администраторы. Иначе (каталог заранее создал
+/// обычный пользователь) владелец может в любой момент вернуть себе права.
+fn owner_trusted(path: &std::path::Path) -> io::Result<bool> {
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        IsWellKnownSid, WinBuiltinAdministratorsSid, WinLocalSystemSid, OWNER_SECURITY_INFORMATION,
+    };
+    let name = wide_path(path);
+    let mut owner = std::ptr::null_mut();
+    let mut sd = std::ptr::null_mut();
+    // SAFETY: путь заканчивается нулём; выходные указатели живы на время вызова.
+    let rc = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut sd,
+        )
+    };
+    if rc != 0 {
+        #[allow(clippy::cast_possible_wrap)]
+        return Err(io::Error::from_raw_os_error(rc as i32));
+    }
+    let sd = LocalSd(sd);
+    // SAFETY: owner указывает внутрь sd, который жив до конца функции.
+    let trusted = unsafe {
+        IsWellKnownSid(owner, WinLocalSystemSid) != 0
+            || IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != 0
+    };
+    drop(sd);
+    Ok(trusted)
+}
+
+/// Сбрасывает DACL каталога на «только SYSTEM и администраторы» (с наследованием).
+fn set_private_dacl(path: &std::path::Path) -> io::Result<()> {
+    use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    let sd = parse_sddl(PRIVATE_DIR_SDDL)?;
+    let (mut present, mut defaulted) = (0, 0);
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    // SAFETY: sd — разобранный дескриптор; dacl указывает внутрь него.
+    if unsafe { GetSecurityDescriptorDacl(sd.0, &mut present, &mut dacl, &mut defaulted) } == 0
+        || present == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let name = wide_path(path);
+    // SAFETY: путь заканчивается нулём, dacl жив вместе с sd до конца вызова.
+    let rc = unsafe {
+        SetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            dacl,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        #[allow(clippy::cast_possible_wrap)]
+        return Err(io::Error::from_raw_os_error(rc as i32));
+    }
+    Ok(())
+}
+
+/// Создаёт каталог сразу с нужными владельцем и правами — без мгновения, когда он
+/// унаследовал права `ProgramData` (там пользователи могут создавать вложенное).
+fn create_private_dir(path: &std::path::Path) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+    let sd = parse_sddl(PRIVATE_DIR_SDDL)?;
+    let attrs = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd.0,
+        bInheritHandle: 0,
+    };
+    let name = wide_path(path);
+    // SAFETY: путь заканчивается нулём, attrs и дескриптор живы на время вызова.
+    if unsafe { CreateDirectoryW(name.as_ptr(), &attrs) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Каталог KVT, доступный только SYSTEM и администраторам, с владельцем-администраторами.
+///
+/// Если на этом месте ссылка (junction, symlink), не каталог или каталог чужого
+/// владельца — его заранее подготовил обычный пользователь: через него можно
+/// подменить конфиг ядра или `winws.exe` между проверкой и запуском, а удаления и
+/// переименования службы (от SYSTEM) увести по чужому пути. Такой объект
+/// переименовывается в `<имя>.untrusted-<время>` (ничего не удаляется — внутри может
+/// быть ссылка), и каталог создаётся заново. Родитель должен быть уже проверен.
+pub fn private_dir(path: &std::path::Path) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    let meta = match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return create_private_dir(path),
+        Err(e) => return Err(e),
+        Ok(meta) => meta,
+    };
+    let reparse = meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    if reparse || !meta.is_dir() || !owner_trusted(path)? {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut aside = path.as_os_str().to_owned();
+        aside.push(format!(".untrusted-{secs}"));
+        tracing::warn!(
+            path = %path.display(),
+            reparse,
+            "каталог KVT подготовлен не службой — убран в сторону, создаётся заново"
+        );
+        std::fs::rename(path, &aside)?;
+        return create_private_dir(path);
+    }
+    set_private_dacl(path)
 }
 
 /// Права на саму службу (не на её файлы) строкой SDDL — например, чтобы обычный
@@ -396,6 +568,45 @@ mod tests {
         }
     }
 
+    /// Ссылка (junction) на месте каталога KVT убирается в сторону, цель не трогается.
+    /// Без прав администратора новый каталог с владельцем-администраторами не
+    /// создать — тогда ошибка, а не каталог с чужими правами.
+    #[test]
+    fn prepared_link_is_moved_aside() {
+        let base = std::env::temp_dir().join(format!("kvt-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("target")).unwrap();
+        std::fs::write(base.join("target").join("keep.txt"), b"x").unwrap();
+        let link = base.join("link");
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(base.join("target"))
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "mklink /J");
+
+        let result = private_dir(&link);
+        assert!(base.join("target").join("keep.txt").exists());
+        let moved = std::fs::read_dir(&base).unwrap().flatten().any(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("link.untrusted-")
+        });
+        assert!(moved, "ссылка должна уйти в сторону");
+        if is_elevated() {
+            result.unwrap();
+            assert!(owner_trusted(&link).unwrap());
+            let meta = std::fs::symlink_metadata(&link).unwrap();
+            assert!(meta.is_dir() && !meta.file_type().is_symlink());
+            // Повторный вызов — каталог свой, только сброс прав.
+            private_dir(&link).unwrap();
+        } else {
+            assert!(result.is_err());
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Нет устройства — нечего убирать, и это не ошибка (права администратора не нужны).
     #[test]
     fn missing_wintun_device_is_not_an_error() {
@@ -429,11 +640,31 @@ mod tests {
     async fn pipe_reports_client_image() {
         let name = format!(r"\\.\pipe\kvt-test-{}", std::process::id());
         let server = create_pipe(&name, true).unwrap();
-        let _client = tokio::net::windows::named_pipe::ClientOptions::new()
+        // Как окно (`service_client`): чтение и запись данных, без права создать экземпляр.
+        use std::os::windows::fs::OpenOptionsExt;
+        let _client = std::fs::OpenOptions::new()
+            .access_mode(0x0012_0089 | 0x0000_0002)
             .open(&name)
             .unwrap();
         server.connect().await.unwrap();
         let image = pipe_client_image(&server).unwrap();
         assert_eq!(image, std::env::current_exe().unwrap());
+    }
+
+    /// Обычный пользователь не может создать второй экземпляр pipe службы и
+    /// перехватить команды окна. Под администратором проверять нечего (у BA — GA).
+    #[tokio::test]
+    async fn users_cannot_add_pipe_instances() {
+        if is_elevated() {
+            return;
+        }
+        let name = format!(r"\\.\pipe\kvt-test-inst-{}", std::process::id());
+        let _first = create_pipe(&name, true).unwrap();
+        let second = create_pipe(&name, false);
+        assert_eq!(
+            second.err().and_then(|e| e.raw_os_error()),
+            Some(5),
+            "второй экземпляр должен быть запрещён"
+        );
     }
 }

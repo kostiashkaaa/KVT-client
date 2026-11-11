@@ -69,6 +69,8 @@ LangString KvtNotInstalled ${LANG_ENGLISH} "KVT isn't installed on this computer
 LangString KvtNotInstalled ${LANG_RUSSIAN} "KVT на этом компьютере не установлен — обновлять нечего.$\r$\n$\r$\nОткрыть страницу загрузки? Там есть полная установка (KVT-${VERSION}-setup.exe)."
 LangString KvtTooOld ${LANG_ENGLISH} "Version $Installed is installed, and this update is for versions ${MIN_VERSION} and later.$\r$\n$\r$\nOpen the download page? Get the full installer KVT-${VERSION}-setup.exe — it updates KVT and keeps your settings."
 LangString KvtTooOld ${LANG_RUSSIAN} "Установлена версия $Installed, а это обновление подходит для версий от ${MIN_VERSION}.$\r$\n$\r$\nОткрыть страницу загрузки? Скачайте полную установку KVT-${VERSION}-setup.exe — она обновит KVT с сохранением настроек."
+LangString KvtMoved ${LANG_ENGLISH} "KVT is installed outside Program Files ($INSTDIR). Other users can change files there, so this update won't be applied in place.$\r$\n$\r$\nOpen the download page? The full installer KVT-${VERSION}-setup.exe moves KVT to Program Files and keeps your settings."
+LangString KvtMoved ${LANG_RUSSIAN} "KVT установлен не в Program Files ($INSTDIR). Файлы там могут менять другие пользователи, поэтому обновление на месте не ставится.$\r$\n$\r$\nОткрыть страницу загрузки? Полная установка KVT-${VERSION}-setup.exe перенесёт KVT в Program Files с сохранением настроек."
 LangString KvtNewer ${LANG_ENGLISH} "A newer version is installed ($Installed). Updating to ${VERSION} isn't needed."
 LangString KvtNewer ${LANG_RUSSIAN} "Установлена более новая версия ($Installed). Обновление до ${VERSION} не нужно."
 LangString KvtSame ${LANG_ENGLISH} "KVT ${VERSION} is already installed. Reinstall the files?"
@@ -102,6 +104,18 @@ Function .onInit
   ${If} $INSTDIR == ""
   ${OrIfNot} ${FileExists} "$INSTDIR\kvt-service.exe"
     MessageBox MB_ICONINFORMATION|MB_YESNO "$(KvtNotInstalled)" /SD IDNO IDNO +2
+      ExecShell "open" "${RELEASES}"
+    Quit
+  ${EndIf}
+  ; Только Program Files: в другом каталоге файлы службы (SYSTEM) доступны на запись
+  ; обычным пользователям. Полный установщик переносит KVT туда.
+  ${If} ${RunningX64}
+    StrCpy $1 "$PROGRAMFILES64\${PRODUCTNAME}"
+  ${Else}
+    StrCpy $1 "$PROGRAMFILES\${PRODUCTNAME}"
+  ${EndIf}
+  ${If} $INSTDIR != $1
+    MessageBox MB_ICONINFORMATION|MB_YESNO "$(KvtMoved)" /SD IDNO IDNO +2
       ExecShell "open" "${RELEASES}"
     Quit
   ${EndIf}

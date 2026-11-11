@@ -140,11 +140,14 @@ pub enum CompileError {
     Routing(#[from] crate::routing::RoutingError),
     #[error("{}", crate::trf!("DNS-сервер «{}» не из списка KVT", "DNS server “{}” isn't in KVT's list", .0))]
     Dns(String),
+    #[error("{}", crate::trf!("настройки сервера повреждены: {}", "the server settings are damaged: {}", .0))]
+    Server(#[from] crate::parser::ParseError),
 }
 
 pub fn compile(core: CoreKind, input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
     input.routing.validate()?;
     input.dns.validate()?;
+    crate::parser::check_server(input.server)?;
     match core {
         CoreKind::Xray => compile_xray(input),
         CoreKind::SingBox => compile_sing_box(input),

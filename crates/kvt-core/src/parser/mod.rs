@@ -332,6 +332,158 @@ pub(crate) fn decode_component(s: &str) -> String {
     percent_decode_str(s).decode_utf8_lossy().into_owned()
 }
 
+/// `extra` XHTTP после белого списка (`None` — ничего не осталось или он испорчен).
+/// Компилятор берёт его отсюда, а не как есть: модель могла прийти не из парсера.
+pub(crate) fn sanitized_extra(extra: &str) -> Option<String> {
+    xhttp_extra::sanitize(extra).ok().flatten()
+}
+
+/// Проверка сервера, который пришёл не из парсера: служба получает его по IPC от
+/// окна и окну не доверяет — из этих полей она соберёт конфиг ядра, которое
+/// работает от SYSTEM. Те же ограничения, что при разборе: адрес — имя хоста или
+/// IP, строки без управляющих символов, `extra`, фрагментация и порты — по белому
+/// списку. Ошибка не содержит значений полей.
+pub fn check_server(s: &Server) -> Result<(), ParseError> {
+    use crate::model::{Protocol, Security, Transport};
+    let invalid = |field: &'static str| ParseError::InvalidField {
+        field,
+        reason: crate::i18n::tr("недопустимое значение", "invalid value"),
+    };
+
+    fn add<'a>(
+        texts: &mut Vec<(&'static str, &'a str)>,
+        field: &'static str,
+        value: Option<&'a str>,
+    ) {
+        if let Some(v) = value {
+            texts.push((field, v));
+        }
+    }
+    let mut texts: Vec<(&'static str, &str)> = vec![("address", s.address.as_str())];
+    match &s.protocol {
+        Protocol::Vless { id, encryption, .. } => {
+            add(&mut texts, "id", Some(id.expose()));
+            add(&mut texts, "encryption", encryption.as_deref());
+        }
+        Protocol::Trojan { password } | Protocol::AnyTls { password } => {
+            add(&mut texts, "password", Some(password.expose()));
+        }
+        Protocol::Shadowsocks { method, password } => {
+            add(&mut texts, "method", Some(method.as_str()));
+            add(&mut texts, "password", Some(password.expose()));
+        }
+        Protocol::Hysteria2 {
+            password,
+            obfs,
+            ports,
+            pin_sha256,
+        } => {
+            add(&mut texts, "password", Some(password.expose()));
+            if let Some(o) = obfs {
+                add(&mut texts, "obfs", Some(o.kind.as_str()));
+                add(&mut texts, "obfs-password", Some(o.password.expose()));
+            }
+            add(&mut texts, "pinSHA256", pin_sha256.as_deref());
+            if let Some(p) = ports {
+                if hysteria2::normalize_ranges(p).as_deref() != Ok(p.as_str()) {
+                    return Err(invalid("ports"));
+                }
+            }
+        }
+        Protocol::Vmess { id, cipher } => {
+            add(&mut texts, "id", Some(id.expose()));
+            add(&mut texts, "cipher", Some(cipher.as_str()));
+        }
+        Protocol::Tuic {
+            uuid,
+            password,
+            congestion,
+            udp_relay_mode,
+        } => {
+            add(&mut texts, "uuid", Some(uuid.expose()));
+            add(&mut texts, "password", Some(password.expose()));
+            add(&mut texts, "congestion", congestion.as_deref());
+            add(&mut texts, "udp_relay_mode", udp_relay_mode.as_deref());
+        }
+        Protocol::Socks { username, password } | Protocol::Http { username, password } => {
+            add(
+                &mut texts,
+                "username",
+                username.as_ref().map(crate::Secret::expose),
+            );
+            add(
+                &mut texts,
+                "password",
+                password.as_ref().map(crate::Secret::expose),
+            );
+        }
+    }
+    match &s.transport {
+        Transport::Tcp | Transport::Quic => {}
+        Transport::Ws { path, host } | Transport::HttpUpgrade { path, host } => {
+            add(&mut texts, "path", Some(path.as_str()));
+            add(&mut texts, "host", host.as_deref());
+        }
+        Transport::Grpc { service_name } => {
+            add(&mut texts, "serviceName", Some(service_name.as_str()))
+        }
+        Transport::Xhttp {
+            path,
+            host,
+            mode,
+            extra,
+        } => {
+            add(&mut texts, "path", Some(path.as_str()));
+            add(&mut texts, "host", host.as_deref());
+            add(&mut texts, "mode", mode.as_deref());
+            if let Some(e) = extra {
+                if e.len() > MAX_URI_LEN || sanitized_extra(e).is_none() {
+                    return Err(invalid("extra"));
+                }
+            }
+        }
+    }
+    match &s.security {
+        Security::None => {}
+        Security::Tls(t) => {
+            add(&mut texts, "sni", t.sni.as_deref());
+            add(&mut texts, "ech", t.ech.as_deref());
+            for a in &t.alpn {
+                add(&mut texts, "alpn", Some(a.as_str()));
+            }
+        }
+        Security::Reality(r) => {
+            add(&mut texts, "sni", Some(r.sni.as_str()));
+            add(&mut texts, "pbk", Some(r.public_key.as_str()));
+            add(&mut texts, "sid", Some(r.short_id.as_str()));
+            add(&mut texts, "spx", r.spider_x.as_deref());
+        }
+    }
+    if let Some((field, _)) = texts
+        .iter()
+        .find(|(_, v)| v.len() > MAX_URI_LEN || v.chars().any(char::is_control))
+    {
+        return Err(invalid(field));
+    }
+
+    let address = s.address.trim_matches(['[', ']']);
+    let host_ok = address.parse::<std::net::IpAddr>().is_ok()
+        || matches!(url::Host::parse(address), Ok(url::Host::Domain(_)));
+    if !host_ok {
+        return Err(invalid("address"));
+    }
+    if s.port == 0 {
+        return Err(invalid("port"));
+    }
+    if let Some(f) = &s.fragment {
+        stream::fragment_from(&f.packets, &f.length, &f.delay)?;
+    }
+    if s.mux.is_some_and(|n| !(1..=1024).contains(&n)) {
+        return Err(invalid("mux"));
+    }
+    Ok(())
+}
+
 pub(crate) fn parse_url(input: &str) -> Result<Url, ParseError> {
     Url::parse(input).map_err(|_| ParseError::InvalidUrl)
 }
@@ -388,6 +540,81 @@ mod tests {
     use super::*;
 
     const VLESS_REALITY: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@203.0.113.10:443?type=tcp&security=reality&sni=www.microsoft.com&fp=firefox&pbk=Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#%D0%9D%D0%B8%D0%B4%D0%B5%D1%80%D0%BB%D0%B0%D0%BD%D0%B4%D1%8B";
+
+    fn parsed(uri: &str) -> Server {
+        match parse_uri(uri).unwrap() {
+            Entry::Server(s) => *s,
+            Entry::Info(_) => panic!("ожидался сервер: {uri}"),
+        }
+    }
+
+    const XHTTP: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@up.example.com:443?type=xhttp&security=tls&path=%2Fx&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%7D&fragment=tlshello,100-200,10-20#x";
+
+    #[test]
+    fn parsed_servers_pass_the_service_check() {
+        for uri in [
+            VLESS_REALITY,
+            XHTTP,
+            "trojan://pass@example.com:443?type=ws&path=%2Fws&host=example.com&sni=example.com#T",
+            "ss://2022-blake3-aes-128-gcm:MTIzNDU2Nzg5MDEyMzQ1Ng%3D%3D@198.51.100.7:8388#ss",
+            "hy2://secret@hy.example.com:8443?obfs=salamander&obfs-password=x&sni=hy.example.com#hy2",
+            "hy2://secret@hy.example.com:443,20000-30000?sni=hy.example.com#hop",
+            "vmess://eyJ2IjoiMiIsInBzIjoidm1lc3MiLCJhZGQiOiJ2bS5leGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6ImI4MzEzODFkLTYzMjQtNGQ1My1hZDRmLThjZGE0OGIzMDgxMSIsImFpZCI6IjAiLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJwYXRoIjoiL3ZtIiwiaG9zdCI6InZtLmV4YW1wbGUuY29tIiwidGxzIjoidGxzIiwic25pIjoidm0uZXhhbXBsZS5jb20ifQ==",
+            "tuic://b831381d-6324-4d53-ad4f-8cda48b30811:pass@tu.example.com:443?congestion_control=bbr&udp_relay_mode=native&sni=tu.example.com#tuic",
+            "vless://b831381d-6324-4d53-ad4f-8cda48b30811@[2001:db8::1]:443?security=tls&sni=v6.example.com#v6",
+        ] {
+            let s = parsed(uri);
+            assert_eq!(check_server(&s), Ok(()), "{uri}");
+        }
+    }
+
+    /// Служба получает модель по IPC, минуя парсер: всё, что парсер не пропустил бы,
+    /// отвергается — в первую очередь `extra` с путями к файлам для ядра от SYSTEM.
+    #[test]
+    fn forged_server_is_rejected() {
+        use crate::model::Transport;
+        let base = parsed(XHTTP);
+        let with_extra = |extra: &str| {
+            let mut s = base.clone();
+            if let Transport::Xhttp { extra: e, .. } = &mut s.transport {
+                *e = Some(extra.to_owned());
+            }
+            s
+        };
+        // Путь к файлу в `downloadSettings` пропадает при повторном белом списке,
+        // поэтому ядро его не увидит; а непарсящийся `extra` — ошибка.
+        let evil = r#"{"downloadSettings":{"address":"dl.example.com","port":443,"security":"tls","tlsSettings":{"masterKeyLog":"C:\\Windows\\x.dll"}}}"#;
+        let s = with_extra(evil);
+        assert_eq!(check_server(&s), Ok(()));
+        let clean = sanitized_extra(evil).unwrap();
+        assert!(!clean.contains("masterKeyLog"), "{clean}");
+        assert!(check_server(&with_extra("not json")).is_err());
+        assert!(check_server(&with_extra(r#"{"downloadSettings":{"port":1}}"#)).is_err());
+
+        let mut s = base.clone();
+        s.address = "evil host/../x".into();
+        assert!(check_server(&s).is_err());
+        let mut s = base.clone();
+        s.address = String::new();
+        assert!(check_server(&s).is_err());
+        let mut s = base.clone();
+        if let Transport::Xhttp { path, .. } = &mut s.transport {
+            *path = "/x\n--evil".into();
+        }
+        assert!(check_server(&s).is_err());
+        let mut s = base.clone();
+        s.fragment.as_mut().unwrap().delay = "999999".into();
+        assert!(check_server(&s).is_err());
+        let mut s = base.clone();
+        s.mux = Some(0);
+        assert!(check_server(&s).is_err());
+
+        let mut s = parsed("hy2://secret@hy.example.com:443,20000-30000?sni=hy.example.com#hop");
+        if let crate::model::Protocol::Hysteria2 { ports, .. } = &mut s.protocol {
+            *ports = Some("1-2,evil".into());
+        }
+        assert!(check_server(&s).is_err());
+    }
 
     #[test]
     fn errors_in_english() {

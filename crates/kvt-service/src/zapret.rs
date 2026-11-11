@@ -387,6 +387,9 @@ fn install_bundle(
     version: &str,
     fallback_bin: &Path,
 ) -> Result<bool, String> {
+    // Сначала ProgramData\KVT: удаления ниже идут от SYSTEM и не должны уйти по
+    // ссылке, подложенной в чужой каталог.
+    secure_dir(&data_dir(paths))?;
     let work = data_dir(paths).join("zapret-work");
     let _ = std::fs::remove_dir_all(&work);
     secure_dir(&work)?;
@@ -507,6 +510,7 @@ pub fn install_update(paths: &Paths, prepared: Prepared) -> Result<MaintenanceRe
 /// `touch_driver` — нет чужих программ, которые сейчас пользуются WinDivert.
 pub async fn repair(paths: &Paths, touch_driver: bool) -> Result<MaintenanceReport, String> {
     let mut steps = Vec::new();
+    secure_dir(&data_dir(paths))?;
     if paths.zapret_update.exists() {
         std::fs::remove_dir_all(&paths.zapret_update).map_err(|e| e.to_string())?;
         steps.push(
