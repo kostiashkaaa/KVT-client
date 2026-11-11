@@ -851,7 +851,9 @@ fn main() {
             notify::spawn(app.handle());
             updates::spawn(app.handle().clone());
             // Автозапуск (`--tray`) — сразу в трей; обычный запуск открывает окно.
-            if !autostart::started_in_tray() {
+            if autostart::started_in_tray() {
+                tracing::info!("запуск из автозагрузки Windows — окно не открываем");
+            } else {
                 tray::show_main_window(app.handle());
             }
             spawn_connect_on_start(app.handle().clone());
@@ -912,7 +914,7 @@ fn main() {
             migrate::migrate_import,
             take_notices,
             tray::take_page,
-            autostart::autostart_enabled,
+            autostart::autostart_state,
             autostart::set_autostart,
             about::about_info,
             about::open_link,

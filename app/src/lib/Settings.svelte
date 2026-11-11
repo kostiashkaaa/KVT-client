@@ -8,8 +8,9 @@
     openLink,
     zapretInfo,
     type About,
-    autostartEnabled,
+    autostartState,
     setAutostart,
+    type AutostartState,
     currentNetwork,
     dnsCatalog,
     onNetworkChanged,
@@ -87,12 +88,13 @@
   }
 
   // Автозапуск хранится в реестре Windows: его можно выключить и в «Диспетчере задач».
-  let autostart = $state(false);
+  let autostartNow = $state<AutostartState>("off");
+  const autostart = $derived(autostartNow === "on");
   let autostartError = $state<string | null>(null);
   $effect(() => {
-    void autostartEnabled()
-      .then((v) => (autostart = v))
-      .catch(() => (autostart = false));
+    void autostartState()
+      .then((v) => (autostartNow = v))
+      .catch(() => (autostartNow = "off"));
   });
   async function toggleAutostart(input: HTMLInputElement) {
     autostartError = null;
@@ -103,7 +105,7 @@
     }
     // Источник правды — реестр. Переключатель ставим и сам: если значение не
     // изменилось (запись не удалась), Svelte его не перерисует.
-    autostart = await autostartEnabled().catch(() => !input.checked);
+    autostartNow = await autostartState().catch(() => (input.checked ? "off" : "on"));
     input.checked = autostart;
   }
 
@@ -225,6 +227,15 @@
   </div>
   {#if autostartError}
     <p class="caption error-text">{autostartError}</p>
+  {:else if autostartNow === "blocked"}
+    <p class="caption error-text">
+      Автозапуск KVT выключен в Windows («Диспетчер задач» → «Автозагрузка»). Включите переключатель — запрет
+      снимется.
+    </p>
+  {:else if autostartNow === "other"}
+    <p class="caption error-text">
+      В автозагрузке другая копия KVT. Включите переключатель, чтобы при входе в Windows запускалась эта.
+    </p>
   {/if}
   <div class="row">
     <div>

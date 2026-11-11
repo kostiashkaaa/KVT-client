@@ -83,6 +83,31 @@ pub fn get_string(key: &str, name: &str) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..chars]))
 }
 
+/// Читает двоичное значение (до 64 байт); `None` — ключа или значения нет.
+pub fn get_binary(key: &str, name: &str) -> Option<Vec<u8>> {
+    use windows_sys::Win32::System::Registry::RRF_RT_REG_BINARY;
+    let (key, name) = (wide(key), wide(name));
+    let mut buf = vec![0u8; 64];
+    let mut len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+    // SAFETY: строки заканчиваются нулём; буфер на len байт, len — выходная длина.
+    let code = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_BINARY,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+        )
+    };
+    if code != 0 {
+        return None;
+    }
+    buf.truncate(len as usize);
+    Some(buf)
+}
+
 /// Читает DWORD из `HKEY_LOCAL_MACHINE` (только чтение, прав администратора не нужно);
 /// `None` — ключа или значения нет.
 pub fn get_machine_dword(key: &str, name: &str) -> Option<u32> {

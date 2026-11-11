@@ -2042,10 +2042,14 @@ export function onUpdateAvailable(handler: () => void): () => void {
   return () => void off.then((f) => f());
 }
 
-/** Автозапуск с Windows свёрнутым в трей (значение в реестре, не в настройках). */
-export async function autostartEnabled(): Promise<boolean> {
-  if (!inTauri) return true;
-  return invoke<boolean>("autostart_enabled");
+/** Автозапуск с Windows свёрнутым в трей (значение в реестре, не в настройках).
+ *  blocked — запись наша, но её выключили в «Диспетчере задач» или «Параметрах»;
+ *  other — в автозагрузке другой kvt.exe. */
+export type AutostartState = "on" | "off" | "blocked" | "other";
+
+export async function autostartState(): Promise<AutostartState> {
+  if (!inTauri) return "on";
+  return invoke<AutostartState>("autostart_state");
 }
 
 export async function setAutostart(enabled: boolean): Promise<void> {
