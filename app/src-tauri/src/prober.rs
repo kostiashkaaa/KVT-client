@@ -291,12 +291,9 @@ pub async fn full_check(
         )
         .await;
         *state.governor.lock().map_err(crate::errors::state)? = governor;
-        // Результаты нужны и автопереключению: оно выбирает замену среди проверенных.
-        state
-            .outcomes
-            .lock()
-            .map_err(crate::errors::state)?
-            .extend(keys.into_iter().zip(outcomes));
+        // Результаты нужны и автопереключению: оно выбирает замену среди проверенных
+        // (и после перезапуска KVT).
+        crate::outcomes::record(&state, keys.into_iter().zip(outcomes));
         Ok::<_, String>(())
     }
     .await;

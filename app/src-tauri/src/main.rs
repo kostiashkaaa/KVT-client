@@ -21,6 +21,7 @@ mod migrate;
 mod netinfo;
 mod netprofile;
 mod notify;
+mod outcomes;
 mod power;
 mod prober;
 mod service_client;
@@ -69,6 +70,8 @@ pub(crate) struct AppState {
     choice: Mutex<Choice>,
     /// Итоги полной проверки по ключам серверов.
     outcomes: Mutex<HashMap<String, Outcome>>,
+    /// Когда получен каждый итог из `outcomes` (секунды Unix) — см. `outcomes.rs`.
+    outcome_times: Mutex<HashMap<String, u64>>,
     /// Последняя проверка DNS: повтор в течение минуты отдаёт её же.
     dns_report: Mutex<Option<(Instant, kvt_core::dns::DnsReport)>>,
     /// Клиент проверки туннеля: держит соединение открытым между проверками.
@@ -89,8 +92,11 @@ pub(crate) struct AppState {
     notices: Mutex<Vec<String>>,
     /// Идут ли данные через туннель: `None` — не проверяли или VPN выключен.
     tunnel: Mutex<Option<bool>>,
-    /// Будит автопереключение раньше срока (выход из сна).
+    /// Будит автопереключение раньше срока (выход из сна, сбой проверки туннеля).
     watchdog_wake: tokio::sync::Notify,
+    /// Проверка туннеля сразу после подключения не прошла: `epoch` того подключения.
+    /// Автопереключению не нужно подтверждать сбой ещё раз (см. `tunnel::spawn_verify`).
+    verify_failed: Mutex<Option<u64>>,
     /// Последний итог «Почему не работает?» — для экспорта диагностики.
     last_diagnosis: Mutex<Option<troubleshoot::Diagnosis>>,
     /// Файлы диагностики, которые пользователь видел в предпросмотре.
@@ -241,6 +247,7 @@ impl Default for AppState {
             checking: Default::default(),
             choice: Mutex::default(),
             outcomes: Mutex::default(),
+            outcome_times: Mutex::default(),
             dns_report: Mutex::default(),
             health: health::client(),
             network: Mutex::default(),
@@ -252,6 +259,7 @@ impl Default for AppState {
             notices: Mutex::default(),
             tunnel: Mutex::default(),
             watchdog_wake: tokio::sync::Notify::new(),
+            verify_failed: Mutex::default(),
             last_diagnosis: Mutex::default(),
             diag_files: Mutex::default(),
             session: Mutex::default(),
@@ -861,6 +869,7 @@ fn main() {
                 *s = Some(store);
             }
             subs::rebuild(&state)?;
+            outcomes::load(&state);
             migrate_choice(app.handle(), &state);
             subs::spawn_updater(app.handle().clone());
             tray::create(app.handle())?;

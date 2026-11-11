@@ -34,24 +34,42 @@ pub fn set(app: &AppHandle, ok: Option<bool>) {
 /// Проверка после подключения: несколько попыток, первая — через пару секунд.
 pub fn spawn_verify(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(SETTLE).await;
         let state = app.state::<AppState>();
-        let mut ok = false;
+        let epoch = state.epoch();
+        tokio::time::sleep(SETTLE).await;
+        let mut worked = None;
         for attempt in 0..ATTEMPTS {
             if attempt > 0 {
                 tokio::time::sleep(BETWEEN).await;
             }
-            if health::check(&state.health).await.is_ok() {
-                ok = true;
+            if let Ok(trace) = health::check(&state.health).await {
+                worked = Some(trace.ms);
                 break;
             }
         }
         // Пока шла проверка, могли отключиться или переподключиться.
-        if matches!(
+        if !matches!(
             crate::query_status().await,
             Ok(Some(kvt_core::ipc::ServiceStatus::Connected { .. }))
         ) {
-            set(&app, Some(ok));
+            return;
+        }
+        set(&app, Some(worked.is_some()));
+        match worked {
+            Some(ms) => {
+                if let Some(entry) = state.selected() {
+                    crate::outcomes::worked(&state, &entry.key, ms);
+                }
+            }
+            // Сбой уже подтверждён несколькими попытками: автопереключение берётся
+            // за него сразу, а не на следующей минутной проверке.
+            None if state.epoch() == epoch => {
+                if let Ok(mut failed) = state.verify_failed.lock() {
+                    *failed = Some(epoch);
+                }
+                state.watchdog_wake.notify_one();
+            }
+            None => {}
         }
     });
 }

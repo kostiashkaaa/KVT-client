@@ -153,18 +153,19 @@ pub(crate) fn server_name(state: &AppState, key: &str) -> String {
         .unwrap_or_else(|| kvt_core::i18n::tr("сервер", "server").into())
 }
 
-/// Сбой подтверждён несколькими попытками подряд.
-async fn tunnel_dead(client: &reqwest::Client) -> bool {
-    if health::check(client).await.is_ok() {
-        return false;
+/// Идут ли данные через туннель: `Some(мс)` — проверка прошла, `None` — сбой
+/// подтверждён несколькими попытками подряд.
+async fn tunnel_alive(client: &reqwest::Client) -> Option<u64> {
+    if let Ok(trace) = health::check(client).await {
+        return Some(trace.ms);
     }
     for _ in 0..CONFIRMATIONS {
         tokio::time::sleep(RETRY_AFTER).await;
-        if health::check(client).await.is_ok() {
-            return false;
+        if let Ok(trace) = health::check(client).await {
+            return Some(trace.ms);
         }
     }
-    true
+    None
 }
 
 /// Подключается к серверу `key` и проверяет, что данные пошли.
@@ -175,15 +176,16 @@ pub(crate) async fn switch_to(app: &AppHandle, key: &str) -> Result<(), String> 
     connect_current(app, false).await?;
     crate::tray::refresh(app).await;
     tokio::time::sleep(crate::tunnel::SETTLE).await;
-    if tunnel_dead(&state.health).await {
+    let Some(ms) = tunnel_alive(&state.health).await else {
         crate::tunnel::set(app, Some(false));
         return Err(kvt_core::i18n::tr(
             "через сервер не идут данные",
             "no data is going through the server",
         )
         .into());
-    }
+    };
     crate::tunnel::set(app, Some(true));
+    crate::outcomes::worked(&state, key, ms);
     Ok(())
 }
 
@@ -282,6 +284,11 @@ pub fn spawn(app: AppHandle) {
         let mut incidents: VecDeque<Instant> = VecDeque::new();
         let mut gave_up = false;
         let mut portal_reported = false;
+        // `epoch` последнего сбоя, который уже обрабатывали. Сбой проверки после
+        // подключения принимается без повторной проверки один раз на подключение:
+        // иначе возврат на прежний сервер (тоже с проверкой) запускал бы перебор
+        // заново без паузы.
+        let mut handled_epoch: Option<u64> = None;
         loop {
             let state = app.state::<AppState>();
             // Выход из сна будит проверку раньше срока.
@@ -300,10 +307,26 @@ pub fn spawn(app: AppHandle) {
                 continue;
             }
             let epoch = state.epoch();
-            if !tunnel_dead(&state.health).await {
-                crate::tunnel::set(&app, Some(true));
-                portal_reported = false;
+            let failed_verify = state
+                .verify_failed
+                .lock()
+                .ok()
+                .and_then(|mut f| f.take())
+                .filter(|e| *e == epoch);
+            // Не прошла проверка после возврата на прежний сервер — этот сбой уже
+            // обработан, ждём обычной проверки через минуту.
+            if failed_verify.is_some() && handled_epoch == failed_verify {
                 continue;
+            }
+            if failed_verify.is_none() {
+                if let Some(ms) = tunnel_alive(&state.health).await {
+                    crate::tunnel::set(&app, Some(true));
+                    if let Some(entry) = state.selected() {
+                        crate::outcomes::worked(&state, &entry.key, ms);
+                    }
+                    portal_reported = false;
+                    continue;
+                }
             }
             // Пока подтверждали сбой (около 20 с), пользователь мог нажать «Отключить»
             // или выбрать другой сервер — тогда это уже не наш сбой.
@@ -337,6 +360,7 @@ pub fn spawn(app: AppHandle) {
                 continue;
             }
             incidents.push_back(Instant::now());
+            handled_epoch = Some(epoch);
             handle_incident(&app, epoch).await;
         }
     });

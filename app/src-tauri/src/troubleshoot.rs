@@ -621,15 +621,16 @@ async fn probe(state: &AppState, key: &str, server: &kvt_core::Server) -> Option
             g.report_freeze(&sni, Instant::now());
         }
     }
-    if let Ok(mut outcomes) = state.outcomes.lock() {
-        outcomes.insert(
+    crate::outcomes::record(
+        state,
+        [(
             key.to_owned(),
             Outcome::Checked {
                 verdict,
                 latency_ms: observation.latency.map(|l| l.as_millis() as u64),
             },
-        );
-    }
+        )],
+    );
     Some(ProbeFact::Done(verdict))
 }
 
