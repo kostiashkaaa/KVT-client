@@ -1,6 +1,9 @@
 /* Дизайн-токены KVT. Основа — Windows 11 Fluent: системный шрифт, сетка 4 px,
    нейтральная палитра и один акцентный цвет. Цвет несёт смысл, а не украшает. */
 
+/* Цвета заданы парами light-dark(светлая, тёмная): какую взять, решает
+   color-scheme. «Как в Windows» — обе, по системе; выбор в «Настройках» ставит
+   data-theme на <html> (theme.svelte.ts) и сужает color-scheme до одной. */
 :root {
   color-scheme: light dark;
 
@@ -20,30 +23,30 @@
   --radius-m: 8px;
   --radius-l: 12px;
 
-  --bg: #f3f3f3;
-  --surface: #fbfbfb;
-  --surface-hover: #f5f5f5;
-  --surface-pressed: #efefef;
-  --sidebar: #ebebeb;
-  --stroke: #e0e0e0;
-  --stroke-strong: #c8c8c8;
-  --text: #1b1b1b;
-  --text-2: #5c5c5c;
-  --text-3: #8a8a8a;
+  --bg: light-dark(#f3f3f3, #202020);
+  --surface: light-dark(#fbfbfb, #2b2b2b);
+  --surface-hover: light-dark(#f5f5f5, #323232);
+  --surface-pressed: light-dark(#efefef, #282828);
+  --sidebar: light-dark(#ebebeb, #1c1c1c);
+  --stroke: light-dark(#e0e0e0, #3a3a3a);
+  --stroke-strong: light-dark(#c8c8c8, #4a4a4a);
+  --text: light-dark(#1b1b1b, #ffffff);
+  --text-2: light-dark(#5c5c5c, #c5c5c5);
+  --text-3: light-dark(#8a8a8a, #9a9a9a);
 
-  --accent: #005fb8;
-  --accent-hover: #1a6fc2;
-  --accent-text: #ffffff;
-  --accent-subtle: #e5f0fa;
+  --accent: light-dark(#005fb8, #60cdff);
+  --accent-hover: light-dark(#1a6fc2, #5abce9);
+  --accent-text: light-dark(#ffffff, #000000);
+  --accent-subtle: light-dark(#e5f0fa, #1f3a4a);
 
-  --ok: #0f7b0f;
-  --ok-subtle: #dff6dd;
-  --warn: #9d5d00;
-  --warn-subtle: #fff4ce;
-  --danger: #c42b1c;
-  --danger-subtle: #fde7e9;
+  --ok: light-dark(#0f7b0f, #6ccb5f);
+  --ok-subtle: light-dark(#dff6dd, #2a3a28);
+  --warn: light-dark(#9d5d00, #fce100);
+  --warn-subtle: light-dark(#fff4ce, #433519);
+  --danger: light-dark(#c42b1c, #ff99a4);
+  --danger-subtle: light-dark(#fde7e9, #442726);
 
-  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow-card: 0 1px 2px light-dark(rgb(0 0 0 / 0.06), transparent);
   --focus: 0 0 0 2px var(--surface), 0 0 0 4px var(--text);
   --ease: cubic-bezier(0.2, 0, 0, 1);
   /* Анимации короткие и только на transform/opacity — без перерасчёта раскладки. */
@@ -53,33 +56,12 @@
   --measure: 66ch;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #202020;
-    --surface: #2b2b2b;
-    --surface-hover: #323232;
-    --surface-pressed: #282828;
-    --sidebar: #1c1c1c;
-    --stroke: #3a3a3a;
-    --stroke-strong: #4a4a4a;
-    --text: #ffffff;
-    --text-2: #c5c5c5;
-    --text-3: #9a9a9a;
+:root[data-theme="light"] {
+  color-scheme: light;
+}
 
-    --accent: #60cdff;
-    --accent-hover: #5abce9;
-    --accent-text: #000000;
-    --accent-subtle: #1f3a4a;
-
-    --ok: #6ccb5f;
-    --ok-subtle: #2a3a28;
-    --warn: #fce100;
-    --warn-subtle: #433519;
-    --danger: #ff99a4;
-    --danger-subtle: #442726;
-
-    --shadow-card: none;
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 * {

@@ -5,6 +5,7 @@
 <script lang="ts">
   import Icon, { type IconName } from "./Icon.svelte";
   import { update } from "./update.svelte";
+  import { tapSettings } from "./theme.svelte";
 
   let { current = $bindable() }: { current: Page } = $props();
 
@@ -54,7 +55,10 @@
     class:active={current === "settings"}
     aria-current={current === "settings" ? "page" : undefined}
     title={update.version ? `Настройки · вышла KVT ${update.version}` : "Настройки"}
-    onclick={() => (current = "settings")}
+    onclick={() => {
+      current = "settings";
+      tapSettings();
+    }}
   >
     <span class="icon">
       <Icon name="settings" />

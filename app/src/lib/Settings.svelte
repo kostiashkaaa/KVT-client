@@ -2,6 +2,7 @@
   import Icon from "./Icon.svelte";
   import Banner from "./Banner.svelte";
   import { update as newVersion, checkUpdateNow } from "./update.svelte";
+  import { theme, setTheme, type ThemeChoice } from "./theme.svelte";
   import {
     aboutInfo,
     openLink,
@@ -159,6 +160,12 @@
     { id: "vpn", label: "Режим VPN" },
     { id: "hybrid", label: "Режим «Гибрид»" },
     { id: "zapret", label: "Режим Zapret" },
+  ];
+
+  const themes: { id: ThemeChoice; label: string }[] = [
+    { id: "auto", label: "Как в Windows" },
+    { id: "light", label: "Светлая" },
+    { id: "dark", label: "Тёмная" },
   ];
 </script>
 
@@ -329,6 +336,29 @@
 </section>
 
 <section class="card block">
+  <div class="field">
+    <div class="label">
+      <h2 id="theme-title">Тема</h2>
+      <span class="caption">«Как в Windows» меняется вместе с системой.</span>
+    </div>
+    <div class="segmented" role="radiogroup" aria-labelledby="theme-title">
+      {#each themes as t (t.id)}
+        <label class:checked={theme.choice === t.id}>
+          <input
+            type="radio"
+            name="theme"
+            value={t.id}
+            checked={theme.choice === t.id}
+            onclick={() => setTheme(t.id)}
+          />
+          {t.label}
+        </label>
+      {/each}
+    </div>
+  </div>
+</section>
+
+<section class="card block">
   <h2>О программе</h2>
   {#if about}
     <dl class="versions">
@@ -454,6 +484,56 @@
   .field select {
     flex: none;
     min-width: 220px;
+  }
+
+  .label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  /* Три варианта в одну полосу, как выбор режима на главной. */
+  .segmented {
+    display: flex;
+    flex: none;
+    padding: 2px;
+    border: 1px solid var(--stroke);
+    border-radius: var(--radius-s);
+    background: var(--bg);
+  }
+
+  .segmented label {
+    position: relative;
+    padding: 4px var(--space-3);
+    border-radius: 3px;
+    color: var(--text-2);
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background-color var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease);
+  }
+
+  .segmented label:hover {
+    color: var(--text);
+  }
+
+  .segmented label.checked {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow-card), 0 0 0 1px var(--stroke);
+  }
+
+  .segmented input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .segmented label:has(input:focus-visible) {
+    box-shadow: var(--focus);
   }
 
   .here {
