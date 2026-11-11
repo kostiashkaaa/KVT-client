@@ -22,9 +22,56 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-/// Сколько ждём после запуска, чтобы поймать мгновенное падение ядра.
+/// Сколько ждём после запуска, чтобы поймать мгновенное падение ядра. VPN-ядро
+/// отпускается раньше — как только маршрут в интернет пошёл через его TUN.
 const STARTUP_GRACE: Duration = Duration::from_secs(2);
+/// Как часто во время `STARTUP_GRACE` смотрим, не готов ли процесс.
+const READY_POLL: Duration = Duration::from_millis(50);
 const LOG_LINES: usize = 200;
+/// Адрес, по маршруту к которому видно, куда сейчас идёт интернет: в старый TUN,
+/// в новый или в физический адаптер.
+const ROUTE_PROBE: std::net::Ipv4Addr = std::net::Ipv4Addr::new(8, 8, 8, 8);
+/// Сколько отпечатков принятых конфигов помнить (см. [`CHECKED`]).
+const CHECKED_MAX: usize = 32;
+
+/// Отпечатки конфигов, которые ядро уже приняло (`run -test` / `check`). Повторное
+/// подключение к тому же серверу не запускает ядро лишний раз: Xray при проверке
+/// читает geoip.dat на 18 МБ. Сбрасывается, когда обновились списки, — конфиг
+/// ссылается на них, и новая версия может не подойти.
+static CHECKED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+fn config_fingerprint(core: CoreKind, config: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    format!("{core:?}").hash(&mut h);
+    config.hash(&mut h);
+    h.finish()
+}
+
+fn already_checked(fingerprint: u64) -> bool {
+    CHECKED.lock().is_ok_and(|c| c.contains(&fingerprint))
+}
+
+fn remember_checked(fingerprint: u64) {
+    if let Ok(mut c) = CHECKED.lock() {
+        if c.len() >= CHECKED_MAX {
+            c.remove(0);
+        }
+        c.push(fingerprint);
+    }
+}
+
+fn forget_checked() {
+    if let Ok(mut c) = CHECKED.lock() {
+        c.clear();
+    }
+}
+
+/// Интернет идёт через TUN KVT: адаптер есть, и маршрут к [`ROUTE_PROBE`] ведёт в него.
+fn route_through_tun() -> bool {
+    let tun = wfp::interface_index(TUN_INTERFACE);
+    tun.is_some() && wfp::best_interface(ROUTE_PROBE) == tun
+}
 
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -217,34 +264,45 @@ impl Supervisor {
         secure_dir(&self.paths.rules)?;
         secure_dir(&self.paths.run)?;
 
-        // Списки: докачиваем недостающие; при сбое сети работаем на прежних версиях.
+        // Списки. Все файлы на месте — подключаемся сразу, а новые версии (раз в сутки)
+        // качаем в фоне после подключения: применятся при следующем. Раньше первое
+        // подключение за день ждало GitHub, а у части провайдеров он медленный.
+        // Каких-то файлов нет — качаем сейчас: без них ядро не запустится.
         let files = rulesync::required_files(&plan.routing, plan.core);
-        let http = NetClient::new(kvt_core::netlog::Purpose::Rules).map_err(|e| e.to_string())?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let report = rulesync::sync(&http, &self.paths.rules, &files, now, false).await;
-        for (file, err) in &report.failed {
-            tracing::warn!(file, err, "список не обновлён");
-        }
-        if let Some(missing) = files
+        let complete = files
             .iter()
-            .find(|f| !self.paths.rules.join(&f.local).exists())
-        {
-            return Err(kvt_core::trf!(
-                "Не удалось загрузить список «{}» с GitHub. Проверьте интернет и подключитесь снова.",
-                "Couldn't download the list “{}” from GitHub. Check your internet and connect again.",
-                missing.local
-            ));
-        }
-        // Прежние версии на месте, но обновить не вышло: повторим через туннель,
-        // когда он поднимется.
-        let retry: Vec<rulesync::RuleFile> = files
-            .iter()
-            .filter(|f| report.failed.iter().any(|(n, _)| *n == f.local))
-            .cloned()
-            .collect();
+            .all(|f| self.paths.rules.join(&f.local).exists());
+        let (background, force) = if complete {
+            (files, false)
+        } else {
+            let http =
+                NetClient::new(kvt_core::netlog::Purpose::Rules).map_err(|e| e.to_string())?;
+            let report = rulesync::sync(&http, &self.paths.rules, &files, unix_now(), false).await;
+            for (file, err) in &report.failed {
+                tracing::warn!(file, err, "список не обновлён");
+            }
+            if !report.updated.is_empty() {
+                forget_checked();
+            }
+            if let Some(missing) = files
+                .iter()
+                .find(|f| !self.paths.rules.join(&f.local).exists())
+            {
+                return Err(kvt_core::trf!(
+                    "Не удалось загрузить список «{}» с GitHub. Проверьте интернет и подключитесь снова.",
+                    "Couldn't download the list “{}” from GitHub. Check your internet and connect again.",
+                    missing.local
+                ));
+            }
+            // Прежние версии на месте, но обновить не вышло: повторим через туннель,
+            // когда он поднимется.
+            let retry: Vec<rulesync::RuleFile> = files
+                .iter()
+                .filter(|f| report.failed.iter().any(|(n, _)| *n == f.local))
+                .cloned()
+                .collect();
+            (retry, true)
+        };
 
         if let Some(zp) = &plan.zapret {
             // winws — до ядра, пока трафик ещё идёт через физический интерфейс.
@@ -284,6 +342,7 @@ impl Supervisor {
         )
         .map_err(|e| e.to_string())?;
         let config = serde_json::to_vec(&compiled.config).map_err(|e| e.to_string())?;
+        let fingerprint = config_fingerprint(plan.core, &config);
 
         let spec = CoreSpec::new(plan.core, &self.paths);
         let config_path = self.paths.run.join(spec.config_name);
@@ -299,7 +358,9 @@ impl Supervisor {
         if let Ok(mut issues) = self.issues.lock() {
             *issues = None;
         }
-        let result = self.check_and_spawn(&spec, &config_file.0).await;
+        let result = self
+            .check_and_spawn(&spec, &config_file.0, fingerprint)
+            .await;
         drop(config_file);
         let (child, job) = result?;
         self.running = Some(Running { child, _job: job });
@@ -316,8 +377,8 @@ impl Supervisor {
             }
         }
         tracing::info!(core = ?plan.core, kill_switch = plan.kill_switch, "подключено");
-        if !retry.is_empty() {
-            spawn_rules_retry(self.paths.rules.clone(), retry);
+        if !background.is_empty() {
+            spawn_rules_sync(self.paths.rules.clone(), background, force);
         }
         Ok(())
     }
@@ -423,40 +484,60 @@ impl Supervisor {
         &self,
         spec: &CoreSpec,
         config: &Path,
+        fingerprint: u64,
     ) -> Result<(Child, Job), String> {
-        let check = Command::new(&spec.exe)
-            .args(spec.check_args(config))
-            .envs(spec.env.clone())
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .await
-            .map_err(|e| {
-                kvt_core::trf!(
-                    "не удалось запустить {}: {e}",
-                    "couldn't start {}: {e}",
-                    spec.exe.display()
-                )
-            })?;
-        if !check.status.success() {
-            let text = String::from_utf8_lossy(&[check.stdout, check.stderr].concat()).into_owned();
-            let detail = tail(&kvt_core::redact::text(&text), 3);
-            tracing::error!(%detail, "ядро отвергло конфигурацию");
-            return Err(kvt_core::trf!(
-                "VPN-ядро не приняло настройки этого сервера — возможно, в ключе неподдерживаемые параметры. Выберите другой сервер или сохраните диагностику. ({detail})",
-                "The VPN core rejected this server's settings — the key may have unsupported parameters. Pick another server or save diagnostics. ({detail})"
-            ));
+        let start = std::time::Instant::now();
+        if !already_checked(fingerprint) {
+            let check = Command::new(&spec.exe)
+                .args(spec.check_args(config))
+                .envs(spec.env.clone())
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .await
+                .map_err(|e| {
+                    kvt_core::trf!(
+                        "не удалось запустить {}: {e}",
+                        "couldn't start {}: {e}",
+                        spec.exe.display()
+                    )
+                })?;
+            if !check.status.success() {
+                let text =
+                    String::from_utf8_lossy(&[check.stdout, check.stderr].concat()).into_owned();
+                let detail = tail(&kvt_core::redact::text(&text), 3);
+                tracing::error!(%detail, "ядро отвергло конфигурацию");
+                return Err(kvt_core::trf!(
+                    "VPN-ядро не приняло настройки этого сервера — возможно, в ключе неподдерживаемые параметры. Выберите другой сервер или сохраните диагностику. ({detail})",
+                    "The VPN core rejected this server's settings — the key may have unsupported parameters. Pick another server or save diagnostics. ({detail})"
+                ));
+            }
+            remember_checked(fingerprint);
         }
+        let checked = start.elapsed();
         let mut cmd = Command::new(&spec.exe);
         cmd.args(spec.run_args(config))
             .envs(spec.env.clone())
             .current_dir(&self.paths.run);
-        spawn_supervised(
+        // Готово, когда интернет пошёл через новый TUN. Если адаптер остался от
+        // прежнего ядра (уборка не удалась), по маршруту этого не понять — тогда
+        // ждём весь `STARTUP_GRACE`, как раньше.
+        let fresh = wfp::interface_luid(TUN_INTERFACE).is_none();
+        let spawned = spawn_supervised(
             cmd,
             &self.log,
             kvt_core::i18n::tr("ядро", "core"),
             Some((spec.core, Arc::clone(&self.issues))),
+            move || fresh && route_through_tun(),
         )
-        .await
+        .await;
+        if spawned.is_ok() {
+            tracing::info!(
+                check_ms = checked.as_millis() as u64,
+                start_ms = (start.elapsed() - checked).as_millis() as u64,
+                "ядро запущено"
+            );
+        }
+        spawned
     }
 
     /// Только zapret, без VPN: winws на всех интерфейсах.
@@ -616,10 +697,9 @@ impl CoreSpec {
 /// Физический интерфейс для winws в гибриде. Сразу после остановки прежнего ядра
 /// маршрут ещё может вести в старый TUN — ждём, пока система выберет другой.
 async fn physical_interface() -> Option<u32> {
-    let probe = std::net::Ipv4Addr::new(8, 8, 8, 8);
     for _ in 0..20 {
         let tun = wfp::interface_index(TUN_INTERFACE);
-        match wfp::best_interface(probe) {
+        match wfp::best_interface(ROUTE_PROBE) {
             Some(best) if Some(best) != tun => return Some(best),
             _ => tokio::time::sleep(Duration::from_millis(100)).await,
         }
@@ -628,12 +708,14 @@ async fn physical_interface() -> Option<u32> {
 }
 
 /// Запускает процесс в Job Object, собирает его вывод в кольцевой лог и
-/// проверяет, что он не упал сразу после старта.
+/// проверяет, что он не упал сразу после старта. `ready` — признак, что процесс
+/// заработал и `STARTUP_GRACE` можно не дожидаться (`|| false` — ждать весь срок).
 pub async fn spawn_supervised(
     mut cmd: Command,
     log: &Log,
     what: &str,
     watch: Option<(CoreKind, Issues)>,
+    ready: impl Fn() -> bool,
 ) -> Result<(Child, Job), String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -656,7 +738,20 @@ pub async fn spawn_supervised(
     if let Some(err) = child.stderr.take() {
         tokio::spawn(collect(err, Arc::clone(log), watch));
     }
-    if let Ok(status) = tokio::time::timeout(STARTUP_GRACE, child.wait()).await {
+    let deadline = tokio::time::Instant::now() + STARTUP_GRACE;
+    let exited = loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            break None;
+        }
+        // `Child::wait` можно прерывать таймаутом: статус не теряется.
+        match tokio::time::timeout(left.min(READY_POLL), child.wait()).await {
+            Ok(status) => break Some(status),
+            Err(_) if ready() => break None,
+            Err(_) => {}
+        }
+    };
+    if let Some(status) = exited {
         // Даём читателям лога дочитать последние строки.
         tokio::time::sleep(Duration::from_millis(100)).await;
         let last = log.lock().map(|l| {
@@ -792,9 +887,18 @@ fn hide_server_addresses(server: &kvt_core::Server) {
     });
 }
 
-/// Повтор загрузки списков через туннель после подключения. Ядро уже работает на
-/// прежних версиях; новые применятся при следующем подключении.
-fn spawn_rules_retry(dir: PathBuf, files: Vec<rulesync::RuleFile>) {
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Обновление списков после подключения: сначала напрямую мимо TUN, при неудаче —
+/// через туннель. Ядро уже работает на прежних версиях; новые применятся при
+/// следующем подключении. `force` — повтор того, что не скачалось перед
+/// подключением; иначе качается только то, чему подошёл срок (раз в сутки).
+fn spawn_rules_sync(dir: PathBuf, files: Vec<rulesync::RuleFile>, force: bool) {
     tokio::spawn(async move {
         // Даём TUN и маршрутам подняться.
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -802,16 +906,15 @@ fn spawn_rules_retry(dir: PathBuf, files: Vec<rulesync::RuleFile>) {
             return;
         };
         let http = http.with_tunnel_fallback();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let report = rulesync::sync(&http, &dir, &files, now, true).await;
+        let report = rulesync::sync(&http, &dir, &files, unix_now(), force).await;
         for (file, err) in &report.failed {
-            tracing::warn!(file, err, "список не обновился и через туннель");
+            tracing::warn!(file, err, "список не обновился после подключения");
         }
         for file in &report.updated {
-            tracing::info!(file, "список обновлён через туннель");
+            tracing::info!(file, "список обновлён после подключения");
+        }
+        if !report.updated.is_empty() {
+            forget_checked();
         }
     });
 }
@@ -825,7 +928,7 @@ mod tests {
         let log = Log::default();
         let mut cmd = Command::new("cmd");
         cmd.args(["/c", "echo bad config & exit 3"]);
-        let Err(err) = spawn_supervised(cmd, &log, "test", None).await else {
+        let Err(err) = spawn_supervised(cmd, &log, "test", None, || false).await else {
             panic!("ожидалась ошибка")
         };
         assert!(err.contains("bad config"), "{err}");
@@ -836,9 +939,56 @@ mod tests {
         let log = Log::default();
         let mut cmd = Command::new("cmd");
         cmd.args(["/c", "echo started & ping -n 30 127.0.0.1 >nul"]);
-        let (mut child, _job) = spawn_supervised(cmd, &log, "test", None).await.unwrap();
+        let (mut child, _job) = spawn_supervised(cmd, &log, "test", None, || false)
+            .await
+            .unwrap();
         assert!(child.try_wait().unwrap().is_none());
         assert!(log.lock().unwrap().iter().any(|l| l.contains("started")));
         child.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ready_process_is_released_early() {
+        let log = Log::default();
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "ping -n 30 127.0.0.1 >nul"]);
+        let start = std::time::Instant::now();
+        let (mut child, _job) = spawn_supervised(cmd, &log, "test", None, || true)
+            .await
+            .unwrap();
+        assert!(start.elapsed() < STARTUP_GRACE / 2, "{:?}", start.elapsed());
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn exit_is_reported_until_ready() {
+        // Готовность наступает позже падения — падение не теряется.
+        let log = Log::default();
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "echo bad config & exit 3"]);
+        let start = std::time::Instant::now();
+        let ready = move || start.elapsed() > Duration::from_millis(1500);
+        let Err(err) = spawn_supervised(cmd, &log, "test", None, ready).await else {
+            panic!("ожидалась ошибка")
+        };
+        assert!(err.contains("bad config"), "{err}");
+    }
+
+    #[test]
+    fn checked_configs_are_remembered_and_forgotten() {
+        let a = config_fingerprint(CoreKind::Xray, b"{\"a\":1}");
+        let b = config_fingerprint(CoreKind::SingBox, b"{\"a\":1}");
+        assert_ne!(a, b, "отпечаток зависит от ядра");
+        assert!(!already_checked(a));
+        remember_checked(a);
+        assert!(already_checked(a) && !already_checked(b));
+        for i in 0..CHECKED_MAX as u64 {
+            remember_checked(i);
+        }
+        assert!(!already_checked(a), "старые отпечатки вытесняются");
+        remember_checked(b);
+        forget_checked();
+        assert!(!already_checked(b));
     }
 }

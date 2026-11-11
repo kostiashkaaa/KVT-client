@@ -8,8 +8,10 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub const EVENT: &str = "tunnel-state";
-/// Ядру нужно несколько секунд, чтобы поднять TUN и маршруты.
-const SETTLE: Duration = Duration::from_secs(2);
+/// Служба отвечает «подключено», когда интернет уже идёт через TUN (или через 2 с
+/// после запуска ядра, если этого не видно); секунда — ядру на DNS и соединение с
+/// сервером. Не успело — следующая попытка через `BETWEEN`.
+pub const SETTLE: Duration = Duration::from_secs(1);
 const ATTEMPTS: usize = 3;
 const BETWEEN: Duration = Duration::from_secs(3);
 

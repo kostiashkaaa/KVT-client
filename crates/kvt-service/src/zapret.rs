@@ -728,7 +728,7 @@ pub async fn start(
     );
     let mut cmd = Command::new(bin.join("winws.exe"));
     cmd.args(&args).current_dir(&bin);
-    let (child, job) = spawn_supervised(cmd, log, "zapret", None).await?;
+    let (child, job) = spawn_supervised(cmd, log, "zapret", None, || false).await?;
     tracing::info!(strategy = %strategy.id, ?interface, "zapret запущен");
     Ok(Winws {
         child,

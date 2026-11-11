@@ -174,8 +174,7 @@ pub(crate) async fn switch_to(app: &AppHandle, key: &str) -> Result<(), String> 
     let _ = app.emit(CHOICE_EVENT, ());
     connect_current(app, false).await?;
     crate::tray::refresh(app).await;
-    // Ядру нужно несколько секунд, чтобы поднять TUN и маршруты.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(crate::tunnel::SETTLE).await;
     if tunnel_dead(&state.health).await {
         crate::tunnel::set(app, Some(false));
         return Err(kvt_core::i18n::tr(
