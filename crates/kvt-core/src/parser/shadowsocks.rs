@@ -71,6 +71,8 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
         transport: Transport::Tcp,
         security: Security::None,
         address,
+        fragment: None,
+        mux: None,
     })
 }
 

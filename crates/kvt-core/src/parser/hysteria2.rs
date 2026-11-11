@@ -81,6 +81,8 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
             ech: super::stream::parse_ech(&q)?,
         }),
         address,
+        fragment: None,
+        mux: None,
     })
 }
 

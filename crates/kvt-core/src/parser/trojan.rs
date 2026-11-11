@@ -1,4 +1,4 @@
-use super::stream::{parse_security, parse_transport};
+use super::stream::{parse_security, parse_transport, parse_tuning};
 use super::{decode_component, host_of, name_of, parse_url, port_of, query_of, ParseError};
 use crate::model::{Protocol, Server};
 use crate::secret::Secret;
@@ -16,6 +16,7 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
     let port = port_of(&url)?;
     let q = query_of(&url);
 
+    let (fragment, mux) = parse_tuning(&q)?;
     Ok(Server {
         name: name_of(&url, &address),
         protocol: Protocol::Trojan {
@@ -26,6 +27,8 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
         security: parse_security(&q, "tls")?,
         address,
         port,
+        fragment,
+        mux,
     })
 }
 

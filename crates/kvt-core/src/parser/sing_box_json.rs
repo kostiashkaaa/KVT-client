@@ -281,6 +281,14 @@ fn tls_query(tls: &Value, q: &mut Serializer<'_, String>, with_security: bool) {
     if tls["insecure"].as_bool() == Some(true) {
         q.append_pair("insecure", "1");
     }
+    // У sing-box фрагментация — «да/нет», размеры он подбирает сам. Если сервер
+    // уйдёт в Xray, ему нужны размеры — берём обычные для ClientHello.
+    if !is_reality
+        && (tls["fragment"].as_bool() == Some(true)
+            || tls["record_fragment"].as_bool() == Some(true))
+    {
+        q.append_pair("fragment", "tlshello,100-200,10-20");
+    }
     let ech = &tls["ech"];
     if ech["enabled"].as_bool() == Some(true) {
         // PEM из строк массива → base64 ECHConfigList. Без готового конфига (его
@@ -390,6 +398,20 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    #[test]
+    fn tls_fragment_is_carried_over() {
+        let body = r#"{"outbounds":[
+            {"type":"trojan","tag":"t","server":"t.example.com","server_port":443,"password":"p",
+             "tls":{"enabled":true,"server_name":"t.example.com","fragment":true}},
+            {"type":"trojan","tag":"u","server":"u.example.com","server_port":443,"password":"p",
+             "tls":{"enabled":true,"server_name":"u.example.com"}}
+        ]}"#;
+        let s = servers(body);
+        let f = s[0].as_ref().unwrap().fragment.as_ref().unwrap();
+        assert_eq!(f.packets, "tlshello");
+        assert!(s[1].as_ref().unwrap().fragment.is_none());
     }
 
     #[test]

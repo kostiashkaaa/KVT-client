@@ -13,6 +13,25 @@ pub struct Server {
     pub protocol: Protocol,
     pub transport: Transport,
     pub security: Security,
+    /// Фрагментация первых пакетов к серверу — от провайдера (`fragment=` в ссылке,
+    /// `finalmask` или `dialerProxy` во фрагментирующий `freedom` в JSON Xray).
+    /// Провайдер ставит её, когда без неё ТСПУ режет рукопожатие.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fragment: Option<Fragment>,
+    /// Mux провайдера (`mux=` в ссылке, `mux` в JSON Xray): сколько потоков в одном
+    /// соединении с сервером. Только Xray и не с Vision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mux: Option<u16>,
+}
+
+/// Фрагментация: куски длиной `length` байт с паузами `delay` мс. Диапазоны —
+/// `число` или `от-до`, проверены при разборе.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fragment {
+    /// `tlshello` — только ClientHello, или номера первых пакетов `1-3`.
+    pub packets: String,
+    pub length: String,
+    pub delay: String,
 }
 
 impl Server {
@@ -108,10 +127,48 @@ impl Protocol {
 }
 
 impl Server {
+    /// Адреса, с которыми соединяется ядро: сервер и, у XHTTP с раздельной загрузкой,
+    /// сервер загрузки. Все они — мимо zapret и скрываются в журналах.
+    pub fn endpoints(&self) -> Vec<String> {
+        let mut out = vec![self.address.clone()];
+        if let Some(download) = self.download_address() {
+            if download != self.address {
+                out.push(download);
+            }
+        }
+        out
+    }
+
+    /// Адрес сервера загрузки XHTTP (`downloadSettings.address` в `extra`).
+    pub fn download_address(&self) -> Option<String> {
+        let Transport::Xhttp {
+            extra: Some(extra), ..
+        } = &self.transport
+        else {
+            return None;
+        };
+        let v: serde_json::Value = serde_json::from_str(extra).ok()?;
+        v["downloadSettings"]["address"].as_str().map(str::to_owned)
+    }
+
     /// Что из ссылки сервера KVT не применяет — говорится при добавлении, а не
     /// отбрасывается молча. Тексты без секретов: они уходят в окно.
     pub fn warnings(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
+        let sing_box =
+            crate::core_select::select_core(self).core == crate::core_select::CoreKind::SingBox;
+        if sing_box && self.fragment.is_some() && !crate::compile::sing_box_fragments(self) {
+            out.push(crate::i18n::tr(
+                "фрагментация от провайдера не применяется — ядро sing-box делает её только для TLS",
+                "the provider's fragmentation isn't applied — the sing-box core only does it for TLS",
+            ));
+        }
+        if self.mux.is_some() && !crate::compile::mux_applies(self) {
+            out.push(crate::i18n::tr(
+                "mux от провайдера не применяется — он работает только в ядре Xray и не с Vision или XHTTP",
+                "the provider's mux isn't applied — it only works in the Xray core and not with Vision or XHTTP",
+            ));
+        }
         if let Protocol::Hysteria2 {
             pin_sha256: Some(_),
             ..
@@ -161,6 +218,10 @@ pub enum Transport {
         path: String,
         host: Option<String>,
         mode: Option<String>,
+        /// Остальные настройки XHTTP (`extra` ссылки): xmux, паддинг, заголовки,
+        /// `downloadSettings`. JSON после белого списка (`parser::xhttp_extra`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra: Option<String>,
     },
     /// Hysteria2 и другие протоколы поверх QUIC, у которых нет отдельного транспорта.
     Quic,

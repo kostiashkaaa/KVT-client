@@ -549,7 +549,7 @@ pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
         .server;
 
     let mut routing = presets::from_settings(&choice.routing)
-        .with_servers([server.address.clone()])
+        .with_servers(server.endpoints())
         .with_health_check()
         .with_update_hosts();
     if mode == "hybrid" {

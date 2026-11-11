@@ -4,8 +4,11 @@
 //! одно подключение — помеченное `proxy`, иначе первое поддерживаемое — и переводится в
 //! обычную ссылку, которую проверяют те же парсеры, что и ссылки из подписки.
 //!
-//! Не переносятся: балансировщики провайдера (из нескольких подключений берётся одно),
-//! фрагментация (`finalmask`), mux и правила маршрутизации — маршруты у KVT свои.
+//! Переносятся и настройки, без которых сервер у провайдера может не работать:
+//! фрагментация (`finalmask` или `sockopt.dialerProxy` во `freedom` с `fragment`),
+//! mux и остальные поля XHTTP (`extra`) — дальше их проверяют парсеры ссылок.
+//! Не переносятся: балансировщики провайдера (из нескольких подключений берётся одно)
+//! и правила маршрутизации — маршруты у KVT свои.
 
 use super::{parse_uri, Entry, ParseError};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -72,11 +75,12 @@ fn config_uri(config: &Value) -> Result<String, ParseError> {
             "the config has no VLESS, VMess, Trojan, Shadowsocks or Hysteria2 connection",
         )))?;
     let name = str_at(config, "remarks").unwrap_or_default();
-    outbound_uri(outbound, name)
+    outbound_uri(outbound, name, outbounds)
 }
 
-/// Подключение из конфига Xray как ссылка `scheme://…#name`.
-fn outbound_uri(o: &Value, name: &str) -> Result<String, ParseError> {
+/// Подключение из конфига Xray как ссылка `scheme://…#name`. `all` — все подключения
+/// конфига: в одном из них может быть фрагментация (`dialerProxy`).
+fn outbound_uri(o: &Value, name: &str, all: &[Value]) -> Result<String, ParseError> {
     let settings = &o["settings"];
     let stream = &o["streamSettings"];
     let mut q = Serializer::new(String::new());
@@ -133,6 +137,16 @@ fn outbound_uri(o: &Value, name: &str) -> Result<String, ParseError> {
 
     let (host, port) = host_port(server)?;
     stream_query(stream, &mut q);
+    if let Some(fragment) = fragment_param(stream, all) {
+        q.append_pair("fragment", &fragment);
+    }
+    if o["mux"]["enabled"].as_bool() == Some(true) {
+        // Без `concurrency` Xray берёт 8; 0 и меньше — mux для TCP выключен.
+        let n = o["mux"]["concurrency"].as_i64().unwrap_or(8);
+        if (1..=1024).contains(&n) {
+            q.append_pair("mux", &n.to_string());
+        }
+    }
     Ok(format!(
         "{scheme}://{userinfo}@{host}:{port}?{}#{}",
         q.finish(),
@@ -212,6 +226,25 @@ fn stream_query(stream: &Value, q: &mut Serializer<'_, String>) {
         if let Some(mode) = str_at(t, "mode") {
             q.append_pair("mode", mode);
         }
+        if matches!(network, "xhttp" | "splithttp") {
+            // `extra` в Xray заменяет всё, кроме host/path/mode; без него те же поля
+            // лежат прямо в xhttpSettings. Белый список — у парсера ссылки.
+            let extra = match t.get("extra").filter(|e| e.is_object()) {
+                Some(e) => e.clone(),
+                None => {
+                    let mut rest = t.clone();
+                    if let Some(map) = rest.as_object_mut() {
+                        for key in ["path", "host", "mode", "extra"] {
+                            map.remove(key);
+                        }
+                    }
+                    rest
+                }
+            };
+            if extra.as_object().is_some_and(|m| !m.is_empty()) {
+                q.append_pair("extra", &extra.to_string());
+            }
+        }
     }
 
     let security = str_at(stream, "security").unwrap_or("none");
@@ -251,6 +284,37 @@ fn stream_query(stream: &Value, q: &mut Serializer<'_, String>) {
     if settings["allowInsecure"].as_bool() == Some(true) {
         q.append_pair("allowInsecure", "1");
     }
+}
+
+/// Фрагментация как параметр ссылки `пакеты,длина,пауза`: из `finalmask.tcp` или
+/// из `freedom` с `fragment`, через который подключение идёт по `dialerProxy`.
+fn fragment_param(stream: &Value, all: &[Value]) -> Option<String> {
+    let range = |v: &Value| match v {
+        Value::String(s) => Some(s.trim().to_owned()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    };
+    let make = |f: &Value, delay_key: &str| -> Option<String> {
+        let packets = str_at(f, "packets")
+            .filter(|p| !p.is_empty())
+            .unwrap_or("tlshello");
+        let length = range(&f["length"])?;
+        let delay = range(&f[delay_key]).unwrap_or_else(|| "0".into());
+        // Негодные значения — без фрагментации, как раньше, а не отказ от сервера.
+        super::stream::fragment_from(packets, &length, &delay).ok()?;
+        Some(format!("{packets},{length},{delay}"))
+    };
+    if let Some(mask) = stream["finalmask"]["tcp"]
+        .as_array()
+        .and_then(|m| m.iter().find(|m| str_at(m, "type") == Some("fragment")))
+    {
+        return make(&mask["settings"], "delay");
+    }
+    let via = str_at(&stream["sockopt"], "dialerProxy")?;
+    let freedom = all
+        .iter()
+        .find(|o| str_at(o, "tag") == Some(via) && str_at(o, "protocol") == Some("freedom"))?;
+    make(&freedom["settings"]["fragment"], "interval")
 }
 
 fn host_port(server: &Value) -> Result<(String, u16), ParseError> {
@@ -478,6 +542,84 @@ mod tests {
         );
         // Того, чего нет, не удалить.
         assert!(super::super::remove_server(&without_trojan, &trojan).is_none());
+    }
+
+    #[test]
+    fn provider_tuning_is_carried_over() {
+        let body = serde_json::json!([
+            {
+                "remarks": "finalmask",
+                "outbounds": [{
+                    "tag": "proxy", "protocol": "vless",
+                    "settings": { "vnext": [{ "address": "a.example.com", "port": 443,
+                        "users": [{ "id": ID, "encryption": "none" }] }] },
+                    "streamSettings": { "network": "xhttp",
+                        "xhttpSettings": { "path": "/x", "mode": "auto",
+                            "xPaddingBytes": "100-1000", "xmux": { "maxConcurrency": "16-32" } },
+                        "security": "tls", "tlsSettings": { "serverName": "a.example.com" },
+                        "finalmask": { "tcp": [{ "type": "fragment",
+                            "settings": { "packets": "tlshello", "length": "100-200", "delay": "10-20" } }] } }
+                }]
+            },
+            {
+                "remarks": "dialerProxy",
+                "outbounds": [
+                    {
+                        "tag": "proxy", "protocol": "vless",
+                        "settings": { "vnext": [{ "address": "b.example.com", "port": 443,
+                            "users": [{ "id": ID, "encryption": "none" }] }] },
+                        "streamSettings": { "network": "ws", "wsSettings": { "path": "/w" },
+                            "security": "tls", "tlsSettings": { "serverName": "b.example.com" },
+                            "sockopt": { "dialerProxy": "frag" } },
+                        "mux": { "enabled": true, "concurrency": 4 }
+                    },
+                    { "tag": "frag", "protocol": "freedom",
+                      "settings": { "fragment": { "packets": "1-3", "length": 50, "interval": "5-10" } } }
+                ]
+            },
+            {
+                "remarks": "негодная фрагментация",
+                "outbounds": [{
+                    "tag": "proxy", "protocol": "trojan",
+                    "settings": { "servers": [{ "address": "c.example.com", "port": 443, "password": "p" }] },
+                    "streamSettings": { "security": "tls",
+                        "finalmask": { "tcp": [{ "type": "fragment", "settings": { "length": "0" } }] } },
+                    "mux": { "enabled": true, "concurrency": -1 }
+                }]
+            }
+        ])
+        .to_string();
+        let s = servers(&body);
+        assert_eq!(s.len(), 3);
+
+        let Transport::Xhttp {
+            extra: Some(extra),
+            mode,
+            ..
+        } = &s[0].transport
+        else {
+            panic!("ожидался XHTTP с extra")
+        };
+        assert_eq!(mode.as_deref(), Some("auto"));
+        let extra: serde_json::Value = serde_json::from_str(extra).unwrap();
+        assert_eq!(extra["xPaddingBytes"], "100-1000");
+        assert_eq!(extra["xmux"]["maxConcurrency"], "16-32");
+        assert!(extra.get("path").is_none());
+        let f = s[0].fragment.as_ref().unwrap();
+        assert_eq!(
+            (f.packets.as_str(), f.delay.as_str()),
+            ("tlshello", "10-20")
+        );
+
+        let f = s[1].fragment.as_ref().unwrap();
+        assert_eq!(
+            (f.packets.as_str(), f.length.as_str(), f.delay.as_str()),
+            ("1-3", "50", "5-10")
+        );
+        assert_eq!(s[1].mux, Some(4));
+
+        // Сервер остаётся, негодные настройки — нет.
+        assert!(s[2].fragment.is_none() && s[2].mux.is_none());
     }
 
     #[test]

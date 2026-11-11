@@ -52,6 +52,13 @@ const SAMPLES: &[(&str, CoreKind)] = &[
     // ECH: готовый ECHConfigList (как у Cloudflare) — в обоих ядрах.
     ("hy2://secret@hy.example.com:443?sni=hy.example.com&ech=AEX%2BDQBBpQAgACB%2FqtKXQOgnyY4kyw6jZ3Zt0ZNy1PtoE6OdBMsyqF4tPQAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA%3D#ech", CoreKind::SingBox),
     ("trojan://secret@tr.example.com:443?sni=tr.example.com&ech=AEX%2BDQBBpQAgACB%2FqtKXQOgnyY4kyw6jZ3Zt0ZNy1PtoE6OdBMsyqF4tPQAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA%3D#ech", CoreKind::Xray),
+    // Настройки провайдера: XHTTP extra с раздельной загрузкой, фрагментация, mux.
+    ("vless://b831381d-6324-4d53-ad4f-8cda48b30811@up.example.com:443?type=xhttp&security=tls&sni=up.example.com&path=%2Fx&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%2C%22noGRPCHeader%22%3Atrue%2C%22xmux%22%3A%7B%22maxConcurrency%22%3A%2216-32%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%7D%2C%22downloadSettings%22%3A%7B%22address%22%3A%22dl.example.com%22%2C%22port%22%3A443%2C%22network%22%3A%22xhttp%22%2C%22security%22%3A%22reality%22%2C%22realitySettings%22%3A%7B%22serverName%22%3A%22www.microsoft.com%22%2C%22publicKey%22%3A%22Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw%22%2C%22shortId%22%3A%226ba8%22%2C%22fingerprint%22%3A%22firefox%22%7D%2C%22xhttpSettings%22%3A%7B%22path%22%3A%22%2Fd%22%7D%7D%7D&fragment=tlshello,100-200,10-20#xhttp-extra", CoreKind::Xray),
+    ("vless://b831381d-6324-4d53-ad4f-8cda48b30811@203.0.113.10:443?security=reality&sni=www.microsoft.com&fp=firefox&pbk=Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw&sid=6ba8&flow=xtls-rprx-vision&fragment=1-3,50-100,5&mux=8#reality-fragment", CoreKind::Xray),
+    ("vless://b831381d-6324-4d53-ad4f-8cda48b30811@cdn.example.com:443?type=ws&path=%2Fws&host=cdn.example.com&security=tls&mux=8&fragment=tlshello,100-200,10-20#ws-mux", CoreKind::Xray),
+    // Без fp: sing-box с uTLS Firefox и фрагментацией TLS.
+    ("vless://b831381d-6324-4d53-ad4f-8cda48b30811@cdn.example.com:443?type=ws&path=%2Fws&host=cdn.example.com&security=tls#ws-default-fp", CoreKind::SingBox),
+    ("trojan://secret@tr.example.com:443?sni=tr.example.com&fragment=tlshello,100-200,10-20#trojan-fragment", CoreKind::SingBox),
 ];
 
 #[test]

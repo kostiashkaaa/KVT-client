@@ -324,6 +324,8 @@ mod tests {
             },
             transport: Transport::Tcp,
             security: Security::None,
+            fragment: None,
+            mux: None,
         }
     }
 

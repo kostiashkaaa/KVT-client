@@ -298,8 +298,12 @@ fn tls(s: &Server) -> Option<Value> {
             if t.allow_insecure {
                 v = with(v, "insecure", true.into());
             }
-            if let Some(fp) = t.fingerprint {
+            if let Some(fp) = super::tls_fingerprint(s, t) {
                 v = with(v, "utls", json!({ "enabled": true, "fingerprint": fp }));
+            }
+            // Длину кусков и паузы sing-box подбирает сам: от провайдера — только «да».
+            if s.fragment.is_some() && super::sing_box_fragments(s) {
+                v = with(v, "fragment", true.into());
             }
             if let Some(ech) = &t.ech {
                 v = with(
@@ -469,6 +473,33 @@ mod tests {
             .iter()
             .any(|r| r["rule_set"][0] == "itdog:russia_inside"));
         assert!(!rules.iter().any(|r| r["rule_set"][0] == "rf:geoip-ru"));
+    }
+
+    #[test]
+    fn default_fingerprint_and_fragment() {
+        let c = build(
+            "trojan://p@t.example.com:443?sni=t.example.com&fragment=tlshello,100-200,10-20#t",
+        );
+        let tls = &c.config["outbounds"][0]["tls"];
+        assert_eq!(tls["utls"]["fingerprint"], "firefox");
+        assert_eq!(tls["fragment"], true);
+        assert!(server("trojan://p@t.example.com:443?fragment=tlshello,1,0")
+            .warnings()
+            .is_empty());
+
+        // У QUIC uTLS не бывает, фрагментация TLS к нему не применяется.
+        let hy =
+            build("hy2://secret@hy.example.com:443?sni=hy.example.com&fragment=tlshello,100,5");
+        let tls = &hy.config["outbounds"][0]["tls"];
+        assert!(tls.get("utls").is_none() && tls.get("fragment").is_none());
+        let mut hy = server("hy2://s@hy.example.com:443");
+        hy.fragment = server("trojan://p@t.example.com:443?fragment=tlshello,100,5").fragment;
+        assert!(hy.fragment.is_some());
+        assert_eq!(
+            hy.warnings().len(),
+            1,
+            "фрагментация не применится — предупреждение"
+        );
     }
 
     #[test]

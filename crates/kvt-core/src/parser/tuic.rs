@@ -84,6 +84,8 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
         }),
         address,
         port,
+        fragment: None,
+        mux: None,
     })
 }
 

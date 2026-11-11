@@ -12,6 +12,7 @@ mod trojan;
 mod tuic;
 mod vless;
 mod vmess;
+mod xhttp_extra;
 mod xray_json;
 
 pub use http::is_proxy_link as is_http_proxy_link;

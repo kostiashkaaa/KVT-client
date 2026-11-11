@@ -42,6 +42,8 @@ pub(super) fn parse(input: &str) -> Result<Server, ParseError> {
         security: Security::None,
         address,
         port,
+        fragment: None,
+        mux: None,
     })
 }
 

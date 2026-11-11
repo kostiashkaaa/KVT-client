@@ -194,12 +194,16 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
             })
         }
     };
-    Ok(json!({
+    let mut out = json!({
         "tag": TAG_PROXY,
         "protocol": protocol,
         "settings": settings,
         "streamSettings": stream_settings(s)?
-    }))
+    });
+    if let Some(n) = s.mux.filter(|_| super::mux_applies(s)) {
+        out["mux"] = json!({ "enabled": true, "concurrency": n });
+    }
+    Ok(out)
 }
 
 fn stream_settings(s: &Server) -> Result<Value, CompileError> {
@@ -221,11 +225,23 @@ fn stream_settings(s: &Server) -> Result<Value, CompileError> {
             Some("httpupgradeSettings"),
             json!({ "path": path, "host": host }),
         ),
-        Transport::Xhttp { path, host, mode } => (
-            "xhttp",
-            Some("xhttpSettings"),
-            json!({ "path": path, "host": host, "mode": mode.as_deref().unwrap_or("auto") }),
-        ),
+        Transport::Xhttp {
+            path,
+            host,
+            mode,
+            extra,
+        } => {
+            let mut v =
+                json!({ "path": path, "host": host, "mode": mode.as_deref().unwrap_or("auto") });
+            // `extra` проверен парсером по белому списку (`parser::xhttp_extra`).
+            if let Some(extra) = extra
+                .as_deref()
+                .and_then(|e| serde_json::from_str::<Value>(e).ok())
+            {
+                v["extra"] = extra;
+            }
+            ("xhttp", Some("xhttpSettings"), v)
+        }
         Transport::Quic => {
             return Err(CompileError::Unsupported {
                 core: CORE,
@@ -251,7 +267,7 @@ fn stream_settings(s: &Server) -> Result<Value, CompileError> {
             if !tls.alpn.is_empty() {
                 t.insert("alpn".into(), tls.alpn.clone().into());
             }
-            if let Some(fp) = tls.fingerprint {
+            if let Some(fp) = super::tls_fingerprint(s, tls) {
                 t.insert(
                     "fingerprint".into(),
                     serde_json::to_value(fp).unwrap_or(Value::Null),
@@ -279,6 +295,15 @@ fn stream_settings(s: &Server) -> Result<Value, CompileError> {
                 })),
             );
         }
+    }
+    if let Some(f) = &s.fragment {
+        // Первый в списке — ближайший к TCP слой: куски уходят уже после TLS/REALITY.
+        stream.insert(
+            "finalmask".into(),
+            json!({ "tcp": [{ "type": "fragment", "settings": {
+                "packets": f.packets, "length": f.length, "delay": f.delay
+            } }] }),
+        );
     }
     Ok(stream.into())
 }
@@ -420,6 +445,26 @@ mod tests {
         assert!(domains.contains(&"domain:ru".into()));
         assert!(domains.contains(&"ext:itdog-geosite.dat:russia-outside".into()));
         assert!(!domains.contains(&"ext:itdog-geosite.dat:russia-inside".into()));
+    }
+
+    #[test]
+    fn provider_tuning_reaches_xray() {
+        let c = build("vless://b831381d-6324-4d53-ad4f-8cda48b30811@up.example.com:443?type=xhttp&security=tls&path=%2Fx&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%7D&fragment=tlshello,100-200,10-20#x");
+        let st = &c.config["outbounds"][0]["streamSettings"];
+        assert_eq!(st["xhttpSettings"]["extra"]["xPaddingBytes"], "100-1000");
+        assert_eq!(st["finalmask"]["tcp"][0]["type"], "fragment");
+        assert_eq!(st["finalmask"]["tcp"][0]["settings"]["length"], "100-200");
+        // Без fp — Firefox, а не Chrome по умолчанию Xray.
+        assert_eq!(st["tlsSettings"]["fingerprint"], "firefox");
+
+        let ws = build("vless://b831381d-6324-4d53-ad4f-8cda48b30811@w.example.com:443?type=ws&security=tls&mux=4#w");
+        assert_eq!(ws.config["outbounds"][0]["mux"]["concurrency"], 4);
+        // С Vision mux не включается.
+        let mut reality = server(REALITY);
+        reality.mux = Some(8);
+        assert!(!crate::compile::mux_applies(&reality));
+        assert!(outbound(&reality).unwrap().get("mux").is_none());
+        assert!(!reality.warnings().is_empty());
     }
 
     #[test]

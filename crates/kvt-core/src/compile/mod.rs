@@ -1,13 +1,14 @@
 //! Компиляция модели в конфиги ядер. Конфиг всегда строится с нуля из
-//! проверенной модели: никаких фрагментов от провайдера, путей от пользователя,
-//! API ядра и локальных прокси-портов — единственный inbound это TUN.
+//! проверенной модели: никаких кусков конфига от провайдера (только поля из белого
+//! списка, проверенные парсером), путей от пользователя, API ядра и локальных
+//! прокси-портов — единственный inbound это TUN.
 
 mod sing_box;
 mod xray;
 
 use crate::core_select::CoreKind;
 use crate::lists::RuleSetRef;
-use crate::model::Server;
+use crate::model::{Fingerprint, Protocol, Security, Server, TlsSettings, Transport, VlessFlow};
 use crate::routing::{Action, Matcher, RoutingPlan};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -170,6 +171,34 @@ pub fn compile_probe(
         CoreKind::Xray => xray::probe_config(server, inbound),
         CoreKind::SingBox => sing_box::probe_config(server, inbound),
     }
+}
+
+/// Отпечаток TLS: из ссылки, а если его нет — Firefox, как у REALITY. Без него
+/// sing-box шёл бы с отпечатком Go (выделяется для ТСПУ), а Xray — с Chrome, которого
+/// советник считает подозрительным. У QUIC (Hysteria2, TUIC) uTLS не бывает.
+fn tls_fingerprint(server: &Server, tls: &TlsSettings) -> Option<Fingerprint> {
+    tls.fingerprint
+        .or_else(|| (!server.protocol.is_quic()).then_some(Fingerprint::Firefox))
+}
+
+/// sing-box делает фрагментацию только для обычного TLS поверх TCP (не REALITY, не QUIC).
+#[must_use]
+pub fn sing_box_fragments(server: &Server) -> bool {
+    matches!(server.security, Security::Tls(_)) && !server.protocol.is_quic()
+}
+
+/// Mux провайдера применяется: ядро Xray, VLESS без Vision, VMess или Trojan, не XHTTP
+/// (у него свой xmux).
+#[must_use]
+pub fn mux_applies(server: &Server) -> bool {
+    let protocol = match &server.protocol {
+        Protocol::Vless { flow, .. } => !matches!(flow, Some(VlessFlow::XtlsRprxVision)),
+        Protocol::Vmess { .. } | Protocol::Trojan { .. } => true,
+        _ => false,
+    };
+    protocol
+        && !matches!(server.transport, Transport::Xhttp { .. })
+        && crate::core_select::select_core(server).core == CoreKind::Xray
 }
 
 fn outbound_tag(action: Action) -> &'static str {

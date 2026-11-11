@@ -2,7 +2,7 @@
 //! (`vmess://uuid@host:port?type=ws&security=tls#имя`). Только AEAD: `alterId` больше
 //! нуля — устаревший вариант, его не поддерживает и Xray.
 
-use super::stream::{parse_security, parse_transport};
+use super::stream::{parse_security, parse_transport, parse_tuning};
 use super::{
     decode_base64_lenient, decode_component, host_of, name_of, parse_url, port_of, query_of,
     ParseError,
@@ -130,6 +130,7 @@ fn from_json(v: &Value, fragment: Option<String>) -> Result<Server, ParseError> 
     let name = fragment
         .or_else(|| text(v, "ps"))
         .unwrap_or_else(|| address.clone());
+    let (fragment, mux) = parse_tuning(&q)?;
     Ok(Server {
         name,
         protocol: Protocol::Vmess {
@@ -140,6 +141,8 @@ fn from_json(v: &Value, fragment: Option<String>) -> Result<Server, ParseError> 
         security: parse_security(&q, "none")?,
         address,
         port,
+        fragment,
+        mux,
     })
 }
 
@@ -152,6 +155,7 @@ fn from_url(input: &str) -> Result<Server, ParseError> {
     let port = port_of(&url)?;
     let q = query_of(&url);
     check_alter_id(q.get("alterid").or_else(|| q.get("aid")).cloned())?;
+    let (fragment, mux) = parse_tuning(&q)?;
     Ok(Server {
         name: name_of(&url, &address),
         protocol: Protocol::Vmess {
@@ -162,6 +166,8 @@ fn from_url(input: &str) -> Result<Server, ParseError> {
         security: parse_security(&q, "none")?,
         address,
         port,
+        fragment,
+        mux,
     })
 }
 

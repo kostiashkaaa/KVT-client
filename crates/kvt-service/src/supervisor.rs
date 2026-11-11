@@ -312,7 +312,8 @@ impl Supervisor {
                     &self.paths,
                     zp,
                     &plan.routing.zapret_hostlist(),
-                    std::slice::from_ref(&plan.server.address),
+                    // И сервер загрузки XHTTP: winws не должен трогать соединения ядра.
+                    &plan.server.endpoints(),
                     interface,
                     &self.log,
                 )
@@ -868,12 +869,18 @@ fn tail(text: &str, n: usize) -> String {
 /// Адрес сервера — маскировщику журналов до запуска ядра: в строках ядра его не
 /// придётся угадывать. IP, в которые разрешается имя, добавляются в фоне: при
 /// переподключении с kill switch системный DNS может не отвечать, и ждать его нельзя.
+/// Сервер загрузки XHTTP (`downloadSettings`) скрывается так же.
 fn hide_server_addresses(server: &kvt_core::Server) {
-    kvt_core::redact::set_servers([server.address.as_str()]);
-    if server.address.parse::<std::net::IpAddr>().is_ok() {
-        return;
+    let endpoints = server.endpoints();
+    kvt_core::redact::set_servers(&endpoints);
+    for host in endpoints {
+        if host.parse::<std::net::IpAddr>().is_err() {
+            spawn_hide_resolved(host, server.port);
+        }
     }
-    let (host, port) = (server.address.clone(), server.port);
+}
+
+fn spawn_hide_resolved(host: String, port: u16) {
     tokio::spawn(async move {
         let start = std::time::Instant::now();
         let lookup = tokio::net::lookup_host((host.as_str(), port));

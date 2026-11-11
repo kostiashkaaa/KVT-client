@@ -1,8 +1,9 @@
 //! Общие параметры транспорта и шифрования для VLESS/Trojan-ссылок
-//! (`type`, `security`, `sni`, `fp`, `pbk`, `sid`, `path`, `host`, ...).
+//! (`type`, `security`, `sni`, `fp`, `pbk`, `sid`, `path`, `host`, `extra`,
+//! `fragment`, `mux`, ...).
 
-use super::{decode_base64_lenient, ParseError};
-use crate::model::{Fingerprint, RealitySettings, Security, TlsSettings, Transport};
+use super::{decode_base64_lenient, xhttp_extra, ParseError};
+use crate::model::{Fingerprint, Fragment, RealitySettings, Security, TlsSettings, Transport};
 use std::collections::HashMap;
 
 type Query = HashMap<String, String>;
@@ -45,6 +46,10 @@ pub(crate) fn parse_transport(q: &Query) -> Result<Transport, ParseError> {
             path: path(),
             host: host(),
             mode: non_empty(q, "mode"),
+            extra: match non_empty(q, "extra") {
+                Some(e) => xhttp_extra::sanitize(&e)?,
+                None => None,
+            },
         },
         _ => {
             return Err(ParseError::Unsupported(crate::i18n::tr(
@@ -136,6 +141,78 @@ pub(crate) fn parse_ech(q: &Query) -> Result<Option<String>, ParseError> {
     Ok(Some(
         base64::engine::general_purpose::STANDARD.encode(bytes),
     ))
+}
+
+/// Фрагментация и mux провайдера: `fragment=tlshello,100-200,10-20`, `mux=8`.
+pub(crate) fn parse_tuning(q: &Query) -> Result<(Option<Fragment>, Option<u16>), ParseError> {
+    let fragment = match non_empty(q, "fragment") {
+        Some(f) => Some(parse_fragment(&f)?),
+        None => None,
+    };
+    let mux = match non_empty(q, "mux") {
+        Some(m) => Some(
+            m.parse::<u16>()
+                .ok()
+                .filter(|n| (1..=1024).contains(n))
+                .ok_or(ParseError::InvalidField {
+                    field: "mux",
+                    reason: crate::i18n::tr(
+                        "ожидается число потоков от 1 до 1024",
+                        "expected a stream count from 1 to 1024",
+                    ),
+                })?,
+        ),
+        None => None,
+    };
+    Ok((fragment, mux))
+}
+
+/// `пакеты,длина,пауза`: `tlshello,100-200,10-20` или `1-3,50-100,5`.
+pub(crate) fn parse_fragment(text: &str) -> Result<Fragment, ParseError> {
+    let parts: Vec<&str> = text.split(',').map(str::trim).collect();
+    let [packets, length, delay] = parts.as_slice() else {
+        return Err(bad_fragment());
+    };
+    fragment_from(packets, length, delay)
+}
+
+fn bad_fragment() -> ParseError {
+    ParseError::InvalidField {
+        field: "fragment",
+        reason: crate::i18n::tr(
+            "ожидается «пакеты,длина,пауза», например tlshello,100-200,10-20",
+            "expected “packets,length,delay”, e.g. tlshello,100-200,10-20",
+        ),
+    }
+}
+
+/// Проверенные значения фрагментации. Нулевая длина Xray не принимает, а паузы
+/// дольше секунды на каждый кусок — это уже поломка, а не обход.
+pub(crate) fn fragment_from(
+    packets: &str,
+    length: &str,
+    delay: &str,
+) -> Result<Fragment, ParseError> {
+    let range = |s: &str, min: u32, max: u32| -> bool {
+        if !xhttp_extra::is_range(s) {
+            return false;
+        }
+        let (a, b) = s.split_once('-').unwrap_or((s, s));
+        match (a.parse::<u32>(), b.parse::<u32>()) {
+            (Ok(a), Ok(b)) => min <= a && a <= b && b <= max,
+            _ => false,
+        }
+    };
+    let packets = packets.to_ascii_lowercase();
+    let packets_ok = packets == "tlshello" || range(&packets, 1, 10);
+    if !packets_ok || !range(length, 1, 16 * 1024) || !range(delay, 0, 1000) {
+        return Err(bad_fragment());
+    }
+    Ok(Fragment {
+        packets,
+        length: length.to_owned(),
+        delay: delay.to_owned(),
+    })
 }
 
 fn is_truthy(q: &Query, key: &str) -> bool {
