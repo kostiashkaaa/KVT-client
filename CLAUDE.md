@@ -54,6 +54,9 @@ kill switch. Rust (Tauri 2) + Svelte 5. Сборка, запуск службы,
 - `crates/kvt-core/tests/real_cores.rs` и `real_zapret.rs` нужны скачанные ядра/zapret
   (`scripts/fetch-*.ps1`) и списки (`update-rules`, см. CONTRIBUTING), иначе молча
   пропускаются — зелёный прогон не значит, что они проверили что-то.
+- `kvt-service --console` и установленная служба делят один pipe и `service.log`: пока
+  работает консольная, установленная не стартует, а `kvt.exe` из Program Files
+  отклоняется («отклонён чужой клиент», в окне — «early eof»).
 - Журналы: окно — `%LOCALAPPDATA%\dev.kvt.client\logs\kvt.log`, служба —
   `C:\ProgramData\KVT\logs\service.log`.
 - Версия живёт в трёх местах: `Cargo.toml` (workspace), `app/package.json`,

@@ -462,9 +462,14 @@
   const serviceDown = $derived(inApp && polled && status === null);
   /** Служба ответила, но другой версии: вместо «Запустить службу» — переустановка. */
   let mismatch = $state(false);
+  /** Окно запускает службу: «Запускаем службу…» вместо «не запущена». */
+  let starting = $state(false);
+  /** Сами запускали службу с открытия окна (один раз; дальше — кнопкой). */
+  let autoStarted = false;
 
   async function onstartservice() {
-    busy = true;
+    if (starting) return;
+    starting = true;
     dismissKey("error");
     try {
       await startService();
@@ -472,7 +477,7 @@
     } catch (e) {
       failed(e, false);
     } finally {
-      busy = false;
+      starting = false;
     }
   }
 
@@ -480,8 +485,12 @@
   let session = $state<Session | null>(null);
   /** Работает VPN или только zapret. */
   const active = $derived(status?.state === "connected" || status?.state === "zapret");
-  /** Настройки zapret, с которыми запущена служба (стратегия, фильтр). */
-  const zapretKey = () => JSON.stringify($state.snapshot(zapret));
+  /** Настройки zapret, с которыми запущена служба (стратегия, фильтр). Автопроверка
+   *  на запуск не влияет: её переключатели не должны перезапускать zapret и VPN. */
+  const zapretKey = () => {
+    const { autoCheck: _check, autoPick: _pick, ...plan } = $state.snapshot(zapret);
+    return JSON.stringify(plan);
+  };
   /** Настройки маршрутизации без учёта порядка выбора списков. */
   const routingKey = () =>
     JSON.stringify({
@@ -556,9 +565,17 @@
       // Подключились из трея или профиля сети — считаем, что с текущим выбором.
       else if (!connectedWith && restored)
         connectedWith = { server: selected, mode, zapret: zapretKey(), routing: routingKey() };
+      const nextMismatch = next === null && (await serviceMismatch().catch(() => false));
+      // Служба в отложенном автозапуске: после входа в Windows она поднимается
+      // минуты через две, а окно из автозагрузки открывается раньше. Не ждём —
+      // запускаем сами (пользователю это разрешено), иначе остаётся кнопка.
+      if (inApp && next === null && !nextMismatch && !autoStarted) {
+        autoStarted = true;
+        void onstartservice();
+      }
       status = next;
       polled = true;
-      mismatch = next === null && (await serviceMismatch().catch(() => false));
+      mismatch = nextMismatch;
       session = nextActive ? await serviceSession().catch(() => null) : null;
     };
     void refreshStatus();
@@ -607,7 +624,7 @@
            Узкое — всё в одну колонку. -->
       <div class="home-grid">
       <div class="side">
-      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {mismatch} telegram={zapret.telegram} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} onwhy={askWhy} />
+      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {starting} {mismatch} telegram={zapret.telegram} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} onwhy={askWhy} />
 
       {#if mode !== "vpn"}
         <ZapretCard bind:zapret vpnConnected={status?.state === "connected"} onopen={() => (page = "zapret")} />

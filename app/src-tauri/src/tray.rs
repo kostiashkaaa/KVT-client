@@ -2,6 +2,9 @@
 //! открывает окно, правый — меню: статус и сеанс, подключение, сервер, режим,
 //! маршрутизация, стратегия zapret, kill switch, автопереключение, инструменты.
 //!
+//! Значок рисует `icon.rs`: цвет плитки — что работает, метка — что требует
+//! внимания. Первая строка меню — тот же значок и статус, по клику открывает окно.
+//!
 //! Пункты меняют выбор тем же путём, что окно и автопереключение: `Choice` →
 //! settings.json → событие `choice-changed` (окно перечитывает выбор) → при
 //! работающем подключении — переподключение. Меню перестраивается по событиям
@@ -21,8 +24,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::image::Image;
-use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{
+    CheckMenuItem, IconMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu,
+};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Listener, Manager, WebviewWindowBuilder, Wry};
 
@@ -35,35 +39,24 @@ const SERVERS_IN_MENU: usize = 30;
 const NAME_LEN: usize = 40;
 const REBUILD_DELAY: Duration = Duration::from_millis(500);
 
-/// Состояние значка: цвет метки в углу.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Tone {
-    Off,
-    Pending,
-    Vpn,
-    Zapret,
-    Problem,
+mod icon;
+
+use icon::Tone;
+
+/// Сторона значка трея и меню в пикселях: 16 при 100 % масштаба экрана.
+fn icon_size(app: &AppHandle) -> u32 {
+    let scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map_or(1.0, |m| m.scale_factor());
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let size = (16.0 * scale).round().clamp(16.0, 64.0) as u32;
+    size
 }
 
-struct Icons {
-    off: Image<'static>,
-    pending: Image<'static>,
-    vpn: Image<'static>,
-    zapret: Image<'static>,
-    problem: Image<'static>,
-}
-
-impl Icons {
-    fn get(&self, tone: Tone) -> &Image<'static> {
-        match tone {
-            Tone::Off => &self.off,
-            Tone::Pending => &self.pending,
-            Tone::Vpn => &self.vpn,
-            Tone::Zapret => &self.zapret,
-            Tone::Problem => &self.problem,
-        }
-    }
-}
+/// Период пульса значка при подключении.
+const PULSE: Duration = Duration::from_millis(600);
 
 /// Что видно в трее сейчас.
 #[derive(Clone, PartialEq, Eq, Default)]
@@ -76,14 +69,15 @@ struct View {
 }
 
 struct Tray {
-    icons: Option<Icons>,
     /// Меню нужно перестроить (выбор, подписки, итоги проверок, статус).
     dirty: AtomicBool,
     /// Перестройка уже запланирована: события идут пачками (итоги проверки — сотнями).
     scheduled: AtomicBool,
-    /// Заголовок меню (две неактивные строки) — текст меняется без перестройки.
-    header: Mutex<Option<(MenuItem<Wry>, MenuItem<Wry>)>>,
+    /// Заголовок меню (статус со значком и строка подробностей) — меняется без перестройки.
+    header: Mutex<Option<(IconMenuItem<Wry>, MenuItem<Wry>)>>,
     shown: Mutex<(View, Option<Tone>)>,
+    /// Пульс значка уже идёт.
+    pulsing: AtomicBool,
     /// Стратегии из комплекта zapret: (id, название), только рекомендованные.
     strategies: Mutex<Vec<(String, String)>>,
     /// Последний статус: от него зависят «Подключить»/«Отключить».
@@ -93,14 +87,8 @@ struct Tray {
 }
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
-    let icons = app.default_window_icon().map(|base| Icons {
-        off: badge(base, None, true),
-        pending: badge(base, Some([0xE0, 0x9A, 0x1B]), false),
-        vpn: badge(base, Some([0x22, 0xA5, 0x5B]), false),
-        zapret: badge(base, Some([0x2F, 0x7C, 0xE8]), false),
-        problem: badge(base, Some([0xD9, 0x3A, 0x3A]), false),
-    });
-    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+    TrayIconBuilder::with_id(TRAY_ID)
+        .icon(icon::render(Tone::Off, 0, icon_size(app)))
         .tooltip("KVT")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
@@ -113,17 +101,14 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             {
                 show_main_window(tray.app_handle());
             }
-        });
-    if let Some(icon) = icons.as_ref().map(|i| i.off.clone()) {
-        builder = builder.icon(icon);
-    }
-    builder.build(app)?;
+        })
+        .build(app)?;
     app.manage(Tray {
-        icons,
         dirty: AtomicBool::new(true),
         scheduled: AtomicBool::new(false),
         header: Mutex::default(),
         shown: Mutex::default(),
+        pulsing: AtomicBool::new(false),
         strategies: Mutex::default(),
         status: Mutex::default(),
         building: Mutex::default(),
@@ -283,13 +268,11 @@ pub async fn refresh(app: &AppHandle) {
     }
     if let Some(icon) = app.tray_by_id(TRAY_ID) {
         if tone_changed {
-            if let Some(image) = tray.icons.as_ref().map(|i| i.get(tone).clone()) {
-                let _ = icon.set_icon(Some(image));
-            }
+            let _ = icon.set_icon(Some(icon::render(tone, 0, icon_size(app))));
         }
         let _ = icon.set_tooltip(Some(&view.tooltip));
         if tray.dirty.swap(false, Ordering::SeqCst) || kind_changed {
-            match build_menu(app, &tray, &view) {
+            match build_menu(app, &tray, &view, tone) {
                 Ok(menu) => {
                     let _ = icon.set_menu(Some(menu));
                 }
@@ -299,12 +282,43 @@ pub async fn refresh(app: &AppHandle) {
             if let Some((title, detail)) = header.as_ref() {
                 let _ = title.set_text(&view.title);
                 let _ = detail.set_text(&view.detail);
+                if tone_changed {
+                    let _ = title.set_icon(Some(icon::render(tone, 0, icon_size(app))));
+                }
             }
         }
     }
     if let Ok(mut shown) = tray.shown.lock() {
         *shown = (view, Some(tone));
     };
+    if tone.animated() && !tray.pulsing.swap(true, Ordering::SeqCst) {
+        spawn_pulse(app.clone(), tone);
+    }
+}
+
+/// Пульсирует значком, пока состояние не сменится; кадр 0 ставит `refresh`.
+fn spawn_pulse(app: AppHandle, tone: Tone) {
+    tauri::async_runtime::spawn(async move {
+        let size = icon_size(&app);
+        let mut frame = 0_u32;
+        loop {
+            tokio::time::sleep(PULSE).await;
+            let Some(tray) = app.try_state::<Tray>() else {
+                return;
+            };
+            // Под тем же замком, что и `refresh`: кадр не перезапишет новый значок.
+            let _guard = tray.building.lock();
+            let current = tray.shown.lock().ok().and_then(|s| s.1);
+            if current != Some(tone) {
+                tray.pulsing.store(false, Ordering::SeqCst);
+                return;
+            }
+            frame = frame.wrapping_add(1);
+            if let Some(icon) = app.tray_by_id(TRAY_ID) {
+                let _ = icon.set_icon(Some(icon::render(tone, frame, size)));
+            }
+        }
+    });
 }
 
 async fn load_strategies(app: &AppHandle) {
@@ -376,8 +390,17 @@ pub(crate) fn bytes_text(bytes: u64) -> String {
 
 /// Укорачивает название и экранирует `&` (в меню Windows это мнемоника).
 fn menu_text(text: &str) -> String {
-    let short: String = if text.chars().count() > NAME_LEN {
-        let mut s: String = text.chars().take(NAME_LEN - 1).collect();
+    shorten(text, NAME_LEN)
+}
+
+/// Значение в названии подменю — короче пункта, чтобы меню не раздувалось вширь.
+fn menu_text_short(text: &str) -> String {
+    shorten(text, 24)
+}
+
+fn shorten(text: &str, len: usize) -> String {
+    let short: String = if text.chars().count() > len {
+        let mut s: String = text.chars().take(len - 1).collect();
         s.push('…');
         s
     } else {
@@ -403,106 +426,123 @@ fn describe(
         })
         .unwrap_or_else(|_| ("vpn".into(), false));
     let server = state.selected().map(|e| display_name(&e.server));
-    let server_text = server.clone().unwrap_or_else(|| "сервер не выбран".into());
-    let session_text = |s: Option<Session>| {
-        s.map(|s| {
-            let mut t = elapsed_text(s.secs);
+    let server_text = server.unwrap_or_else(|| "сервер не выбран".into());
+    // «VPN · 1 ч 12 мин · ↓ 84 МБ»: что работает и сколько.
+    let with_session = |head: String| {
+        let mut t = head;
+        if let Some(s) = session {
+            t.push_str(" · ");
+            t.push_str(&elapsed_text(s.secs));
             if let Some(rx) = s.rx {
                 t.push_str(&format!(" · ↓ {}", bytes_text(rx)));
             }
-            t
-        })
-    };
-    let (kind, title, detail, tone) = match status {
-        Some(ServiceStatus::Connected { .. }) => {
-            let no_data = tunnel == Some(false);
-            let mut detail = mode_title(&mode).to_owned();
-            if let Some(s) = session_text(session) {
-                detail.push_str(" · ");
-                detail.push_str(&s);
-            }
-            (
-                "connected",
-                if no_data {
-                    format!("Сайты не открываются — {server_text}")
-                } else {
-                    format!("● Подключено — {server_text}")
-                },
-                detail,
-                if no_data { Tone::Problem } else { Tone::Vpn },
-            )
         }
+        t
+    };
+    // Вид, заголовок, подробности, вторая строка подсказки, значок.
+    let (kind, title, detail, hint, tone) = match status {
+        Some(ServiceStatus::Connected { .. }) if tunnel == Some(false) => (
+            "connected",
+            "Сайты не открываются".to_owned(),
+            format!("{server_text} не пропускает данные"),
+            format!("{server_text} не пропускает данные"),
+            Tone::Warn,
+        ),
+        Some(ServiceStatus::Connected { .. }) => (
+            "connected",
+            format!("Подключено — {server_text}"),
+            with_session(mode_title(&mode).to_owned()),
+            format!("{} · {server_text}", mode_title(&mode)),
+            Tone::Vpn,
+        ),
         Some(ServiceStatus::Zapret { strategy }) => {
-            let mut detail = "Без VPN".to_owned();
-            if let Some(s) = session_text(session) {
-                detail.push_str(" · ");
-                detail.push_str(&s);
-            }
+            let strategy = format!("стратегия {}", strategy_title(strategy));
             (
                 "zapret",
-                format!("● Zapret работает — {}", strategy_title(strategy)),
-                detail,
+                "Zapret работает".to_owned(),
+                with_session(format!("Без VPN · {strategy}")),
+                format!("Без VPN · {strategy}"),
                 Tone::Zapret,
             )
         }
-        Some(ServiceStatus::Connecting) => (
-            "connecting",
-            "Подключение…".into(),
-            format!("{} · {server_text}", mode_title(&mode)),
-            Tone::Pending,
-        ),
+        Some(ServiceStatus::Connecting) => {
+            let detail = if mode == "zapret" {
+                "Zapret · без VPN".to_owned()
+            } else {
+                format!("{} · {server_text}", mode_title(&mode))
+            };
+            (
+                "connecting",
+                "Подключение…".to_owned(),
+                detail.clone(),
+                detail,
+                Tone::Connecting,
+            )
+        }
         Some(ServiceStatus::Failed { reason, blocked }) => {
-            let detail = if *blocked || (ks && reason.contains("Kill switch")) {
-                "Kill switch держит интернет закрытым".into()
+            if *blocked || (ks && reason.contains("Kill switch")) {
+                let detail = "VPN остановился, kill switch не выпускает трафик".to_owned();
+                (
+                    "failed",
+                    "Интернет закрыт".to_owned(),
+                    detail.clone(),
+                    detail,
+                    Tone::Error,
+                )
             } else {
                 let short: String = reason.chars().take(60).collect();
-                if short.len() < reason.len() {
+                let detail = if short.len() < reason.len() {
                     format!("{short}…")
                 } else {
                     short
-                }
-            };
-            ("failed", "Ошибка подключения".into(), detail, Tone::Problem)
+                };
+                (
+                    "failed",
+                    "Ошибка подключения".to_owned(),
+                    detail.clone(),
+                    detail,
+                    Tone::Error,
+                )
+            }
         }
-        Some(ServiceStatus::Disconnected) => (
-            "disconnected",
-            "Отключено".into(),
-            if mode == "zapret" {
-                "Zapret · без VPN".into()
+        Some(ServiceStatus::Disconnected) => {
+            let detail = if mode == "zapret" {
+                "Zapret · без VPN".to_owned()
             } else {
                 format!("{} · {server_text}", mode_title(&mode))
-            },
-            Tone::Off,
-        ),
+            };
+            (
+                "disconnected",
+                "Отключено".to_owned(),
+                detail.clone(),
+                detail,
+                Tone::Off,
+            )
+        }
         None if crate::service_client::version_mismatch() => (
             "mismatch",
-            "Окно и служба KVT разных версий".into(),
-            "Установите KVT заново".into(),
-            Tone::Problem,
+            "Окно и служба KVT разных версий".to_owned(),
+            "Установите KVT заново — настройки сохранятся".to_owned(),
+            "Установите KVT заново".to_owned(),
+            Tone::Error,
         ),
         None => (
             "no_service",
-            "Служба KVT не запущена".into(),
-            "Подключение недоступно".into(),
-            Tone::Problem,
+            "Служба KVT не запущена".to_owned(),
+            "Откройте KVT, чтобы запустить её".to_owned(),
+            "Откройте KVT, чтобы запустить её".to_owned(),
+            Tone::Error,
         ),
     };
-    // Подсказка Windows — до 127 символов, две строки.
-    let first = match kind {
-        "connected" if tone == Tone::Problem => "KVT — сайты не открываются",
-        "connected" => "KVT — подключено",
-        "zapret" => "KVT — работает zapret",
-        "connecting" => "KVT — подключение…",
-        "failed" => "KVT — ошибка подключения",
-        "disconnected" => "KVT — отключено",
-        "mismatch" => "KVT — установите заново",
-        _ => "KVT — служба не запущена",
-    };
-    let second = match kind {
-        "connected" | "connecting" => format!("{} · {}", server_text, mode_title(&mode)),
-        _ => detail.clone(),
-    };
-    let tooltip: String = format!("{first}\n{second}").chars().take(127).collect();
+    // Подсказка Windows — до 127 символов: «KVT — статус» и подробность.
+    let tooltip: String = format!(
+        "KVT — {}
+{hint}",
+        tooltip_title(kind, tone, &title)
+    )
+    .chars()
+    .take(127)
+    .collect();
     let view = View {
         kind,
         title: menu_text_long(&title),
@@ -510,6 +550,22 @@ fn describe(
         tooltip,
     };
     (view, tone)
+}
+
+/// Статус для подсказки: без названия сервера, оно во второй строке.
+fn tooltip_title(kind: &str, tone: Tone, title: &str) -> String {
+    match kind {
+        "connected" if tone == Tone::Vpn => "подключено".to_owned(),
+        "no_service" => "служба не запущена".to_owned(),
+        "mismatch" => "окно и служба разных версий".to_owned(),
+        _ => {
+            let mut chars = title.chars();
+            chars
+                .next()
+                .map(|c| c.to_lowercase().chain(chars).collect())
+                .unwrap_or_default()
+        }
+    }
 }
 
 /// Заголовок длиннее названия сервера, но тоже без `&`-мнемоник.
@@ -565,7 +621,7 @@ fn server_label(name: &str, note: Option<&str>) -> String {
     }
 }
 
-fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<Wry>> {
+fn build_menu(app: &AppHandle, tray: &Tray, view: &View, tone: Tone) -> tauri::Result<Menu<Wry>> {
     let state = app.state::<AppState>();
     let choice = state.choice.lock().map(|c| c.clone()).unwrap_or_default();
     let mode = choice.mode.clone().unwrap_or_else(|| "vpn".into());
@@ -583,8 +639,15 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<W
     let menu = Menu::new(app)?;
     let sep = || PredefinedMenuItem::separator(app);
 
-    // Заголовок: статус и сеанс.
-    let title = MenuItem::with_id(app, "header", &view.title, false, None::<&str>)?;
+    // Заголовок: значок и статус (клик открывает окно), под ним — сеанс.
+    let title = IconMenuItem::with_id(
+        app,
+        "status",
+        &view.title,
+        true,
+        Some(icon::render(tone, 0, icon_size(app))),
+        None::<&str>,
+    )?;
     let detail = MenuItem::with_id(app, "detail", &view.detail, false, None::<&str>)?;
     menu.append(&title)?;
     menu.append(&detail)?;
@@ -595,8 +658,15 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<W
 
     // Подключение.
     let can_connect = service && (mode == "zapret" || state.selected().is_some());
+    let zapret_only =
+        matches!(status, Some(ServiceStatus::Zapret { .. })) || (!active && mode == "zapret");
     let toggle = if active {
-        MenuItem::with_id(app, "toggle", "Отключить", true, None::<&str>)?
+        let label = if zapret_only {
+            "Выключить zapret"
+        } else {
+            "Отключить"
+        };
+        MenuItem::with_id(app, "toggle", label, true, None::<&str>)?
     } else if blocked {
         MenuItem::with_id(
             app,
@@ -608,7 +678,14 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<W
     } else if connecting {
         MenuItem::with_id(app, "toggle", "Подключение…", false, None::<&str>)?
     } else {
-        MenuItem::with_id(app, "toggle", "Подключить", can_connect, None::<&str>)?
+        let label = if zapret_only {
+            "Включить zapret"
+        } else if service && !can_connect {
+            "Подключить — выберите сервер"
+        } else {
+            "Подключить"
+        };
+        MenuItem::with_id(app, "toggle", label, can_connect, None::<&str>)?
     };
     menu.append(&toggle)?;
     if active {
@@ -625,7 +702,11 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<W
     // Сервер.
     let groups = state.groups.lock().map(|g| g.clone()).unwrap_or_default();
     let outcomes = state.outcomes.lock().map(|o| o.clone()).unwrap_or_default();
-    let servers_menu = Submenu::with_id(app, "servers", "Сервер", true)?;
+    let server_title = match state.selected() {
+        Some(e) => format!("Сервер: {}", menu_text_short(&display_name(&e.server))),
+        None => "Сервер".to_owned(),
+    };
+    let servers_menu = Submenu::with_id(app, "servers", server_title, true)?;
     let names: HashMap<&str, &crate::ServerSummary> = groups
         .iter()
         .flat_map(|g| g.servers.iter().map(|s| (s.key.as_str(), s)))
@@ -703,7 +784,7 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<W
     menu.append(&servers_menu)?;
 
     // Режим.
-    let modes = Submenu::with_id(app, "modes", "Режим", true)?;
+    let modes = Submenu::with_id(app, "modes", format!("Режим: {}", mode_title(&mode)), true)?;
     for (id, label) in [
         ("vpn", "VPN"),
         ("hybrid", "Гибрид — YouTube и Discord через zapret"),
@@ -720,26 +801,37 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<W
     }
     menu.append(&modes)?;
 
-    // Что через VPN.
-    let proxy_all = choice.routing.everything_else == Action::Proxy;
-    let route = Submenu::with_id(app, "route", "Что через VPN", mode != "zapret")?;
-    route.append(&CheckMenuItem::with_id(
-        app,
-        "route:proxy",
-        "Всё, кроме российского",
-        true,
-        proxy_all,
-        None::<&str>,
-    )?)?;
-    route.append(&CheckMenuItem::with_id(
-        app,
-        "route:direct",
-        "Только заблокированное",
-        true,
-        !proxy_all,
-        None::<&str>,
-    )?)?;
-    menu.append(&route)?;
+    // Что через VPN — в «Zapret» VPN нет, и пункт не нужен.
+    if mode != "zapret" {
+        let proxy_all = choice.routing.everything_else == Action::Proxy;
+        let route = Submenu::with_id(
+            app,
+            "route",
+            if proxy_all {
+                "Через VPN: всё, кроме российского"
+            } else {
+                "Через VPN: только заблокированное"
+            },
+            true,
+        )?;
+        route.append(&CheckMenuItem::with_id(
+            app,
+            "route:proxy",
+            "Всё, кроме российского",
+            true,
+            proxy_all,
+            None::<&str>,
+        )?)?;
+        route.append(&CheckMenuItem::with_id(
+            app,
+            "route:direct",
+            "Только заблокированное",
+            true,
+            !proxy_all,
+            None::<&str>,
+        )?)?;
+        menu.append(&route)?;
+    }
 
     // Стратегия zapret — только там, где zapret работает.
     if mode != "vpn" {
@@ -753,7 +845,15 @@ fn build_menu(app: &AppHandle, tray: &Tray, view: &View) -> tauri::Result<Menu<W
         if !list.iter().any(|(id, _)| *id == current) {
             list.insert(0, (current.clone(), strategy_title(&current)));
         }
-        let strategies = Submenu::with_id(app, "strategies", "Стратегия zapret", true)?;
+        let strategies = Submenu::with_id(
+            app,
+            "strategies",
+            format!(
+                "Стратегия zapret: {}",
+                menu_text_short(&strategy_title(&current))
+            ),
+            true,
+        )?;
         for (id, title) in list {
             strategies.append(&CheckMenuItem::with_id(
                 app,
@@ -820,7 +920,7 @@ fn on_menu(app: &AppHandle, id: &str) {
     let app = app.clone();
     let id = id.to_owned();
     match id.as_str() {
-        "open" => show_main_window(&app),
+        "open" | "status" => show_main_window(&app),
         "add" => open_page(&app, "add"),
         "strat-pick" => open_page(&app, "zapret"),
         "tool:why" => open_page(&app, "why"),
@@ -983,47 +1083,6 @@ async fn quit(app: &AppHandle) {
     app.exit(0);
 }
 
-/// Значок с цветной меткой в правом нижнем углу; `gray` — обесцвеченный (отключено).
-fn badge(base: &Image<'_>, color: Option<[u8; 3]>, gray: bool) -> Image<'static> {
-    let (w, h) = (base.width(), base.height());
-    let mut rgba = base.rgba().to_vec();
-    if gray {
-        for px in rgba.chunks_exact_mut(4) {
-            let l = (u32::from(px[0]) * 30 + u32::from(px[1]) * 59 + u32::from(px[2]) * 11) / 100;
-            // Светлее и прозрачнее: «выключено», но значок не теряется на панели.
-            let l = u8::try_from((l + 255) / 2).unwrap_or(u8::MAX);
-            px[0] = l;
-            px[1] = l;
-            px[2] = l;
-            px[3] = u8::try_from(u32::from(px[3]) * 3 / 4).unwrap_or(u8::MAX);
-        }
-    }
-    if let Some([r, g, b]) = color {
-        #[allow(clippy::cast_precision_loss)]
-        let size = w.min(h) as f32;
-        let radius = size * 0.24;
-        let ring = (size * 0.07).max(1.0);
-        let (cx, cy) = (w as f32 - radius - ring, h as f32 - radius - ring);
-        for y in 0..h {
-            for x in 0..w {
-                #[allow(clippy::cast_precision_loss)]
-                let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
-                let i = ((y * w + x) * 4) as usize;
-                let Some(px) = rgba.get_mut(i..i + 4) else {
-                    continue;
-                };
-                if d <= radius {
-                    px.copy_from_slice(&[r, g, b, 255]);
-                } else if d <= radius + ring {
-                    // Светлое кольцо отделяет метку от значка на любой панели.
-                    px.copy_from_slice(&[255, 255, 255, 255]);
-                }
-            }
-        }
-    }
-    Image::new_owned(rgba, w, h)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1051,16 +1110,5 @@ mod tests {
         assert_eq!(strategy_title("general"), "Основная");
         assert_eq!(strategy_title("general (ALT4)"), "ALT4");
         assert_eq!(strategy_title("discord"), "discord");
-    }
-
-    #[test]
-    fn badge_keeps_size_and_marks_corner() {
-        let base = Image::new_owned(vec![10; 32 * 32 * 4], 32, 32);
-        let marked = badge(&base, Some([1, 2, 3]), false);
-        assert_eq!((marked.width(), marked.height()), (32, 32));
-        let corner = ((25 * 32 + 25) * 4) as usize;
-        assert_eq!(&marked.rgba()[corner..corner + 3], &[1, 2, 3]);
-        let gray = badge(&base, None, true);
-        assert_eq!(&gray.rgba()[..4], &[132, 132, 132, 7]);
     }
 }

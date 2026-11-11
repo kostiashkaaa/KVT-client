@@ -683,8 +683,9 @@ pub(crate) async fn wait_for_service() -> Result<ServiceStatus, String> {
     }
 }
 
-/// «Подключаться при запуске»: ждёт службу (после загрузки Windows она
-/// стартует не сразу) и подключается, если ничего ещё не работает.
+/// Запуск KVT: служба должна работать сразу, а не через две минуты отложенного
+/// автозапуска — иначе трей и окно показывают «Служба не запущена».
+/// С «Подключаться при запуске» — ещё и подключается, если ничего не работает.
 fn spawn_connect_on_start(app: AppHandle) {
     let enabled = app
         .state::<AppState>()
@@ -693,6 +694,18 @@ fn spawn_connect_on_start(app: AppHandle) {
         .map(|c| c.connect_on_start)
         .unwrap_or(false);
     if !enabled {
+        tauri::async_runtime::spawn(async move {
+            if matches!(query_status().await, Ok(Some(_))) || service_client::version_mismatch() {
+                return;
+            }
+            match tauri::async_runtime::spawn_blocking(about::start_blocking).await {
+                Ok(Ok(())) => tracing::info!("служба KVT запущена из приложения"),
+                // Окно покажет кнопку «Запустить службу» с понятной причиной.
+                Ok(Err(message)) => tracing::warn!(%message, "служба KVT не запустилась"),
+                Err(_) => {}
+            }
+            tray::invalidate(&app);
+        });
         return;
     }
     tauri::async_runtime::spawn(async move {

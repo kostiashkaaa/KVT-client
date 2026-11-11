@@ -91,9 +91,18 @@ mod service {
             ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
         ))?;
 
-        let result = tokio::runtime::Runtime::new()?.block_on(crate::serve(rx));
+        let result = tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|runtime| runtime.block_on(crate::serve(rx)));
 
-        handle.set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty()))?;
+        // Ненулевой код — для Windows это сбой: сработает перезапуск через 5/10/30 с
+        // (`set_failure_actions_on_non_crash_failures`). С нулём служба осталась бы
+        // остановленной до перезагрузки.
+        let mut stopped = status(ServiceState::Stopped, ServiceControlAccept::empty());
+        if result.is_err() {
+            stopped.exit_code = ServiceExitCode::ServiceSpecific(1);
+        }
+        handle.set_service_status(stopped)?;
         result
     }
 

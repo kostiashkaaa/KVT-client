@@ -32,7 +32,17 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
         status: ServiceStatus::Disconnected,
         session: None,
     }));
-    let mut server = win::create_pipe(PIPE_NAME, true)?;
+    // Первый экземпляр: имя уже занято — значит, работает другая служба KVT.
+    let mut server = win::create_pipe(PIPE_NAME, true).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            anyhow::anyhow!(
+                "pipe службы уже занят другим процессом — запущена ещё одна служба KVT \
+                 (например, kvt-service --console из сборки)"
+            )
+        } else {
+            e.into()
+        }
+    })?;
     tracing::info!(pipe = PIPE_NAME, "служба слушает");
 
     loop {

@@ -19,6 +19,7 @@
     session,
     tunnelOk,
     serviceDown = false,
+    starting = false,
     mismatch = false,
     telegram = false,
     onconnect,
@@ -37,6 +38,8 @@
     tunnelOk: boolean | null;
     /** Служба KVT не отвечает: вместо «Подключить» — «Запустить службу». */
     serviceDown?: boolean;
+    /** Окно само запускает службу (при открытии или по кнопке). */
+    starting?: boolean;
     /** Служба другой версии (прерванное обновление): кнопка ведёт на страницу загрузки. */
     mismatch?: boolean;
     /** Прокси для Telegram включён: в «Гибриде» и «Zapret» Telegram идёт через него. */
@@ -55,8 +58,10 @@
   const blocked = $derived(status?.state === "failed" && status.blocked === true);
   /** Сервер принял подключение, но данные через туннель не идут. */
   const noData = $derived(status?.state === "connected" && tunnelOk === false);
+  /** Службы нет, но окно её уже запускает: не пугаем красным «не запущена». */
+  const serviceStarting = $derived(serviceDown && starting && !mismatch);
   const tone = $derived(
-    busy || status?.state === "connecting"
+    busy || status?.state === "connecting" || serviceStarting
       ? "pending"
       : noData
         ? "warn"
@@ -67,7 +72,9 @@
             : "off",
   );
   const title = $derived(
-    tone === "pending"
+    serviceStarting
+      ? "Запускаем службу KVT…"
+      : tone === "pending"
       ? "Подключение…"
       : zapretOnly
         ? "Zapret работает"
@@ -150,8 +157,10 @@
       <p class="muted">
         {#if serviceDown && mismatch}
           Похоже, обновление прервалось. Установите KVT заново — настройки и подписки сохранятся.
+        {:else if serviceStarting}
+          Обычно это несколько секунд.
         {:else if serviceDown}
-          Без неё KVT не подключится. Обычно служба стартует вместе с Windows.
+          Без неё KVT не подключится. Нажмите «Запустить службу».
         {:else if blocked}
           VPN остановился, а kill switch не выпускает трафик мимо туннеля. Отключите, чтобы вернуть интернет.
         {:else if zapretOnly}
@@ -195,9 +204,9 @@
     {#if serviceDown && mismatch}
       <button class="btn btn-primary" onclick={onreinstall}>Страница загрузки</button>
     {:else if serviceDown && !connected}
-      <button class="btn btn-primary" disabled={busy} onclick={onstartservice}>
-        {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
-        {busy ? "Запуск…" : "Запустить службу"}
+      <button class="btn btn-primary" disabled={busy || starting} onclick={onstartservice}>
+        {#if starting}<span class="spinner" aria-hidden="true"></span>{/if}
+        {starting ? "Запуск…" : "Запустить службу"}
       </button>
     {:else}
       <button

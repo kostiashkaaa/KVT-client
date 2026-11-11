@@ -63,9 +63,6 @@ pub struct ZapretChoice {
     pub tcp_timestamps: bool,
     /// Итог автоподбора для каждой сети (ключ сети → стратегия).
     pub by_network: HashMap<String, String>,
-    /// Свои домены для zapret и домены, которые он не трогает.
-    pub user_domains: Vec<String>,
-    pub exclude_domains: Vec<String>,
     /// Обход по IP-списку Flowseal, а не только по доменам.
     pub ipset: bool,
     /// Проверять работу раз в полчаса и после смены сети.
@@ -85,8 +82,6 @@ impl Default for ZapretChoice {
             game_filter: GameFilter::Off,
             tcp_timestamps: true,
             by_network: HashMap::new(),
-            user_domains: Vec::new(),
-            exclude_domains: Vec::new(),
             ipset: false,
             auto_check: true,
             auto_pick: true,
@@ -106,30 +101,19 @@ impl ZapretChoice {
             .unwrap_or_else(|| DEFAULT_STRATEGY.to_owned())
     }
 
-    /// Неправильные домены отбрасываются здесь: служба отказала бы всему плану.
+    /// Только списки Flowseal, своих доменов нет: zapret помогает лишь там, где
+    /// блокируют по имени сайта, а в «Гибриде» до него доходят только YouTube и Discord.
     pub fn plan(&self, network: Option<&str>) -> ZapretPlan {
-        let clean = |list: &[String]| -> Vec<String> {
-            list.iter()
-                .map(|d| d.trim().trim_start_matches("*.").to_ascii_lowercase())
-                .filter(|d| kvt_core::zapret::valid_domain(d))
-                .collect()
-        };
         ZapretPlan {
             strategy: self.strategy_for(network),
             game_filter: self.game_filter,
             tcp_timestamps: self.tcp_timestamps,
-            domains: clean(&self.user_domains),
-            exclude_domains: {
-                let mut list = clean(&self.exclude_domains);
-                // winws не трогает соединения прокси Telegram: подделка пакетов их рвёт.
-                if self.telegram {
-                    for d in crate::tgproxy::zapret_exclusions() {
-                        if !list.contains(&d) {
-                            list.push(d);
-                        }
-                    }
-                }
-                list
+            domains: Vec::new(),
+            // winws не трогает соединения прокси Telegram: подделка пакетов их рвёт.
+            exclude_domains: if self.telegram {
+                crate::tgproxy::zapret_exclusions()
+            } else {
+                Vec::new()
             },
             ipset: self.ipset,
         }
@@ -263,10 +247,13 @@ async fn maintain(app: &AppHandle, request: Request) -> Result<MaintenanceReport
         Response::Maintenance(report) => *report,
         _ => return Err(UNEXPECTED.into()),
     };
-    if matches!(
-        before,
-        Some(ServiceStatus::Connected { .. } | ServiceStatus::Zapret { .. })
-    ) {
+    // Обновлять было нечего — служба ничего не останавливала, VPN не рвём.
+    if report.changed
+        && matches!(
+            before,
+            Some(ServiceStatus::Connected { .. } | ServiceStatus::Zapret { .. })
+        )
+    {
         let _ = connect_current(app, true).await;
     }
     crate::tray::refresh(app).await;
@@ -1137,29 +1124,26 @@ mod tests {
         assert!(c.tcp_timestamps && c.auto_check && c.auto_pick);
     }
 
+    /// Свои домены из прежних версий в settings.json не ломают выбор и в zapret
+    /// не попадают: остаются только списки Flowseal.
     #[test]
-    fn plan_drops_bad_domains() {
-        let c = ZapretChoice {
-            user_domains: vec![" *.Twitch.TV ".into(), "x.com\n--debug".into(), "".into()],
-            exclude_domains: vec!["bank.ru".into(), "a b".into()],
-            telegram: false,
-            ..Default::default()
-        };
+    fn old_user_domains_are_ignored() {
+        let c: ZapretChoice = serde_json::from_str(
+            r#"{"strategy":"general (ALT4)","userDomains":["twitch.tv"],"excludeDomains":["bank.ru"],"telegram":false}"#,
+        )
+        .unwrap();
+        assert_eq!(c.strategy.as_deref(), Some("general (ALT4)"));
         let p = c.plan(None);
-        assert_eq!(p.domains, ["twitch.tv"]);
-        assert_eq!(p.exclude_domains, ["bank.ru"]);
+        assert!(p.domains.is_empty());
+        assert!(p.exclude_domains.is_empty());
     }
 
     /// С прокси Telegram winws не трогает его соединения.
     #[test]
     fn telegram_proxy_is_excluded_from_zapret() {
-        let c = ZapretChoice {
-            exclude_domains: vec!["bank.ru".into()],
-            ..Default::default()
-        };
+        let c = ZapretChoice::default();
         assert!(c.telegram);
         let p = c.plan(None);
-        assert_eq!(p.exclude_domains[0], "bank.ru");
         assert!(p.exclude_domains.contains(&"web.telegram.org".to_owned()));
         assert!(p.exclude_domains.iter().any(|d| d.ends_with(".co.uk")));
         assert!(p

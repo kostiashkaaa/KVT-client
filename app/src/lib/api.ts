@@ -1003,9 +1003,6 @@ export interface ZapretChoice {
   tcpTimestamps: boolean;
   /** Итог автоподбора для каждой сети. */
   byNetwork: Record<string, string>;
-  /** Свои домены для zapret и домены, которые он не трогает. */
-  userDomains: string[];
-  excludeDomains: string[];
   /** Обход по IP-списку Flowseal, а не только по доменам. */
   ipset: boolean;
   /** Проверять работу раз в полчаса и после смены сети. */
@@ -1025,8 +1022,6 @@ export const defaultZapret = (): ZapretChoice => ({
   gameFilter: "off",
   tcpTimestamps: true,
   byNetwork: {},
-  userDomains: [],
-  excludeDomains: [],
   ipset: false,
   autoCheck: true,
   autoPick: true,
