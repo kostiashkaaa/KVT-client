@@ -5,13 +5,18 @@
 //! случайный логин и пароль). Через него одним соединением скачивается ~200 КБ:
 //! к VPN-серверу уходит ровно одно TLS-рукопожатие, а по потоку видно и задержку,
 //! и заморозку после первых килобайт.
+//!
+//! Если VPN подключён, тестовое ядро и TCP-пинг уходят с адреса физического
+//! адаптера (`netinfo::physical_ipv4`) — мимо TUN, как без VPN. Kill switch их
+//! пропускает: фильтр разрешает исполняемый файл ядра, а тестовое ядро — тот же
+//! файл из каталога программы.
 
 use crate::{query_status, AppState};
 use kvt_core::compile::{compile_probe, ProbeInbound};
 use kvt_core::core_select::{select_core, CoreKind};
 use kvt_core::ipc::ServiceStatus;
 use kvt_core::probe::ProbeObservation;
-use kvt_core::tester::{self, tcp_ping, Outcome, Prober, QuickResult};
+use kvt_core::tester::{self, tcp_ping_from, Outcome, Prober, QuickResult};
 use kvt_core::Server;
 use serde::Serialize;
 use std::collections::hash_map::RandomState;
@@ -43,6 +48,8 @@ pub const RESULT_EVENT: &str = "probe-result";
 pub struct CoreProber {
     cores: PathBuf,
     work: PathBuf,
+    /// Адрес физического адаптера при подключённом VPN.
+    source: Option<std::net::Ipv4Addr>,
 }
 
 fn random_token() -> String {
@@ -136,6 +143,7 @@ impl CoreProber {
                 port,
                 user: &user,
                 password: &password,
+                source: self.source,
             },
         )
         .map_err(|_| ())?;
@@ -185,7 +193,14 @@ impl Prober for CoreProber {
         };
         // Сначала дешёвая проверка TCP (без TLS); Hysteria2 работает по UDP — её не проверить так.
         if !server.protocol.is_quic() {
-            match tcp_ping(&server.address, server.port, Duration::from_secs(4)).await {
+            match tcp_ping_from(
+                &server.address,
+                server.port,
+                self.source,
+                Duration::from_secs(4),
+            )
+            .await
+            {
                 QuickResult::DnsFailed => {
                     obs.dns_resolved = false;
                     return obs;
@@ -218,12 +233,14 @@ struct ProbeEvent {
 
 impl CoreProber {
     /// Тестовые ядра из каталога программы, рабочие файлы — во временном каталоге.
-    pub(crate) fn new() -> Result<Self, String> {
+    /// `source` — адрес физического адаптера, если VPN подключён.
+    pub(crate) fn new(source: Option<std::net::Ipv4Addr>) -> Result<Self, String> {
         let work = std::env::temp_dir().join("kvt-probe");
         std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
         Ok(Self {
             cores: cores_dir()?,
             work,
+            source,
         })
     }
 }
@@ -255,20 +272,30 @@ pub async fn full_check(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if matches!(
+    // VPN подключён — проверка уходит с физического адаптера мимо туннеля.
+    let source = if matches!(
         query_status().await,
-        Ok(Some(ServiceStatus::Connected { .. }))
+        Ok(Some(
+            ServiceStatus::Connected { .. } | ServiceStatus::Connecting
+        ))
     ) {
-        return Err(
-            kvt_core::i18n::tr("Отключите VPN: полная проверка идёт напрямую, иначе туннель исказит результат.", "Disconnect the VPN: the full check runs directly, otherwise the tunnel distorts the result.").into(),
-        );
-    }
+        let found = tauri::async_runtime::spawn_blocking(crate::netinfo::physical_ipv4)
+            .await
+            .ok()
+            .flatten();
+        Some(found.ok_or(kvt_core::i18n::tr(
+            "Не нашёлся сетевой адаптер, через который можно проверить серверы мимо VPN. Отключите VPN и проверьте снова.",
+            "Couldn't find a network adapter to check servers past the VPN. Disconnect the VPN and check again.",
+        ))?)
+    } else {
+        None
+    };
     if state.checking.swap(true, Ordering::SeqCst) {
         return Err(kvt_core::i18n::tr("Проверка уже идёт", "A check is already running").into());
     }
     let result = async {
         let (keys, servers) = crate::servers_of(&state, group.as_deref())?;
-        let prober = Arc::new(CoreProber::new()?);
+        let prober = Arc::new(CoreProber::new(source)?);
         // Состояние NetGovernor (лимиты и заморозки по SNI) общее для всего приложения.
         let mut governor =
             std::mem::take(&mut *state.governor.lock().map_err(crate::errors::state)?);
@@ -361,7 +388,11 @@ mod tests {
             "тестовый сервер не запустился"
         );
 
-        let prober = CoreProber { cores, work };
+        let prober = CoreProber {
+            cores,
+            work,
+            source: None,
+        };
         let obs = prober.probe(ss_server(port)).await;
         println!("{obs:?} → {:?}", classify(&obs));
         assert_eq!(classify(&obs), Verdict::Works);

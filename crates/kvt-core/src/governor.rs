@@ -6,8 +6,8 @@
 //! счётчик на каждый SNI, выдерживает паузы и не даёт повторять попытки, пока
 //! узел заморожен (повторы только продлевают блок).
 //!
-//! Пороги — данные, а не код: они приходят из пакета политик и меняются
-//! без выпуска новой версии.
+//! Пороги — данные (`presets/net-policy.json`, сверяется с `NetPolicy::default`
+//! тестом) и меняются с выпуском KVT, без правки кода.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -28,6 +28,11 @@ pub struct NetPolicy {
     pub freeze_cooldown: Duration,
     /// Сколько проверок серверов идёт одновременно (по разным SNI).
     pub max_parallel_probes: usize,
+    /// Лимит новых соединений считать отдельно для каждого адреса сервера с этим
+    /// SNI, а не на весь SNI. У REALITY десятки серверов провайдера часто
+    /// маскируются под один сайт — с общим лимитом они проверяются по два в минуту.
+    /// Заморозка в любом случае закрывает весь SNI.
+    pub per_endpoint: bool,
 }
 
 impl Default for NetPolicy {
@@ -38,6 +43,7 @@ impl Default for NetPolicy {
             min_spacing: Duration::from_secs(2),
             freeze_cooldown: Duration::from_secs(180),
             max_parallel_probes: 4,
+            per_endpoint: true,
         }
     }
 }
@@ -92,15 +98,33 @@ impl NetGovernor {
     }
 
     pub fn try_acquire(&mut self, sni: &str, now: Instant) -> Decision {
-        let policy = &self.policy;
-        let state = self.per_sni.entry(sni.to_ascii_lowercase()).or_default();
+        self.try_acquire_endpoint(sni, None, now)
+    }
 
-        if let Some(until) = state.frozen_until {
-            if now < until {
-                return Decision::Frozen { until };
+    /// Соединение к серверу `endpoint` (адрес из ссылки) с этим SNI. С
+    /// `per_endpoint` лимит считается на пару SNI и адрес, заморозка — на весь SNI.
+    pub fn try_acquire_endpoint(
+        &mut self,
+        sni: &str,
+        endpoint: Option<&str>,
+        now: Instant,
+    ) -> Decision {
+        let sni = sni.to_ascii_lowercase();
+        if let Some(state) = self.per_sni.get_mut(&sni) {
+            if let Some(until) = state.frozen_until {
+                if now < until {
+                    return Decision::Frozen { until };
+                }
+                state.frozen_until = None;
             }
-            state.frozen_until = None;
         }
+        let key = match endpoint.filter(|_| self.policy.per_endpoint) {
+            // `|` не встречается ни в имени хоста, ни в адресе.
+            Some(e) => format!("{sni}|{}", e.to_ascii_lowercase()),
+            None => sni,
+        };
+        let policy = &self.policy;
+        let state = self.per_sni.entry(key).or_default();
 
         while state
             .recent
@@ -192,6 +216,50 @@ mod tests {
         let (mut g, t0) = gov();
         assert_eq!(g.try_acquire("A.com", t0), Decision::Allowed);
         assert!(matches!(g.try_acquire("a.COM", t0), Decision::RetryAt(_)));
+    }
+
+    #[test]
+    fn per_endpoint_limits_each_server_but_freezes_whole_sni() {
+        let t0 = Instant::now();
+        let mut g = NetGovernor::new(NetPolicy {
+            per_endpoint: true,
+            ..NetPolicy::default()
+        });
+        let sni = "www.microsoft.com";
+        assert_eq!(
+            g.try_acquire_endpoint(sni, Some("203.0.113.1"), t0),
+            Decision::Allowed
+        );
+        // Другой сервер с тем же SNI — свой лимит.
+        assert_eq!(
+            g.try_acquire_endpoint(sni, Some("203.0.113.2"), t0),
+            Decision::Allowed
+        );
+        // Тот же сервер — пауза, как раньше.
+        assert!(matches!(
+            g.try_acquire_endpoint(sni, Some("203.0.113.1"), t0),
+            Decision::RetryAt(_)
+        ));
+        g.report_freeze(sni, t0);
+        assert!(matches!(
+            g.try_acquire_endpoint(sni, Some("203.0.113.9"), t0),
+            Decision::Frozen { .. }
+        ));
+        assert!(matches!(g.try_acquire(sni, t0), Decision::Frozen { .. }));
+
+        // Без `per_endpoint` адрес не важен — общий лимит на SNI.
+        let mut g = NetGovernor::new(NetPolicy {
+            per_endpoint: false,
+            ..NetPolicy::default()
+        });
+        assert_eq!(
+            g.try_acquire_endpoint(sni, Some("203.0.113.1"), t0),
+            Decision::Allowed
+        );
+        assert!(matches!(
+            g.try_acquire_endpoint(sni, Some("203.0.113.2"), t0),
+            Decision::RetryAt(_)
+        ));
     }
 
     #[test]

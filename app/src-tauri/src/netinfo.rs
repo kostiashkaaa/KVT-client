@@ -60,6 +60,8 @@ struct Adapter {
     luid: u64,
     gateway: Option<Ipv4Addr>,
     dns: Vec<Ipv4Addr>,
+    /// Свой IPv4-адрес адаптера (не 169.254.x.x).
+    address: Option<Ipv4Addr>,
 }
 
 fn kind(if_type: u32) -> NetKind {
@@ -202,6 +204,12 @@ fn adapters() -> Vec<Adapter> {
                 gateway = ipv4(&(*g).Address);
                 g = (*g).Next;
             }
+            let mut address = None;
+            let mut u = a.FirstUnicastAddress;
+            while !u.is_null() && address.is_none() {
+                address = ipv4(&(*u).Address).filter(|ip| !ip.is_link_local());
+                u = (*u).Next;
+            }
             let mut dns = Vec::new();
             let mut d = a.FirstDnsServerAddress;
             while !d.is_null() {
@@ -227,6 +235,7 @@ fn adapters() -> Vec<Adapter> {
                 luid,
                 gateway,
                 dns,
+                address,
             });
             cur = a.Next;
         }
@@ -280,6 +289,13 @@ fn parse_ssid(text: &str) -> Option<String> {
         let value = value.trim();
         (key.trim() == "SSID" && !value.is_empty()).then(|| value.to_owned())
     })
+}
+
+/// Адрес физического адаптера, через который идёт интернет (мимо TUN KVT). Сокет,
+/// привязанный к нему, уходит мимо туннеля — так проверка серверов работает и при
+/// подключённом VPN. Без сетевых запросов.
+pub fn physical_ipv4() -> Option<Ipv4Addr> {
+    pick(&adapters())?.address
 }
 
 /// Сеть, через которую сейчас идёт трафик. `None` — сети нет.
@@ -361,6 +377,7 @@ mod tests {
             luid: 1,
             gateway: gateway.then_some(Ipv4Addr::new(192, 168, 1, 1)),
             dns: vec![],
+            address: gateway.then_some(Ipv4Addr::new(192, 168, 1, 10)),
         }
     }
 

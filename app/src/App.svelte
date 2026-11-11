@@ -694,9 +694,6 @@
           oncheck={check}
           {outcomes}
           {fullChecking}
-          fullCheckBlocked={status?.state === "connected"
-            ? t("Отключите VPN: полная проверка идёт напрямую, иначе туннель исказит результат", "Disconnect the VPN: the full check runs directly, otherwise the tunnel distorts the result")
-            : null}
           onfullcheck={runFullCheck}
           {refreshing}
           onrefresh={refresh}

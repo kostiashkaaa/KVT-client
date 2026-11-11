@@ -82,6 +82,8 @@ fn generated_configs_pass_real_core_checks() {
             port: 41_000 + i as u16,
             user: "u",
             password: "p",
+            // Через раз — с адресом источника, как при подключённом VPN.
+            source: (i % 2 == 0).then_some(std::net::Ipv4Addr::new(192, 168, 1, 10)),
         };
         let config = compile_probe(*core, &s, &probe).expect("конфиг пробы");
         let path = work.join(format!("{i}-probe.json"));

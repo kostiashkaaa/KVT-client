@@ -14,7 +14,6 @@
     oncheck,
     outcomes,
     fullChecking,
-    fullCheckBlocked = null,
     onfullcheck,
     refreshing,
     onrefresh,
@@ -32,8 +31,6 @@
     outcomes: Record<string, Outcome>;
     /** Группа, которую сейчас проверяют полностью. */
     fullChecking: string | null;
-    /** Причина, по которой полную проверку сейчас запустить нельзя. */
-    fullCheckBlocked?: string | null;
     onfullcheck: (group: string) => void;
     refreshing: string | null;
     onrefresh: (group: string) => void;
@@ -285,10 +282,9 @@
           <button
             class="btn ghost"
             class:busy={fullChecking === g.id}
-            disabled={checking !== null || fullChecking !== null || fullCheckBlocked !== null}
+            disabled={checking !== null || fullChecking !== null}
             onclick={() => onfullcheck(g.id)}
-            title={fullCheckBlocked ??
-              t("Подключается к каждому серверу и скачивает 200 КБ. Серверы с одинаковым SNI проверяются по очереди, чтобы не вызвать заморозку у провайдера", "Connects to each server and downloads 200 KB. Servers with the same SNI are checked one at a time to avoid throttling by your ISP")}
+            title={t("Подключается к каждому серверу и скачивает 200 КБ. К одному серверу — не чаще двух раз в минуту; если провайдер заморозил соединения, серверы с тем же SNI несколько минут не проверяются", "Connects to each server and downloads 200 KB. At most twice a minute per server; if your ISP freezes connections, servers with the same SNI aren't checked for a few minutes")}
           >
             {t("Проверить", "Check")}
           </button>

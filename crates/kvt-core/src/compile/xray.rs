@@ -335,8 +335,19 @@ pub(super) fn probe_config(
                 "udp": false
             }
         }],
-        "outbounds": [outbound(server)?]
+        "outbounds": [probe_outbound(server, inbound)?]
     }))
+}
+
+fn probe_outbound(
+    server: &Server,
+    inbound: &super::ProbeInbound<'_>,
+) -> Result<Value, CompileError> {
+    let mut out = outbound(server)?;
+    if let Some(source) = inbound.source {
+        out["sendThrough"] = source.to_string().into();
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

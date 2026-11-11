@@ -158,6 +158,10 @@ pub struct ProbeInbound<'a> {
     pub port: u16,
     pub user: &'a str,
     pub password: &'a str,
+    /// Адрес физического адаптера, если VPN подключён: соединение с проверяемым
+    /// сервером уходит с него мимо TUN (Xray `sendThrough`, sing-box
+    /// `inet4_bind_address`), иначе результат был бы «через туннель».
+    pub source: Option<std::net::Ipv4Addr>,
 }
 
 /// Конфиг тестового ядра: один SOCKS-вход с паролем и один выход — проверяемый

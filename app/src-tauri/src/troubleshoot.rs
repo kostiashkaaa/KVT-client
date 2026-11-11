@@ -597,11 +597,11 @@ async fn probe(state: &AppState, key: &str, server: &kvt_core::Server) -> Option
         return None;
     }
     let sni = sni_key(server);
-    let decision = state
-        .governor
-        .lock()
-        .ok()?
-        .try_acquire(&sni, Instant::now());
+    let decision = state.governor.lock().ok()?.try_acquire_endpoint(
+        &sni,
+        Some(&server.address),
+        Instant::now(),
+    );
     if decision != kvt_core::governor::Decision::Allowed {
         kvt_core::netlog::record_hold(
             kvt_core::netlog::Origin::App,
@@ -612,7 +612,8 @@ async fn probe(state: &AppState, key: &str, server: &kvt_core::Server) -> Option
         );
         return Some(ProbeFact::Postponed);
     }
-    let prober = CoreProber::new().ok()?;
+    // «Почему не работает?» пробует сервер, только когда VPN отключён.
+    let prober = CoreProber::new(None).ok()?;
     let observation = prober.probe(server.clone()).await;
     let verdict = classify(&observation);
     kvt_core::tester::log_probe(&sni, verdict, &observation);

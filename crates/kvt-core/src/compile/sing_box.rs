@@ -325,6 +325,17 @@ fn tls(s: &Server) -> Option<Value> {
     }
 }
 
+fn probe_outbound(
+    server: &Server,
+    inbound: &super::ProbeInbound<'_>,
+) -> Result<Value, CompileError> {
+    let mut out = outbound(server)?;
+    if let Some(source) = inbound.source {
+        out = with(out, "inet4_bind_address", source.to_string().into());
+    }
+    Ok(out)
+}
+
 /// Конфиг тестового ядра (см. `compile_probe`).
 pub(super) fn probe_config(
     server: &Server,
@@ -340,7 +351,7 @@ pub(super) fn probe_config(
             "listen_port": inbound.port,
             "users": [{ "username": inbound.user, "password": inbound.password }]
         }],
-        "outbounds": [outbound(server)?],
+        "outbounds": [probe_outbound(server, inbound)?],
         "route": { "final": TAG_PROXY, "default_domain_resolver": "local" }
     }))
 }

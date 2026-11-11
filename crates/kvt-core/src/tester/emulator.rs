@@ -2,6 +2,10 @@
 //! - больше 3 TLS-рукопожатий к одному SNI за 60 с → заморозка SNI на 120 с;
 //! - к «помеченным» адресам поток замирает после 16 КБ.
 //!
+//! Как именно ТСПУ считает рукопожатия — по SNI вообще или по паре SNI и адрес
+//! сервера, — не подтверждено. Эмулятор умеет оба варианта (`per_endpoint`), чтобы
+//! тесты показали поведение планировщика в каждом.
+//!
 //! Считает нарушения, чтобы тесты могли доказать, что планировщик их не вызывает.
 
 use super::Prober;
@@ -28,12 +32,19 @@ struct State {
 #[derive(Default)]
 pub struct TspuEmulator {
     flagged: HashSet<String>,
+    /// Считать рукопожатия на пару SNI и адрес, а не на весь SNI.
+    per_endpoint: bool,
     state: Mutex<State>,
 }
 
 impl TspuEmulator {
     pub fn with_flagged(mut self, address: &str) -> Self {
         self.flagged.insert(address.to_owned());
+        self
+    }
+
+    pub fn per_endpoint(mut self) -> Self {
+        self.per_endpoint = true;
         self
     }
 
@@ -50,6 +61,11 @@ impl TspuEmulator {
             .visible_sni()
             .unwrap_or(&server.address)
             .to_ascii_lowercase();
+        let sni = if self.per_endpoint {
+            format!("{sni}|{}", server.address)
+        } else {
+            sni
+        };
         let now = Instant::now();
         let mut st = self.state.lock().unwrap();
         st.attempts += 1;

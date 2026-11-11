@@ -3,5 +3,6 @@
   "window": 60,
   "min_spacing": 2,
   "freeze_cooldown": 180,
-  "max_parallel_probes": 4
+  "max_parallel_probes": 4,
+  "per_endpoint": true
 }

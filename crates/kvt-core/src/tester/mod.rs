@@ -91,7 +91,7 @@ pub async fn full_check<P: Prober>(
                 continue;
             }
             let sni = sni_key(&servers[i]);
-            match governor.try_acquire(&sni, now) {
+            match governor.try_acquire_endpoint(&sni, Some(&servers[i].address), now) {
                 Decision::Allowed => {
                     let prober = Arc::clone(&prober);
                     let server = servers[i].clone();
@@ -238,6 +238,17 @@ pub async fn tcp_ping(host: &str, port: u16, timeout: Duration) -> QuickResult {
     ping_logged(host, port, None, Origin::App, Purpose::ServerPing, timeout).await
 }
 
+/// TCP-пинг сервера с адреса `local` — мимо TUN, когда VPN подключён (иначе
+/// соединение принял бы сам TUN за 0 мс). `None` — как [`tcp_ping`].
+pub async fn tcp_ping_from(
+    host: &str,
+    port: u16,
+    local: Option<Ipv4Addr>,
+    timeout: Duration,
+) -> QuickResult {
+    ping_logged(host, port, local, Origin::App, Purpose::ServerPing, timeout).await
+}
+
 /// TCP-пинг не VPN-сервера (например, «есть ли интернет»): в журнале — с этой целью.
 pub async fn tcp_ping_for(
     purpose: Purpose,
@@ -363,6 +374,14 @@ mod tests {
             .collect()
     }
 
+    /// Прежний строгий режим: лимит на весь SNI, без учёта адреса сервера.
+    fn strict() -> NetPolicy {
+        NetPolicy {
+            per_endpoint: false,
+            ..NetPolicy::default()
+        }
+    }
+
     fn same_sni(n: usize) -> Vec<Server> {
         let ips: Vec<String> = (1..=n).map(|i| format!("203.0.113.{i}")).collect();
         let specs: Vec<(&str, &str)> = ips
@@ -400,7 +419,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn same_sni_never_trips_tspu() {
         let emu = Arc::new(TspuEmulator::default());
-        let mut gov = NetGovernor::new(NetPolicy::default());
+        let mut gov = NetGovernor::new(strict());
         let list = same_sni(10);
         let started = Instant::now();
         let out = full_check(
@@ -415,6 +434,76 @@ mod tests {
         assert!(out.iter().all(works), "{out:?}");
         // 10 серверов по 2 в минуту — около 4,5 минут виртуального времени.
         assert!(started.elapsed() < Duration::from_secs(6 * 60));
+    }
+
+    /// Лимит на пару SNI и адрес: если ТСПУ тоже считает по паре, десять серверов
+    /// под один SNI проверяются за секунды без единой заморозки.
+    #[tokio::test(start_paused = true)]
+    async fn per_endpoint_is_fast_when_tspu_counts_per_endpoint() {
+        let emu = Arc::new(TspuEmulator::default().per_endpoint());
+        let mut gov = NetGovernor::new(NetPolicy {
+            per_endpoint: true,
+            ..NetPolicy::default()
+        });
+        let started = Instant::now();
+        let out = full_check(
+            &same_sni(10),
+            Arc::clone(&emu),
+            &mut gov,
+            Duration::from_secs(3600),
+            |_, _| {},
+        )
+        .await;
+        assert_eq!(emu.violations(), 0);
+        assert!(out.iter().all(works), "{out:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Худший случай: ТСПУ считает на весь SNI. Тогда лимит на пару вызывает одну
+    /// заморозку; пока её итог не пришёл, в замороженный SNI успевают уйти пробы,
+    /// идущие параллельно (до `max_parallel_probes`), — дальше SNI не трогается до
+    /// конца паузы, остальное откладывается. Цена, на которую пошли ради скорости
+    /// (`per_endpoint` включён по умолчанию с 2026-11-12).
+    #[tokio::test(start_paused = true)]
+    async fn per_endpoint_damage_is_one_freeze_when_tspu_counts_per_sni() {
+        let emu = Arc::new(TspuEmulator::default());
+        let mut gov = NetGovernor::new(NetPolicy {
+            per_endpoint: true,
+            ..NetPolicy::default()
+        });
+        let out = full_check(
+            &same_sni(10),
+            Arc::clone(&emu),
+            &mut gov,
+            Duration::from_secs(60),
+            |_, _| {},
+        )
+        .await;
+        assert_eq!(emu.violations(), 1);
+        assert!(gov
+            .frozen_until("www.microsoft.com", std::time::Instant::now())
+            .is_some());
+        let count = |f: fn(&Outcome) -> bool| out.iter().filter(|o| f(o)).count();
+        let frozen = count(|o| {
+            matches!(
+                o,
+                Outcome::Checked {
+                    verdict: Verdict::TlsFrozen,
+                    ..
+                }
+            )
+        });
+        let parallel = NetPolicy::default().max_parallel_probes;
+        assert!((1..=parallel).contains(&frozen), "{out:?}");
+        assert_eq!(count(works), 3, "{out:?}");
+        assert_eq!(
+            count(|o| matches!(o, Outcome::Deferred { .. })),
+            10 - 3 - frozen
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -436,7 +525,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn data_freeze_stops_attempts_on_that_sni() {
         let emu = Arc::new(TspuEmulator::default().with_flagged("203.0.113.1"));
-        let mut gov = NetGovernor::new(NetPolicy::default());
+        let mut gov = NetGovernor::new(strict());
         let list = same_sni(5);
         let out = full_check(
             &list,
@@ -465,7 +554,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn budget_defers_the_rest() {
         let emu = Arc::new(TspuEmulator::default());
-        let mut gov = NetGovernor::new(NetPolicy::default());
+        let mut gov = NetGovernor::new(strict());
         let out = full_check(
             &same_sni(6),
             emu,
@@ -486,7 +575,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn progress_reports_every_server_once() {
         let emu = Arc::new(TspuEmulator::default().with_flagged("203.0.113.1"));
-        let mut gov = NetGovernor::new(NetPolicy::default());
+        let mut gov = NetGovernor::new(strict());
         let mut seen = Vec::new();
         let out = full_check(
             &same_sni(4),
