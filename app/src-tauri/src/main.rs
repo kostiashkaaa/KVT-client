@@ -7,6 +7,7 @@ mod applog;
 mod audit;
 mod autostart;
 mod catalog;
+mod device;
 mod diagexport;
 mod diagnostics;
 mod dnscheck;
@@ -871,6 +872,7 @@ fn main() {
             subs::remove_server,
             subs::edit_server,
             subs::refresh_subscription,
+            subs::set_subscription_options,
             quick_check,
             prober::full_check,
             connect,

@@ -34,6 +34,8 @@ reqwest = { version = "0.12", default-features = false, features = ["native-tls"
 native-tls = "0.2"
 tokio-native-tls = "0.3"
 sha2.workspace = true
+# Секрет установки для ID устройства (X-HWID) — системный генератор.
+getrandom = "0.3"
 # Чтение баз других клиентов при переносе (v2rayN, Throne, Hiddify). SQLite — в составе.
 rusqlite = { version = "0.41", features = ["bundled"] }
 # Окно выбора папки для переноса из клиента, который не нашёлся сам.

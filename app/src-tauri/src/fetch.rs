@@ -4,7 +4,9 @@
 use kvt_core::governor::{Decision, NetGovernor};
 use kvt_core::netlog::{self, Origin, Purpose, Route};
 use kvt_core::parser::parse_subscription_body;
-use kvt_core::subscription::{parse_headers, SubscriptionMeta, Validators, MAX_BODY_BYTES};
+use kvt_core::subscription::{
+    hwid_signal, parse_headers, HwidSignal, SubscriptionMeta, Validators, MAX_BODY_BYTES,
+};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -17,6 +19,8 @@ pub struct Fetched {
     pub agent: &'static str,
     /// Метки версии ответа: при следующем обновлении сервер может ответить 304.
     pub validators: Option<Validators>,
+    /// Серверы пришли в ответ на запрос с ID устройства.
+    pub hwid_sent: bool,
 }
 
 /// Итог загрузки подписки, которая уже есть.
@@ -27,14 +31,39 @@ pub enum Loaded {
     NotModified(SubscriptionMeta),
 }
 
-/// Что известно с прошлой удачной загрузки.
+/// Каким клиентом представляться провайдеру («Расширенные» у подписки).
+#[derive(Clone, Copy, Default)]
+pub enum Client<'a> {
+    /// Очередь клиентов, пока в ответе не найдутся серверы.
+    #[default]
+    Auto,
+    /// Только этот клиент (ключ из `PROFILES`).
+    Profile(&'a str),
+    /// Строка User-Agent целиком, как её ввёл пользователь.
+    Custom(&'a str),
+}
+
+/// ID устройства (`x-hwid`).
+#[derive(Clone, Copy, Default)]
+pub enum Hwid<'a> {
+    #[default]
+    Off,
+    /// Отправлять сразу.
+    Send(&'a str),
+    /// Только если провайдер скажет, что без него не отдаст серверы.
+    OnRequest(&'a str),
+}
+
+/// Что известно с прошлой удачной загрузки и что задал пользователь.
 #[derive(Default)]
 pub struct Hints<'a> {
+    pub client: Client<'a>,
     /// Клиент, под которым провайдер отдал серверы.
     pub agent: Option<&'a str>,
     /// Метки версии сохранённого тела. Только для запроса под тем же клиентом:
     /// другому клиенту провайдер отдаёт другой формат.
     pub validators: Option<&'a Validators>,
+    pub hwid: Hwid<'a>,
 }
 
 /// Ответ на один запрос.
@@ -45,7 +74,14 @@ enum Reply {
         validators: Option<Validators>,
     },
     NotModified(SubscriptionMeta),
+    /// Панель провайдера ждёт ID устройства (`x-hwid-not-supported`).
+    HwidRequired,
 }
+
+const HWID_REQUIRED: &str = "Провайдер ограничивает число устройств и ждёт ID устройства — разрешите его в «Расширенных» у подписки";
+const HWID_REJECTED: &str =
+    "Провайдер не принял ID устройства — проверьте ID в «Расширенных» у подписки";
+const HWID_LIMIT: &str = "У провайдера достигнут лимит устройств — удалите лишнее устройство в личном кабинете провайдера";
 
 pub fn validate_url(raw: &str) -> Result<Url, String> {
     // Ссылки «добавить в Happ / INCY / v2RayTun …» — в исходный адрес подписки.
@@ -119,8 +155,8 @@ fn settle(host: &str, decision: Decision, now: Instant) -> Result<(), String> {
 }
 
 /// Новая подписка: условного запроса нет, ответ всегда с телом.
-pub async fn fetch(url: &Url) -> Result<Fetched, String> {
-    match load(url, &Hints::default()).await? {
+pub async fn fetch(url: &Url, hints: &Hints<'_>) -> Result<Fetched, String> {
+    match load(url, hints).await? {
         Loaded::Fresh(fetched) => Ok(fetched),
         Loaded::NotModified(_) => Err(crate::errors::UNEXPECTED.into()),
     }
@@ -160,34 +196,79 @@ pub async fn load(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
 /// обычный список ссылок. Своё имя в строке остаётся — провайдер видит, кто пришёл.
 /// Пробуем по очереди, пока в ответе не найдутся серверы; подписка запоминает, кто
 /// сработал (ключ — без версии, чтобы смена версии в строке его не сбрасывала).
-fn user_agents() -> [(&'static str, String); 5] {
+fn user_agent(key: &str) -> Option<String> {
     let kvt = concat!("KVT/", env!("CARGO_PKG_VERSION"));
-    [
-        ("v2rayng", format!("v2rayNG/1.10.5 {kvt}")),
-        ("v2rayn", format!("v2rayN/6.60 {kvt}")),
-        ("hiddify", format!("Hiddify/2.5.7 {kvt}")),
+    let client = match key {
+        "v2rayng" => "v2rayNG/1.10.5",
+        "v2rayn" => "v2rayN/6.60",
+        "hiddify" => "Hiddify/2.5.7",
         // Часть провайдеров отдаёт серверы только «своему» клиенту Happ.
-        ("happ", format!("Happ/3.6.1 {kvt}")),
-        ("kvt", kvt.to_owned()),
-    ]
+        "happ" => "Happ/3.6.1",
+        // Только по выбору пользователя: в очередь не входят.
+        "incy" => "INCY/3.3.4",
+        "v2raytun" => "v2RayTun/5.19.62",
+        "kvt" => return Some(kvt.to_owned()),
+        _ => return None,
+    };
+    Some(format!("{client} {kvt}"))
 }
 
-/// Очередь клиентов: запомненный — первым, остальные в обычном порядке.
-fn agent_order(remembered: Option<&str>) -> Vec<(&'static str, String)> {
-    let mut agents = user_agents().to_vec();
-    if let Some(i) = agents.iter().position(|(key, _)| Some(*key) == remembered) {
-        let first = agents.remove(i);
-        agents.insert(0, first);
+/// Клиенты, которых можно выбрать у подписки.
+pub const PROFILES: [&str; 7] = [
+    "v2rayng", "v2rayn", "hiddify", "happ", "incy", "v2raytun", "kvt",
+];
+/// Очередь «Авто».
+const QUEUE: [&str; 5] = ["v2rayng", "v2rayn", "hiddify", "happ", "kvt"];
+/// Ключ, под которым запоминается свой User-Agent.
+pub const CUSTOM: &str = "custom";
+
+/// Очередь клиентов: выбранный пользователем — единственный; иначе запомненный —
+/// первым, остальные в обычном порядке.
+fn agent_order(client: Client<'_>, remembered: Option<&str>) -> Vec<(&'static str, String)> {
+    let one = |key: &'static str| user_agent(key).map(|a| (key, a));
+    match client {
+        Client::Custom(agent) => vec![(CUSTOM, agent.to_owned())],
+        Client::Profile(key) => match PROFILES.into_iter().find(|k| *k == key) {
+            Some(k) => one(k).into_iter().collect(),
+            None => agent_order(Client::Auto, remembered),
+        },
+        Client::Auto => {
+            let mut agents: Vec<_> = QUEUE.into_iter().filter_map(one).collect();
+            if let Some(i) = agents.iter().position(|(key, _)| Some(*key) == remembered) {
+                let first = agents.remove(i);
+                agents.insert(0, first);
+            }
+            agents
+        }
     }
-    agents
 }
 
 async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
     let mut first_error = None;
-    for (key, agent) in agent_order(hints.agent) {
+    let mut hwid = match hints.hwid {
+        Hwid::Send(id) => Some(id),
+        _ => None,
+    };
+    for (key, agent) in agent_order(hints.client, hints.agent) {
         let conditional = hints.validators.filter(|_| hints.agent == Some(key));
-        match fetch_as(url, &agent, conditional).await {
+        let mut reply = fetch_as(url, &agent, conditional, hwid).await;
+        if let (Ok(Reply::HwidRequired), Hwid::OnRequest(id)) = (&reply, hints.hwid) {
+            // Провайдер сам сказал, что без ID не отдаст: повтор с ним, и дальше
+            // по очереди — тоже с ним.
+            hwid = Some(id);
+            reply = fetch_as(url, &agent, conditional, hwid).await;
+        }
+        match reply {
             Ok(Reply::NotModified(meta)) => return Ok(Loaded::NotModified(meta)),
+            // Другой клиент тут не поможет.
+            Ok(Reply::HwidRequired) => {
+                return Err(if hwid.is_some() {
+                    HWID_REJECTED
+                } else {
+                    HWID_REQUIRED
+                }
+                .into())
+            }
             Ok(Reply::Body {
                 meta,
                 body,
@@ -198,6 +279,7 @@ async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
                     body,
                     agent: key,
                     validators,
+                    hwid_sent: hwid.is_some(),
                 };
                 if !parse_subscription_body(&fetched.body).servers.is_empty() {
                     return Ok(Loaded::Fresh(fetched));
@@ -219,6 +301,7 @@ async fn fetch_as(
     url: &Url,
     agent: &str,
     conditional: Option<&Validators>,
+    hwid: Option<&str>,
 ) -> Result<Reply, String> {
     let client = reqwest::Client::builder()
         .https_only(true)
@@ -238,6 +321,13 @@ async fn fetch_as(
             request = request.header(reqwest::header::IF_MODIFIED_SINCE, date);
         }
     }
+    if let Some(id) = hwid {
+        // Как у Happ: ID и общие сведения об устройстве, без имени компьютера.
+        request = request
+            .header("x-hwid", id)
+            .header("x-device-os", "Windows")
+            .header("x-device-model", "KVT");
+    }
     let mut resp = request.send().await.map_err(describe)?;
     let headers: Vec<(String, String)> = resp
         .headers()
@@ -249,6 +339,11 @@ async fn fetch_as(
         })
         .collect();
     let pairs = || headers.iter().map(|(k, v)| (k.as_str(), v.as_str()));
+    match hwid_signal(pairs()) {
+        Some(HwidSignal::LimitReached) => return Err(HWID_LIMIT.into()),
+        Some(HwidSignal::Required) if hwid.is_none() => return Ok(Reply::HwidRequired),
+        _ => {}
+    }
     let meta = parse_headers(pairs());
     // 304 принимаем, только если сами спрашивали «изменилась ли».
     if conditional.is_some() && resp.status() == reqwest::StatusCode::NOT_MODIFIED {
@@ -302,15 +397,30 @@ mod tests {
 
     #[test]
     fn known_clients_first_own_name_kept() {
-        let agents = user_agents();
+        let agents = agent_order(Client::Auto, None);
         assert!(agents[0].1.starts_with("v2rayNG/"));
         assert!(agents.iter().all(|(_, a)| a.contains("KVT/")));
+        assert!(PROFILES.iter().all(|k| user_agent(k).is_some()));
+    }
+
+    #[test]
+    fn chosen_client_is_the_only_one() {
+        let incy = agent_order(Client::Profile("incy"), Some("happ"));
+        assert_eq!(incy.len(), 1);
+        assert!(incy[0].1.starts_with("INCY/"));
+        let custom = agent_order(Client::Custom("Happ/3.7.0"), None);
+        assert_eq!(custom, [(CUSTOM, "Happ/3.7.0".to_owned())]);
+        // Профиля, которого больше нет, — обычная очередь.
+        assert_eq!(
+            agent_order(Client::Profile("clash"), None).len(),
+            QUEUE.len()
+        );
     }
 
     #[test]
     fn remembered_client_goes_first() {
         let keys = |r| {
-            agent_order(r)
+            agent_order(Client::Auto, r)
                 .into_iter()
                 .map(|(k, _)| k)
                 .collect::<Vec<_>>()
@@ -329,7 +439,7 @@ mod tests {
     #[ignore = "ходит в сеть по ссылке из KVT_SUB_URL"]
     async fn real_subscription() {
         let url = validate_url(&std::env::var("KVT_SUB_URL").unwrap()).unwrap();
-        let fetched = fetch(&url).await.unwrap();
+        let fetched = fetch(&url, &Hints::default()).await.unwrap();
         let n = parse_subscription_body(&fetched.body).servers.len();
         println!("серверов: {n}");
         assert!(n > 0);

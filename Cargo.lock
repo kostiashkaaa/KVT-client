@@ -2092,6 +2092,7 @@ name = "kvt-app"
 version = "0.9.4"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.3.4",
  "kvt-core",
  "native-tls",
  "reqwest 0.12.28",

@@ -7,7 +7,7 @@
 use crate::store::{Store, Subscription};
 use crate::{ServerSummary, SubscriptionInfo};
 use kvt_core::model::Transport;
-use kvt_core::parser::parse_subscription_body;
+use kvt_core::parser::{parse_subscription_body, SubscriptionContent};
 use kvt_core::Server;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -125,6 +125,19 @@ pub(crate) fn title(s: &Subscription) -> String {
         })
 }
 
+/// Разобранная подписка без серверов, скрытых фильтром из «Расширенных», и сколько
+/// скрыто. Скрытых нет нигде: ни на главной, ни в трее, ни в автопереключении.
+pub(crate) fn content(sub: &Subscription) -> (SubscriptionContent, usize) {
+    let mut content = parse_subscription_body(sub.body.expose());
+    let filter = &sub.options.filter;
+    let before = content.servers.len();
+    if !filter.is_empty() {
+        content.servers.retain(|s| filter.allows(&s.name));
+    }
+    let hidden = before - content.servers.len();
+    (content, hidden)
+}
+
 /// Ключи для серверов одной подписки. Если у нескольких серверов одна основа
 /// (варианты одной точки), к ней добавляется различие параметров; совсем
 /// одинаковые получают номер.
@@ -166,11 +179,7 @@ pub(crate) fn legacy_keys(store: &Store, entries: &[Entry]) -> HashMap<String, S
     let mut map = HashMap::new();
     for sub in &store.subscriptions {
         let current = entries.iter().filter(|e| e.sub == sub.id);
-        for (server, entry) in parse_subscription_body(sub.body.expose())
-            .servers
-            .iter()
-            .zip(current)
-        {
+        for (server, entry) in content(sub).0.servers.iter().zip(current) {
             let old = unique(legacy_key(&sub.id, server), &mut taken);
             map.insert(old, entry.key.clone());
         }
@@ -185,7 +194,7 @@ pub(crate) fn build(store: &Store) -> (Vec<Group>, Vec<Entry>) {
     // Первый сервер с таким выходом — во всех подписках сразу.
     let mut exits: HashMap<[u8; 32], String> = HashMap::new();
     for sub in &store.subscriptions {
-        let content = parse_subscription_body(sub.body.expose());
+        let (content, _) = content(sub);
         let keys = keys(&sub.id, &content.servers, &mut taken);
         let same_as: Vec<Option<String>> = content
             .servers
@@ -312,6 +321,26 @@ mod tests {
         assert_eq!(entries[1].exit_key(), entries[0].key);
         // Другой UUID — другой пользователь, отдельный сервер.
         assert_eq!(entries[2].same_as, None);
+    }
+
+    #[test]
+    fn filtered_servers_are_not_in_catalog() {
+        let mut store = Store::load(std::env::temp_dir().join("kvt-catalog-filter-none.json"));
+        store.subscriptions.clear();
+        let b = A
+            .replace("203.0.113.10", "203.0.113.11")
+            .replace("#A", "#B%20backup");
+        let id = store.add(None, format!("{A}\n{b}"), Default::default(), 0);
+        let options = crate::store::SubOptions {
+            filter: kvt_core::subscription::NameFilter::parse("", "backup").unwrap(),
+            ..Default::default()
+        };
+        store.set_options(&id, options, crate::store::OwnHwid::Keep);
+        let (groups, entries) = build(&store);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].server.name, "A");
+        assert_eq!(groups[0].servers.len(), 1);
+        assert_eq!(content(&store.subscriptions[0]).1, 1);
     }
 
     #[test]

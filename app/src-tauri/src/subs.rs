@@ -1,13 +1,16 @@
 //! Подписки: добавление, удаление, ручное и фоновое обновление.
 
-use crate::store::Store;
+use crate::store::{HwidMode, OwnHwid, Store, SubOptions, Subscription};
 use crate::{catalog, disconnect_service, display_name, fetch, query_status, watchdog, AppState};
 use kvt_core::ipc::ServiceStatus;
 use kvt_core::parser::{normalize_pasted, parse_subscription_body};
-use kvt_core::subscription::{split_input, SubscriptionMeta, MAX_BODY_BYTES};
+use kvt_core::subscription::{
+    header_value, split_input, NameFilter, SubscriptionMeta, Validators, MAX_BODY_BYTES,
+};
 use kvt_core::Secret;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -149,7 +152,11 @@ async fn add_url(state: &AppState, raw: &str, patient: bool) -> Result<Added, St
     } else {
         fetch::acquire(&state.governor, host)?;
     }
-    let fetched = fetch::fetch(&url).await?;
+    // Та же ссылка второй раз — с настройками прежней подписки.
+    let plan = Plan::of(state, |s| {
+        s.url.as_ref().map(Secret::expose) == Some(url.as_str())
+    })?;
+    let fetched = fetch::fetch(&url, &plan.hints(host, None)?.hints()).await?;
     ensure_servers(&fetched.body)?;
     let body = fetched.body.clone();
     let id = with_store(state, |s| {
@@ -159,7 +166,7 @@ async fn add_url(state: &AppState, raw: &str, patient: bool) -> Result<Added, St
             fetched.meta,
             now(),
         );
-        s.set_source(&id, fetched.agent, fetched.validators);
+        s.set_source(&id, fetched.agent, fetched.validators, fetched.hwid_sent);
         id
     })?;
     added(state, id, &body)
@@ -308,8 +315,10 @@ pub(crate) async fn import_url(
         return Ok(Imported::Existing);
     }
     let loaded = async {
-        fetch::acquire(&state.governor, url.host_str().unwrap_or_default())?;
-        let fetched = fetch::fetch(&url).await?;
+        let host = url.host_str().unwrap_or_default();
+        fetch::acquire(&state.governor, host)?;
+        let plan = Plan::of(state, |_| false)?;
+        let fetched = fetch::fetch(&url, &plan.hints(host, None)?.hints()).await?;
         ensure_servers(&fetched.body)?;
         Ok::<_, String>(fetched)
     }
@@ -323,7 +332,7 @@ pub(crate) async fn import_url(
                     fetched.meta,
                     now(),
                 );
-                s.set_source(&id, fetched.agent, fetched.validators);
+                s.set_source(&id, fetched.agent, fetched.validators, fetched.hwid_sent);
             })?;
             Ok(Imported::Loaded)
         }
@@ -399,6 +408,24 @@ pub struct SubscriptionItem {
     /// Ключи группы «Добавлено вручную» — каждый можно переименовать, заменить или
     /// удалить. У подписок по ссылке пусто: серверы там задаёт провайдер.
     keys: Vec<ManualKey>,
+    /// Сколько серверов скрыл фильтр из «Расширенных».
+    hidden: usize,
+    options: OptionsView,
+}
+
+/// «Расширенные» подписки для окна. Свой ID устройства не показывается — только
+/// то, что он задан.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionsView {
+    keep: Vec<String>,
+    drop: Vec<String>,
+    client: Option<String>,
+    user_agent: Option<String>,
+    hwid: HwidMode,
+    own_hwid: bool,
+    /// ID устройства уходит провайдеру: он его попросил или так выбрано.
+    hwid_sent: bool,
 }
 
 #[derive(Serialize)]
@@ -485,7 +512,7 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
         .subscriptions
         .iter()
         .map(|s| {
-            let content = parse_subscription_body(s.body.expose());
+            let (content, hidden) = catalog::content(s);
             SubscriptionItem {
                 id: s.id.clone(),
                 title: catalog::title(s),
@@ -527,9 +554,103 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
                         })
                         .collect()
                 },
+                hidden,
+                options: OptionsView {
+                    keep: s.options.filter.keep.clone(),
+                    drop: s.options.filter.drop.clone(),
+                    client: s.options.client.clone(),
+                    user_agent: s.options.user_agent.clone(),
+                    hwid: s.options.hwid,
+                    own_hwid: s.own_hwid.is_some(),
+                    hwid_sent: match s.options.hwid {
+                        HwidMode::Always => true,
+                        HwidMode::Auto => s.hwid_asked,
+                        HwidMode::Never => false,
+                    },
+                },
             }
         })
         .collect())
+}
+
+/// «Расширенные» из окна.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionsInput {
+    /// Слова через запятую — как ввёл пользователь.
+    keep: String,
+    drop: String,
+    /// `None` — «Авто», иначе ключ из `fetch::PROFILES` или `custom`.
+    client: Option<String>,
+    user_agent: String,
+    hwid: HwidMode,
+    /// `None` — не менять, пустая строка — убрать свой ID.
+    own_hwid: Option<String>,
+}
+
+const MAX_USER_AGENT: usize = 200;
+const MAX_HWID: usize = 128;
+
+fn parse_options(input: OptionsInput) -> Result<(SubOptions, OwnHwid), String> {
+    let filter = NameFilter::parse(&input.keep, &input.drop)?;
+    let custom = input.client.as_deref() == Some(fetch::CUSTOM);
+    let user_agent = if custom {
+        Some(header_value(&input.user_agent, MAX_USER_AGENT).ok_or(
+            "User-Agent пустой, длиннее 200 символов или не латиницей — проверьте строку.",
+        )?)
+    } else {
+        None
+    };
+    if let Some(c) = input.client.as_deref() {
+        if !custom && !fetch::PROFILES.contains(&c) {
+            return Err("Такого клиента KVT не знает.".into());
+        }
+    }
+    let own = match input.own_hwid.as_deref().map(str::trim) {
+        None => OwnHwid::Keep,
+        Some("") => OwnHwid::Clear,
+        Some(raw) => OwnHwid::Set(header_value(raw, MAX_HWID).ok_or(
+            "ID устройства длиннее 128 символов или не латиницей — скопируйте его у провайдера целиком.",
+        )?),
+    };
+    Ok((
+        SubOptions {
+            filter,
+            client: input.client,
+            user_agent,
+            hwid: input.hwid,
+        },
+        own,
+    ))
+}
+
+/// Сохраняет «Расширенные» подписки. Если сменился клиент или ID устройства,
+/// подписка по ссылке сразу загружается заново — ошибка загрузки возвращается, но
+/// настройки остаются сохранёнными (причина видна у подписки).
+#[tauri::command]
+pub async fn set_subscription_options(
+    id: String,
+    options: OptionsInput,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (options, own) = parse_options(options)?;
+    let before = state.selected();
+    let (request_changed, by_url) = with_store(&state, |s| {
+        let changed = s.set_options(&id, options, own);
+        (changed, s.get(&id).is_some_and(|x| x.url.is_some()))
+    })?;
+    let request_changed = request_changed.ok_or("Этой подписки уже нет.")?;
+    let result = if request_changed && by_url {
+        refresh_one(&state, &id, Refresh::Now).await
+    } else {
+        Ok(())
+    };
+    rebuild(&state)?;
+    crate::tray::invalidate(&app);
+    guard_selected(&app, before).await;
+    notify(&app);
+    result
 }
 
 #[tauri::command]
@@ -748,18 +869,21 @@ enum Refresh {
 /// Обновляет одну подписку по ссылке. Ошибка не трогает сохранённую версию, а
 /// запоминается у подписки.
 async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Result<(), String> {
-    let (url, agent, validators) = {
+    let (url, plan) = {
         let guard = state.store.lock().map_err(lock_err)?;
-        let sub = guard.as_ref().and_then(|s| s.get(id));
-        let url = sub
+        let url = guard
+            .as_ref()
+            .and_then(|s| s.get(id))
             .and_then(|s| s.url.clone())
             .ok_or("У этой подписки нет ссылки для обновления")?;
-        // Метки — только у непустого тела: подписка, добавленная без ответа
-        // провайдера, должна загрузиться целиком.
-        let validators = sub
-            .filter(|s| how == Refresh::Scheduled && !s.body.expose().is_empty())
-            .and_then(|s| s.validators.clone());
-        (url, sub.and_then(|s| s.agent.clone()), validators)
+        drop(guard);
+        let mut plan = Plan::of(state, |s| s.id == id)?;
+        // Метки — только по расписанию и у непустого тела: подписка, добавленная
+        // без ответа провайдера, должна загрузиться целиком.
+        if how != Refresh::Scheduled || plan.empty_body {
+            plan.validators = None;
+        }
+        (url, plan)
     };
     let url = fetch::validate_url(url.expose())?;
     let result = async {
@@ -769,11 +893,8 @@ async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Result<(), Str
         } else {
             fetch::acquire_patiently(&state.governor, host, BATCH_WAIT).await?;
         }
-        let hints = fetch::Hints {
-            agent: agent.as_deref(),
-            validators: validators.as_ref(),
-        };
-        let loaded = fetch::load(&url, &hints).await?;
+        let request = plan.hints(host, plan.agent.as_deref())?;
+        let loaded = fetch::load(&url, &request.hints()).await?;
         if let fetch::Loaded::Fresh(fetched) = &loaded {
             ensure_servers(&fetched.body)?;
         }
@@ -784,7 +905,7 @@ async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Result<(), Str
         Ok(fetch::Loaded::Fresh(fetched)) => {
             with_store(state, |s| {
                 s.update(id, fetched.body, fetched.meta, now());
-                s.set_source(id, fetched.agent, fetched.validators);
+                s.set_source(id, fetched.agent, fetched.validators, fetched.hwid_sent);
             })?;
             Ok(())
         }
@@ -795,6 +916,103 @@ async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Result<(), Str
         Err(e) => {
             with_store(state, |s| s.postpone(id, now(), Some(&e)))?;
             Err(e)
+        }
+    }
+}
+
+/// Как спрашивать провайдера: настройки подписки и что запомнено с прошлого раза.
+/// Собирается под блокировкой хранилища, используется уже без неё.
+#[derive(Default)]
+struct Plan {
+    options: SubOptions,
+    own_hwid: Option<Secret>,
+    hwid_asked: bool,
+    agent: Option<String>,
+    validators: Option<Validators>,
+    empty_body: bool,
+    dir: Option<PathBuf>,
+}
+
+/// Готовые значения для `fetch::Hints` (они только заимствуют).
+struct Request<'a> {
+    plan: &'a Plan,
+    agent: Option<&'a str>,
+    hwid: Option<String>,
+}
+
+impl Plan {
+    /// Настройки подписки, подходящей под `find`; нет такой — по умолчанию.
+    fn of(state: &AppState, find: impl Fn(&Subscription) -> bool) -> Result<Plan, String> {
+        let guard = state.store.lock().map_err(lock_err)?;
+        let Some(store) = guard.as_ref() else {
+            return Ok(Plan::default());
+        };
+        let dir = store.dir().map(PathBuf::from);
+        Ok(match store.subscriptions.iter().find(|s| find(s)) {
+            Some(s) => Plan {
+                options: s.options.clone(),
+                own_hwid: s.own_hwid.clone(),
+                hwid_asked: s.hwid_asked,
+                agent: s.agent.clone(),
+                validators: s.validators.clone(),
+                empty_body: s.body.expose().is_empty(),
+                dir,
+            },
+            None => Plan {
+                dir,
+                ..Plan::default()
+            },
+        })
+    }
+
+    /// ID устройства для провайдера `host`: свой от провайдера или производный от
+    /// секрета установки (`device`).
+    fn hints<'a>(&'a self, host: &str, agent: Option<&'a str>) -> Result<Request<'a>, String> {
+        let mode = self.options.hwid;
+        let hwid = if mode == HwidMode::Never {
+            None
+        } else if let Some(own) = &self.own_hwid {
+            Some(own.expose().to_owned())
+        } else {
+            match self.dir.as_deref().map(|d| crate::device::hwid(d, host)) {
+                Some(Ok(id)) => Some(id),
+                Some(Err(e)) if mode == HwidMode::Always => {
+                    return Err(crate::errors::io("Не удалось прочитать ID устройства", &e))
+                }
+                Some(Err(e)) => {
+                    tracing::warn!(error = %e, "ID устройства недоступен");
+                    None
+                }
+                None => None,
+            }
+        };
+        Ok(Request {
+            plan: self,
+            agent,
+            hwid,
+        })
+    }
+}
+
+impl Request<'_> {
+    fn hints(&self) -> fetch::Hints<'_> {
+        let options = &self.plan.options;
+        let client = match (options.client.as_deref(), options.user_agent.as_deref()) {
+            (Some(fetch::CUSTOM), Some(agent)) => fetch::Client::Custom(agent),
+            (Some(fetch::CUSTOM), None) | (None, _) => fetch::Client::Auto,
+            (Some(key), _) => fetch::Client::Profile(key),
+        };
+        let hwid = match (&self.hwid, options.hwid) {
+            (None, _) | (_, HwidMode::Never) => fetch::Hwid::Off,
+            (Some(id), HwidMode::Always) => fetch::Hwid::Send(id),
+            (Some(id), HwidMode::Auto) if self.plan.hwid_asked => fetch::Hwid::Send(id),
+            (Some(id), HwidMode::Auto) => fetch::Hwid::OnRequest(id),
+        };
+        fetch::Hints {
+            client,
+            agent: self.agent,
+            validators: self.plan.validators.as_ref(),
+            hwid,
         }
     }
 }

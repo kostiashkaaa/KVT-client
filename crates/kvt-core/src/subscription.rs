@@ -109,11 +109,97 @@ impl Validators {
 }
 
 fn header_token(value: &str) -> Option<String> {
+    header_value(value, MAX_VALIDATOR_LEN)
+}
+
+/// Значение для заголовка запроса: только видимый ASCII и пробел, не длиннее `max`.
+/// Для своего User-Agent и ID устройства — они уходят в заголовки как есть.
+pub fn header_value(value: &str, max: usize) -> Option<String> {
     let value = value.trim();
-    (!value.is_empty()
-        && value.len() <= MAX_VALIDATOR_LEN
-        && value.chars().all(|c| (' '..='~').contains(&c)))
-    .then(|| value.to_owned())
+    (!value.is_empty() && value.len() <= max && value.chars().all(|c| (' '..='~').contains(&c)))
+        .then(|| value.to_owned())
+}
+
+/// Что панель провайдера сказала про ID устройства (заголовки Remnawave при
+/// ограничении числа устройств).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HwidSignal {
+    /// Ограничение включено, а клиент не прислал `x-hwid`.
+    Required,
+    /// Устройств у пользователя уже столько, сколько разрешено.
+    LimitReached,
+}
+
+pub fn hwid_signal<'a>(
+    headers: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<HwidSignal> {
+    let mut signal = None;
+    for (name, value) in headers {
+        if !value.trim().eq_ignore_ascii_case("true") {
+            continue;
+        }
+        match name.to_ascii_lowercase().as_str() {
+            "x-hwid-max-devices-reached" => return Some(HwidSignal::LimitReached),
+            "x-hwid-not-supported" => signal = Some(HwidSignal::Required),
+            _ => {}
+        }
+    }
+    signal
+}
+
+/// Фильтр серверов подписки по названию: «оставить только» и «убрать». Слово
+/// совпадает, если оно есть в названии (без учёта регистра) или равно коду страны
+/// флага-эмодзи («NL» — для «🇳🇱 Amsterdam»).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameFilter {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keep: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drop: Vec<String>,
+}
+
+const MAX_FILTER_WORDS: usize = 30;
+const MAX_FILTER_WORD: usize = 60;
+
+impl NameFilter {
+    /// Из строк, как их ввёл пользователь: слова через запятую или с новой строки.
+    pub fn parse(keep: &str, drop: &str) -> Result<Self, String> {
+        Ok(NameFilter {
+            keep: filter_words(keep)?,
+            drop: filter_words(drop)?,
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keep.is_empty() && self.drop.is_empty()
+    }
+
+    pub fn allows(&self, name: &str) -> bool {
+        let lower = name.to_lowercase();
+        let flag = crate::flag::split_flags(name).flag;
+        let hit = |w: &String| lower.contains(w.as_str()) || flag.as_deref() == Some(w.as_str());
+        (self.keep.is_empty() || self.keep.iter().any(hit)) && !self.drop.iter().any(hit)
+    }
+}
+
+fn filter_words(text: &str) -> Result<Vec<String>, String> {
+    let mut words: Vec<String> = Vec::new();
+    for w in text.split([',', ';', '\n']) {
+        let w = w.trim().to_lowercase();
+        if w.is_empty() || words.contains(&w) {
+            continue;
+        }
+        if w.chars().count() > MAX_FILTER_WORD || w.chars().any(char::is_control) {
+            return Err(format!(
+                "Слово фильтра длиннее {MAX_FILTER_WORD} символов или с непечатаемыми символами."
+            ));
+        }
+        words.push(w);
+    }
+    if words.len() > MAX_FILTER_WORDS {
+        return Err(format!("В фильтре больше {MAX_FILTER_WORDS} слов."));
+    }
+    Ok(words)
 }
 
 /// Разбирает заголовки ответа подписки (имена без учёта регистра).
@@ -545,5 +631,54 @@ X-Evil: 1"
         assert_eq!(meta.expire, None);
         assert_eq!(meta.title.as_deref(), Some("Провайдер"));
         assert_eq!(meta.update_interval, Duration::from_secs(24 * 3600));
+    }
+
+    #[test]
+    fn name_filter_keeps_and_drops() {
+        let f = NameFilter::parse("NL, германия", "резерв").unwrap();
+        assert!(f.allows("🇳🇱 Amsterdam"));
+        assert!(f.allows("Германия 1"));
+        assert!(!f.allows("🇳🇱 Amsterdam резерв"));
+        assert!(!f.allows("🇫🇮 Helsinki"));
+        // Пустой «оставить» — всё, кроме убранного.
+        let f = NameFilter::parse("", "Test;\nTEST").unwrap();
+        assert_eq!(f.drop, ["test"]);
+        assert!(f.allows("Рабочий") && !f.allows("Test server"));
+        assert!(NameFilter::parse(" , ;", "").unwrap().is_empty());
+    }
+
+    #[test]
+    fn name_filter_rejects_bad_input() {
+        assert!(NameFilter::parse(&"ы".repeat(61), "").is_err());
+        assert!(NameFilter::parse("a\u{7}b", "").is_err());
+        let many: Vec<String> = (0..31).map(|i| format!("w{i}")).collect();
+        assert!(NameFilter::parse("", &many.join(",")).is_err());
+    }
+
+    #[test]
+    fn header_values_and_hwid_signals() {
+        assert_eq!(
+            header_value("  Happ/3.6.1 ", 200).as_deref(),
+            Some("Happ/3.6.1")
+        );
+        assert!(header_value("кириллица", 200).is_none());
+        assert!(header_value("a\r\nX-Evil: 1", 200).is_none());
+        assert!(header_value(&"a".repeat(201), 200).is_none());
+        assert!(header_value("", 200).is_none());
+        assert_eq!(
+            hwid_signal([("X-HWID-Not-Supported", "true")]),
+            Some(HwidSignal::Required)
+        );
+        assert_eq!(
+            hwid_signal([
+                ("x-hwid-not-supported", "true"),
+                ("x-hwid-max-devices-reached", "TRUE")
+            ]),
+            Some(HwidSignal::LimitReached)
+        );
+        assert_eq!(
+            hwid_signal([("x-hwid-active", "true"), ("x-hwid-not-supported", "false")]),
+            None
+        );
     }
 }

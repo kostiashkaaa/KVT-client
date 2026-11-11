@@ -8,7 +8,7 @@ use crate::dpapi;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use kvt_core::parser::CHUNK_SEPARATOR;
-use kvt_core::subscription::{next_update_delay, SubscriptionMeta, Validators};
+use kvt_core::subscription::{next_update_delay, NameFilter, SubscriptionMeta, Validators};
 use kvt_core::Secret;
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -31,11 +31,64 @@ pub struct Subscription {
     pub custom_title: Option<String>,
     /// Последнее обновление не удалось: когда и почему. Сбрасывается удачным.
     pub last_error: Option<RefreshError>,
-    /// Под каким клиентом провайдер отдал серверы (`fetch::user_agents`): с него
+    /// Под каким клиентом провайдер отдал серверы (`fetch::PROFILES`): с него
     /// начинается следующее обновление, а не со всей очереди.
     pub agent: Option<String>,
     /// Метки версии сохранённого тела (ETag / Last-Modified) — для ответа 304.
     pub validators: Option<Validators>,
+    /// «Расширенные»: фильтр серверов, клиент, ID устройства.
+    pub options: SubOptions,
+    /// ID устройства, который дал провайдер (вместо своего). Хранится зашифрованным
+    /// и в окно не уходит — его можно только заменить.
+    pub own_hwid: Option<Secret>,
+    /// Провайдер уже просил ID устройства — в режиме «Авто» он уходит сразу.
+    pub hwid_asked: bool,
+}
+
+/// Настройки подписки из «Расширенных».
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubOptions {
+    #[serde(default, skip_serializing_if = "NameFilter::is_empty")]
+    pub filter: NameFilter,
+    /// Клиент: `None` — очередь (`fetch::Client::Auto`), иначе ключ из
+    /// `fetch::PROFILES` или `fetch::CUSTOM` со своим `user_agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "HwidMode::is_auto")]
+    pub hwid: HwidMode,
+}
+
+impl SubOptions {
+    fn is_default(&self) -> bool {
+        *self == SubOptions::default()
+    }
+}
+
+/// Когда отправлять ID устройства.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HwidMode {
+    /// Только если провайдер о нём просит.
+    #[default]
+    Auto,
+    /// Всегда — для провайдеров, которые не говорят, а просто не отдают серверы.
+    Always,
+    Never,
+}
+
+impl HwidMode {
+    fn is_auto(&self) -> bool {
+        *self == HwidMode::Auto
+    }
+}
+
+/// Что сделать со своим ID устройства при сохранении настроек.
+pub enum OwnHwid {
+    Keep,
+    Set(String),
+    Clear,
 }
 
 /// Неудачное обновление подписки. Текст — из сообщений загрузчика, без ссылки и
@@ -62,6 +115,13 @@ struct StoredSubscription {
     agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     validators: Option<Validators>,
+    #[serde(default, skip_serializing_if = "SubOptions::is_default")]
+    options: SubOptions,
+    /// Зашифрован DPAPI, как ссылка.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    own_hwid: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hwid_asked: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -158,6 +218,14 @@ impl Store {
                 }
                 None => None,
             };
+            let own_hwid = match s.own_hwid.as_deref().map(unseal) {
+                Some(Ok(id)) => Some(Secret::new(id)),
+                Some(Err(_)) => {
+                    store.sealed.push(s);
+                    continue;
+                }
+                None => None,
+            };
             store.subscriptions.push(Subscription {
                 id: s.id,
                 url,
@@ -169,6 +237,9 @@ impl Store {
                 last_error: s.last_error,
                 agent: s.agent,
                 validators: s.validators,
+                options: s.options,
+                own_hwid,
+                hwid_asked: s.hwid_asked,
             });
         }
         store.active = file
@@ -199,6 +270,9 @@ impl Store {
                     last_error: s.last_error.clone(),
                     agent: s.agent.clone(),
                     validators: s.validators.clone(),
+                    options: s.options.clone(),
+                    own_hwid: s.own_hwid.as_ref().map(|h| seal(h.expose())).transpose()?,
+                    hwid_asked: s.hwid_asked,
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -220,6 +294,11 @@ impl Store {
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes)?;
         std::fs::rename(tmp, &self.path)
+    }
+
+    /// Каталог данных приложения (там же секрет ID устройства).
+    pub fn dir(&self) -> Option<&std::path::Path> {
+        self.path.parent()
     }
 
     pub fn get(&self, id: &str) -> Option<&Subscription> {
@@ -269,6 +348,9 @@ impl Store {
             last_error: None,
             agent: None,
             validators: None,
+            options: SubOptions::default(),
+            own_hwid: None,
+            hwid_asked: false,
         });
         self.active = Some(id.clone());
         id
@@ -287,12 +369,43 @@ impl Store {
         }
     }
 
-    /// Каким клиентом пришло тело и его метки версии.
-    pub fn set_source(&mut self, id: &str, agent: &str, validators: Option<Validators>) {
+    /// Каким клиентом пришло тело и его метки версии; `hwid_sent` — серверы
+    /// отдали в ответ на ID устройства (провайдер его ждёт).
+    pub fn set_source(
+        &mut self,
+        id: &str,
+        agent: &str,
+        validators: Option<Validators>,
+        hwid_sent: bool,
+    ) {
         if let Some(s) = self.subscriptions.iter_mut().find(|s| s.id == id) {
             s.agent = Some(agent.to_owned());
             s.validators = validators;
+            s.hwid_asked |= hwid_sent;
         }
+    }
+
+    /// Новые «Расширенные». Возвращает `None`, если подписки нет, иначе — меняется
+    /// ли запрос к провайдеру (клиент или ID устройства): тогда запомненный
+    /// клиент и метки версии больше не годятся, подписку надо загрузить заново.
+    pub fn set_options(&mut self, id: &str, options: SubOptions, own: OwnHwid) -> Option<bool> {
+        let s = self.subscriptions.iter_mut().find(|s| s.id == id)?;
+        let old_hwid = s.own_hwid.as_ref().map(|h| h.expose().to_owned());
+        match own {
+            OwnHwid::Keep => {}
+            OwnHwid::Set(h) => s.own_hwid = Some(Secret::new(h)),
+            OwnHwid::Clear => s.own_hwid = None,
+        }
+        let request_changed = s.options.client != options.client
+            || s.options.user_agent != options.user_agent
+            || s.options.hwid != options.hwid
+            || s.own_hwid.as_ref().map(|h| h.expose().to_owned()) != old_hwid;
+        if request_changed {
+            s.agent = None;
+            s.validators = None;
+        }
+        s.options = options;
+        Some(request_changed)
     }
 
     /// Сервер ответил «не изменилась» (304): тело прежнее, обновлены только
@@ -506,7 +619,7 @@ mod tests {
             etag: Some("\"v1\"".into()),
             last_modified: None,
         };
-        store.set_source(&id, "happ", Some(validators.clone()));
+        store.set_source(&id, "happ", Some(validators.clone()), false);
         store.postpone(&id, 2, Some("ошибка"));
         store.save().unwrap();
 
@@ -538,7 +651,63 @@ mod tests {
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("custom_title") && !raw.contains("last_error"));
         assert!(!raw.contains("agent") && !raw.contains("validators"));
+        assert!(!raw.contains("options") && !raw.contains("hwid"));
         assert_eq!(Store::load(path.clone()).subscriptions.len(), 1);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn options_and_own_hwid_survive_reload_without_plaintext() {
+        let path = tmp("options");
+        let mut store = Store::load(path.clone());
+        let id = store.add(
+            Some(Secret::new(URL)),
+            BODY.into(),
+            SubscriptionMeta::default(),
+            1,
+        );
+        store.set_source(&id, "happ", Some(Validators::default()), true);
+        let options = SubOptions {
+            filter: NameFilter::parse("nl", "").unwrap(),
+            client: Some("incy".into()),
+            user_agent: None,
+            hwid: HwidMode::Always,
+        };
+        let own = OwnHwid::Set("PROVIDER-HWID-123".into());
+        // Клиент и ID сменились — запомненный клиент и метки сброшены.
+        assert_eq!(store.set_options(&id, options.clone(), own), Some(true));
+        assert!(store.get(&id).unwrap().agent.is_none());
+        assert_eq!(
+            store.set_options("нет такой", SubOptions::default(), OwnHwid::Keep),
+            None
+        );
+        store.save().unwrap();
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("PROVIDER-HWID"));
+
+        let mut loaded = Store::load(path.clone());
+        let s = loaded.get(&id).unwrap();
+        assert_eq!(s.options, options);
+        assert!(s.hwid_asked);
+        assert_eq!(
+            s.own_hwid.as_ref().map(Secret::expose),
+            Some("PROVIDER-HWID-123")
+        );
+        // Только фильтр — запрос прежний.
+        let only_filter = SubOptions {
+            filter: NameFilter::default(),
+            ..options
+        };
+        assert_eq!(
+            loaded.set_options(&id, only_filter, OwnHwid::Keep),
+            Some(false)
+        );
+        assert_eq!(
+            loaded.set_options(&id, SubOptions::default(), OwnHwid::Clear),
+            Some(true)
+        );
+        assert!(loaded.get(&id).unwrap().own_hwid.is_none());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

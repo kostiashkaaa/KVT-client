@@ -551,7 +551,50 @@ export interface SubscriptionItem {
   warnings: { reason: string; count: number }[];
   /** Ключи группы «Добавлено вручную» (у подписок по ссылке пусто). */
   keys: ManualKey[];
+  /** Сколько серверов скрыл фильтр из «Расширенных». */
+  hidden: number;
+  options: SubscriptionOptions;
 }
+
+/** Когда отправлять провайдеру ID устройства (x-hwid). */
+export type HwidMode = "auto" | "always" | "never";
+
+/** «Расширенные» подписки. Свой ID устройства окно не получает — только `ownHwid`. */
+export interface SubscriptionOptions {
+  /** Оставить только серверы с этими словами в названии (или с флагом страны). */
+  keep: string[];
+  /** Убрать серверы с этими словами. */
+  drop: string[];
+  /** null — «Авто» (по очереди), иначе профиль клиента или "custom". */
+  client: string | null;
+  userAgent: string | null;
+  hwid: HwidMode;
+  /** Задан ID устройства от провайдера. */
+  ownHwid: boolean;
+  /** ID устройства сейчас уходит провайдеру. */
+  hwidSent: boolean;
+}
+
+/** Что сохранить в «Расширенных». */
+export interface SubscriptionOptionsInput {
+  keep: string;
+  drop: string;
+  client: string | null;
+  userAgent: string;
+  hwid: HwidMode;
+  /** null — не менять, "" — убрать свой ID. */
+  ownHwid: string | null;
+}
+
+const defaultOptions: SubscriptionOptions = {
+  keep: [],
+  drop: [],
+  client: null,
+  userAgent: null,
+  hwid: "auto",
+  ownHwid: false,
+  hwidSent: false,
+};
 
 /** Ключ, добавленный вручную. Самой ссылки (с UUID или паролем) окно не получает —
  *  её можно только заменить новой. */
@@ -584,6 +627,9 @@ const previewExtras: Record<string, Partial<SubscriptionItem>> = {
       },
     ],
   },
+  b: {
+    options: { ...defaultOptions, hwidSent: true },
+  },
   c: {
     lastError:
       "Не удалось подключиться к серверу подписки — возможно, он заблокирован. Включите VPN и повторите",
@@ -591,13 +637,25 @@ const previewExtras: Record<string, Partial<SubscriptionItem>> = {
   },
 };
 
+/** Как фильтр в Rust (`NameFilter::allows`) — для превью. */
+function previewAllows(o: SubscriptionOptions, s: ServerSummary): boolean {
+  const name = s.name.toLowerCase();
+  const hit = (w: string) => name.includes(w) || s.flag === w;
+  return (o.keep.length === 0 || o.keep.some(hit)) && !o.drop.some(hit);
+}
+
+const previewOptions: Record<string, SubscriptionOptions> = {};
+
 export async function listSubscriptions(): Promise<SubscriptionItem[]> {
   if (!inTauri) {
-    return previewGroups.map((g) => ({
+    return previewGroups.map((g) => {
+      const options = previewOptions[g.id] ?? previewExtras[g.id]?.options ?? defaultOptions;
+      const visible = g.servers.filter((s) => previewAllows(options, s));
+      return {
       id: g.id,
       title: previewTitles[g.id] ?? g.title,
       byUrl: g.byUrl,
-      servers: g.servers.length,
+      servers: visible.length,
       usedBytes: g.meta.usedBytes,
       totalBytes: g.meta.totalBytes,
       expire: g.meta.expire,
@@ -622,9 +680,11 @@ export async function listSubscriptions(): Promise<SubscriptionItem[]> {
       duplicates: 0,
       warnings: [],
       ...previewExtras[g.id],
+      hidden: g.servers.length - visible.length,
+      options,
       keys: g.byUrl
         ? []
-        : g.servers.map((s) => ({
+        : visible.map((s) => ({
             key: s.key,
             name: s.name,
             title: s.name,
@@ -633,9 +693,38 @@ export async function listSubscriptions(): Promise<SubscriptionItem[]> {
             address: s.address,
             port: s.port,
           })),
-    }));
+      };
+    });
   }
   return invoke<SubscriptionItem[]>("list_subscriptions");
+}
+
+/** Сохраняет «Расширенные» подписки. Если сменился клиент или ID устройства,
+ *  подписка сразу загружается заново; ошибка загрузки — исключением, но
+ *  настройки уже сохранены. */
+export async function setSubscriptionOptions(
+  id: string,
+  options: SubscriptionOptionsInput,
+): Promise<void> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 500));
+    const words = (t: string) =>
+      [...new Set(t.split(/[,;\n]/).map((w) => w.trim().toLowerCase()).filter(Boolean))];
+    if (options.client === "custom" && !/^[ -~]{1,200}$/.test(options.userAgent.trim()))
+      throw new Error("User-Agent пустой, длиннее 200 символов или не латиницей — проверьте строку.");
+    const old = previewOptions[id] ?? defaultOptions;
+    previewOptions[id] = {
+      keep: words(options.keep),
+      drop: words(options.drop),
+      client: options.client,
+      userAgent: options.client === "custom" ? options.userAgent.trim() : null,
+      hwid: options.hwid,
+      ownHwid: options.ownHwid === null ? old.ownHwid : options.ownHwid.trim() !== "",
+      hwidSent: options.hwid === "always" || (options.hwid === "auto" && old.hwidSent),
+    };
+    return;
+  }
+  await invoke("set_subscription_options", { id, options });
 }
 
 /** Меняет ключ из группы «Добавлено вручную»: название и, если указана, ссылку.
