@@ -4,7 +4,8 @@
 
 # KVT
 
-**An open-source VPN client for Windows: subscriptions, censorship bypass and zapret in one window.**
+**VPN, zapret and Telegram in one window.**<br>
+YouTube and Discord work even without a VPN subscription.
 
 [![Latest release](https://img.shields.io/github/v/release/kostiashkaaa/KVT-client?include_prereleases&label=release)](https://github.com/kostiashkaaa/KVT-client/releases)
 [![Downloads](https://img.shields.io/github/downloads/kostiashkaaa/KVT-client/total)](https://github.com/kostiashkaaa/KVT-client/releases)
@@ -15,15 +16,53 @@
 
 ### [⬇ Download for Windows](https://github.com/kostiashkaaa/KVT-client/releases/latest)
 
+<img src="assets/screenshots/home-en.png" width="820" alt="KVT home screen: VPN connected in Hybrid mode, with zapret running alongside">
+
 </div>
 
 ---
 
-> The app itself is in Russian for now. An English interface is planned.
-
 KVT is built for users in Russia: sites that work normally go direct, blocked ones go
 through the VPN, and YouTube and Discord can bypass throttling without any VPN server
-at all.
+at all. The interface is in English and Russian; by default it follows the Windows
+language.
+
+## Why KVT
+
+- **One app instead of three.** People usually run a VPN client, a zapret batch file
+  and a separate proxy for Telegram, and turn zapret off so it doesn't get in the VPN's
+  way. In KVT they work together: in Hybrid mode YouTube and Discord go through zapret,
+  other blocked sites through the VPN, and Telegram Desktop through the proxy.
+- **No VPN? It still works.** Zapret mode gets around YouTube and Discord throttling and
+  opens Telegram Desktop with no server or subscription. On first launch choose "I have
+  no VPN — just zapret".
+- **Tells you what broke.** "Why isn't it working?" checks the network, subscription and
+  server step by step and answers in plain words, for example "your ISP is blocking this
+  server", with a button to switch to another one.
+- **Nothing leaks outside the tunnel.** DNS goes only through the VPN, the kill switch
+  blocks the internet if the VPN drops, and the window runs without administrator
+  rights.
+
+| | KVT | VPN client<br><sub>v2rayN, Hiddify, Happ</sub> | zapret batch file |
+|---|:-:|:-:|:-:|
+| VPN from a subscription | ✅ | ✅ | — |
+| YouTube and Discord without a VPN | ✅ | — | ✅ |
+| VPN and zapret at the same time | ✅ | — | — |
+| zapret strategy for your network | picked automatically | — | by hand |
+| "Why isn't it working?" with an answer | ✅ | — | — |
+
+<table>
+  <tr>
+    <td><img src="assets/screenshots/zapret-en.png" alt="Zapret tab: running in Hybrid mode"></td>
+    <td><img src="assets/screenshots/why-en.png" alt="Why isn't it working?: the ISP is blocking the server, with a button to switch to another one"></td>
+    <td><img src="assets/screenshots/routing-en.png" alt="Routing: lists, custom sites and services"></td>
+  </tr>
+  <tr>
+    <td align="center">Zapret: a strategy for each network</td>
+    <td align="center">"Why isn't it working?"</td>
+    <td align="center">Routing by lists</td>
+  </tr>
+</table>
 
 ## Features
 

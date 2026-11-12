@@ -4,7 +4,8 @@
 
 # KVT
 
-**Открытый VPN-клиент для Windows: подписки, обход блокировок и zapret в одном окне.**
+**VPN, zapret и Telegram в одном окне.**<br>
+YouTube и Discord работают даже без VPN-подписки.
 
 [![Последняя версия](https://img.shields.io/github/v/release/kostiashkaaa/KVT-client?include_prereleases&label=%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F)](https://github.com/kostiashkaaa/KVT-client/releases)
 [![Загрузки](https://img.shields.io/github/downloads/kostiashkaaa/KVT-client/total?label=%D0%B7%D0%B0%D0%B3%D1%80%D1%83%D0%B7%D0%BA%D0%B8)](https://github.com/kostiashkaaa/KVT-client/releases)
@@ -15,9 +16,47 @@
 
 ### [⬇ Скачать для Windows](https://github.com/kostiashkaaa/KVT-client/releases/latest)
 
+<img src="assets/screenshots/home-ru.png" width="820" alt="Главная KVT: VPN подключён в режиме «Гибрид», рядом работает zapret">
+
 </div>
 
 ---
+
+## Почему KVT
+
+- **Одна программа вместо трёх.** Обычно для этого держат VPN-клиент, батник zapret и
+  отдельный прокси для Telegram, а zapret выключают, чтобы не мешал VPN. В KVT они
+  работают вместе: в режиме «Гибрид» YouTube и Discord идут через zapret, остальное
+  заблокированное — через VPN, Telegram Desktop — через прокси.
+- **Нет VPN — тоже работает.** Режим «Zapret» обходит замедление YouTube и Discord и
+  открывает Telegram Desktop без сервера и подписки. При первом запуске выберите «У
+  меня нет VPN — только zapret».
+- **Говорит, что сломалось.** Кнопка «Почему не работает?» по шагам проверяет сеть,
+  подписку и сервер и отвечает простыми словами: например, «провайдер блокирует этот
+  сервер» — с кнопкой «переключиться на другой».
+- **Ничего не уходит мимо туннеля.** DNS идёт только через VPN, kill switch закрывает
+  интернет, если VPN оборвался, а окно работает без прав администратора.
+
+| | KVT | VPN-клиент<br><sub>v2rayN, Hiddify, Happ</sub> | Батник zapret |
+|---|:-:|:-:|:-:|
+| VPN по подписке | ✅ | ✅ | — |
+| YouTube и Discord без VPN | ✅ | — | ✅ |
+| VPN и zapret одновременно | ✅ | — | — |
+| Стратегия zapret для вашей сети | подбирается сама | — | вручную |
+| «Почему не работает?» с ответом | ✅ | — | — |
+
+<table>
+  <tr>
+    <td><img src="assets/screenshots/zapret-ru.png" alt="Вкладка Zapret: работает в режиме «Гибрид»"></td>
+    <td><img src="assets/screenshots/why-ru.png" alt="«Почему не работает?»: провайдер блокирует сервер, кнопка переключиться на другой"></td>
+    <td><img src="assets/screenshots/routing-ru.png" alt="Маршрутизация: списки, свои сайты и сервисы"></td>
+  </tr>
+  <tr>
+    <td align="center">Zapret: стратегия для каждой сети</td>
+    <td align="center">«Почему не работает?»</td>
+    <td align="center">Маршрутизация по спискам</td>
+  </tr>
+</table>
 
 ## Что умеет
 

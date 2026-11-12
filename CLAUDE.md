@@ -22,7 +22,8 @@ kill switch. Rust (Tauri 2) + Svelte 5. Сборка, запуск службы,
 - Линт: `cargo clippy --workspace --all-targets -- -D warnings` и `cd app && npm run check`
 - Формат: `cargo fmt --all`
 - Интерфейс в браузере с тестовыми данными: превью `kvt-ui` из `.claude/launch.json`
-  (порт 5173; `?servers=10000` — длинный список).
+  (порт 5173; `?servers=10000` — длинный список; `?demo` — вид для скриншотов README,
+  снимает `cd app && npm run screenshots`; поменял то, что на них видно, — пересними).
 - Перед `cargo build/clippy/test` для `kvt-app` нужен собранный фронтенд
   (`cd app && npm run build`): `tauri::generate_context!` читает `app/dist`.
 

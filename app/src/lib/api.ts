@@ -98,12 +98,14 @@ export async function quickCheck(
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 600));
     const out: Record<string, QuickResult> = {};
-    previewGroups
+    previewData()
       .filter((g) => group === null || g.id === group)
       .flatMap((g) => g.servers)
       .forEach((s, i) => {
-        out[s.key] =
-          i === 1
+        const demoMs = [38, 47, 52, 61, 66, 74, 118, 83, 55];
+        out[s.key] = demo
+          ? { kind: "reachable", latency_ms: demoMs[i % demoMs.length]! }
+          : i === 1
             ? { kind: "unreachable" }
             : { kind: "reachable", latency_ms: 40 + i * 37 };
       });
@@ -256,11 +258,16 @@ export async function snapshot(): Promise<{
   groups: Group[];
   choice: Choice | null;
 }> {
-  if (!inTauri) return { groups: withStressGroup(previewGroups), choice: null };
+  if (!inTauri) return { groups: withStressGroup(previewData()), choice: null };
   return invoke("snapshot");
 }
 
 export async function connect(): Promise<ServiceStatus> {
+  if (demo) {
+    await new Promise((r) => setTimeout(r, 1200));
+    demoState = { state: "connected", core: "xray" };
+    return demoState;
+  }
   if (!inTauri)
     throw new Error(
       t("Подключение работает в приложении (npm run tauri dev) при запущенной службе.", "Connecting works in the app (npm run tauri dev) with the service running."),
@@ -312,13 +319,16 @@ export async function leakTest(): Promise<LeakReport> {
 }
 
 export async function disconnect(): Promise<ServiceStatus> {
-  if (!inTauri) return { state: "disconnected" };
+  if (!inTauri) {
+    demoState = { state: "disconnected" };
+    return demoState;
+  }
   return invoke<ServiceStatus>("disconnect");
 }
 
 /** `null` — служба не запущена. */
 export async function serviceStatus(): Promise<ServiceStatus | null> {
-  if (!inTauri) return null;
+  if (!inTauri) return demo ? demoState : null;
   return invoke<ServiceStatus | null>("service_status");
 }
 
@@ -409,7 +419,8 @@ function withStressGroup(groups: Group[]): Group[] {
   ];
 }
 
-const previewGroups: Group[] = [
+function sampleGroups(): Group[] {
+  return [
   {
     id: "a",
     title: "KVT",
@@ -472,12 +483,82 @@ const previewGroups: Group[] = [
     info: [],
     errors: 0,
   },
-];
+  ];
+}
+
+/** Превью: `?demo` — вид для скриншотов README: VPN подключён, аккуратные серверы,
+ *  без плашки о новой версии. Снимает их `app/scripts/screenshots.mjs`. */
+const demo =
+  !inTauri &&
+  typeof location !== "undefined" &&
+  new URLSearchParams(location.search).has("demo");
+let demoState: ServiceStatus = { state: "connected", core: "xray" };
+
+function demoGroups(): Group[] {
+  const now = Math.floor(Date.now() / 1000);
+  const names: [string, string][] = [
+    ["🇳🇱 Нидерланды", "🇳🇱 Netherlands"],
+    ["🇩🇪 Германия", "🇩🇪 Germany"],
+    ["🇫🇮 Финляндия", "🇫🇮 Finland"],
+    ["🇸🇪 Швеция", "🇸🇪 Sweden"],
+    ["🇵🇱 Польша", "🇵🇱 Poland"],
+    ["🇬🇧 Лондон", "🇬🇧 London"],
+    ["🇺🇸 США", "🇺🇸 United States"],
+    ["🇹🇷 Турция", "🇹🇷 Turkey"],
+  ];
+  return [
+    {
+      id: "demo",
+      title: t("Мой VPN", "My VPN"),
+      byUrl: true,
+      updatedAt: now - 2 * 3600,
+      meta: {
+        title: t("Мой VPN", "My VPN"),
+        usedBytes: 34 * 2 ** 30,
+        totalBytes: 200 * 2 ** 30,
+        expire: now + 45 * 86400,
+        supportUrl: null,
+        announce: null,
+      },
+      servers: names.map(([ru, en], i) => ({
+        ...previewServer(t(ru, en), i, "demo"),
+        sameAs: null,
+      })),
+      info: [],
+      errors: 0,
+    },
+    {
+      id: "demo-manual",
+      title: t("Добавлено вручную", "Added manually"),
+      byUrl: false,
+      updatedAt: now - 3 * 86400,
+      meta: {
+        title: null,
+        usedBytes: null,
+        totalBytes: null,
+        expire: null,
+        supportUrl: null,
+        announce: null,
+      },
+      servers: [previewServer(t("🇫🇮 Свой сервер", "🇫🇮 My own server"), 0, "demo-manual")],
+      info: [],
+      errors: 0,
+    },
+  ];
+}
+
+let previewGroupsCache: Group[] | null = null;
+
+/** Группы превью. Меняются на месте (добавление, удаление), как список в приложении. */
+function previewData(): Group[] {
+  previewGroupsCache ??= demo ? demoGroups() : sampleGroups();
+  return previewGroupsCache;
+}
 
 function previewAdd(body: string): Added {
   const lines = body.split(/\r?\n/).filter((l) => l.includes("://"));
   // Как в приложении: ручные ключи — в одной группе.
-  let group = previewGroups.find((g) => !g.byUrl);
+  let group = previewData().find((g) => !g.byUrl);
   if (!group) {
     group = {
       id: "manual",
@@ -496,7 +577,7 @@ function previewAdd(body: string): Added {
       info: [],
       errors: 0,
     };
-    previewGroups.push(group);
+    previewData().push(group);
   }
   const start = group.servers.length;
   const id = group.id;
@@ -651,7 +732,7 @@ const previewOptions: Record<string, SubscriptionOptions> = {};
 
 export async function listSubscriptions(): Promise<SubscriptionItem[]> {
   if (!inTauri) {
-    return previewGroups.map((g) => {
+    return previewData().map((g) => {
       const options = previewOptions[g.id] ?? previewExtras[g.id]?.options ?? defaultOptions;
       const visible = g.servers.filter((s) => previewAllows(options, s));
       return {
@@ -739,7 +820,7 @@ export async function editServer(
 ): Promise<string> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 400));
-    const s = previewGroups
+    const s = previewData()
       .flatMap((g) => g.servers)
       .find((x) => x.key === key);
     if (!s) throw new Error(t("Этого сервера уже нет в списке.", "This server is no longer in the list."));
@@ -756,12 +837,12 @@ export async function editServer(
 /** Удаляет один ключ из группы «Добавлено вручную» (последний — вместе с группой). */
 export async function removeServer(key: string): Promise<void> {
   if (!inTauri) {
-    for (const g of previewGroups)
+    for (const g of previewData())
       g.servers = g.servers.filter((s) => s.key !== key);
-    const i = previewGroups.findIndex(
+    const i = previewData().findIndex(
       (g) => !g.byUrl && g.servers.length === 0,
     );
-    if (i >= 0) previewGroups.splice(i, 1);
+    if (i >= 0) previewData().splice(i, 1);
     return;
   }
   await invoke("remove_server", { key });
@@ -769,8 +850,8 @@ export async function removeServer(key: string): Promise<void> {
 
 export async function removeSubscription(id: string): Promise<void> {
   if (!inTauri) {
-    const i = previewGroups.findIndex((g) => g.id === id);
-    if (i >= 0) previewGroups.splice(i, 1);
+    const i = previewData().findIndex((g) => g.id === id);
+    if (i >= 0) previewData().splice(i, 1);
     return;
   }
   await invoke("remove_subscription", { id });
@@ -788,7 +869,7 @@ export async function refreshSubscription(id: string): Promise<void> {
 export async function refreshAllSubscriptions(): Promise<number> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 900));
-    return previewGroups.some((g) => g.id === "c") ? 1 : 0;
+    return previewData().some((g) => g.id === "c") ? 1 : 0;
   }
   return invoke<number>("refresh_all_subscriptions");
 }
@@ -847,7 +928,7 @@ export async function fullCheck(
   onResult: (key: string, outcome: Outcome) => void,
 ): Promise<void> {
   if (!inTauri) {
-    const keys = previewGroups
+    const keys = previewData()
       .filter((g) => group === null || g.id === group)
       .flatMap((g) => g.servers.map((s) => s.key));
     const demo: Outcome[] = [
@@ -1001,11 +1082,14 @@ export interface Diagnosis {
 export async function troubleshoot(): Promise<Diagnosis> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 1200));
+    // В `?demo` — названия серверов из demo-списка.
+    const current = demo ? t("Нидерланды", "Netherlands") : "NL Amsterdam";
+    const next = demo ? t("Германия", "Germany") : "Германия ⚡";
     return {
       tone: "error",
       title: t("Провайдер блокирует этот сервер", "Your ISP is blocking this server"),
       detail:
-        t("Соединение обрывается после первых килобайт — режет DPI. Можно переключиться на «Германия ⚡».", "The connection drops after the first kilobytes — DPI is cutting it. You can switch to “Германия ⚡”."),
+        t(`Соединение обрывается после первых килобайт — режет DPI. Можно переключиться на «${next}».`, `The connection drops after the first kilobytes — DPI is cutting it. You can switch to “${next}”.`),
       steps: [
         { title: t("Сеть", "Network"), state: "ok", detail: t("Подключение к сети есть", "Network connection is up") },
         { title: t("Служба KVT", "KVT service"), state: "ok", detail: t("Служба работает", "The service is running") },
@@ -1014,7 +1098,7 @@ export async function troubleshoot(): Promise<Diagnosis> {
         {
           title: t("Сервер", "Server"),
           state: "ok",
-          detail: t("«NL Amsterdam» отвечает, 48 мс", "“NL Amsterdam” responds, 48 ms"),
+          detail: t(`«${current}» отвечает, 48 мс`, `“${current}” responds, 48 ms`),
         },
         {
           title: t("Проверка сервера", "Server check"),
@@ -1022,7 +1106,7 @@ export async function troubleshoot(): Promise<Diagnosis> {
           detail: t("Соединение обрывается после первых килобайт — режет DPI", "The connection drops after the first kilobytes — DPI is cutting it"),
         },
       ],
-      fix: { kind: "switch_server", key: "a-1", name: "Германия ⚡" },
+      fix: { kind: "switch_server", key: demo ? "demo-1" : "a-1", name: next },
     };
   }
   return invoke<Diagnosis>("troubleshoot");
@@ -1206,7 +1290,7 @@ export async function zapretStrategies(): Promise<ZapretStrategy[]> {
 }
 
 export async function zapretConflicts(): Promise<ZapretConflict[]> {
-  if (!inTauri) return [{ service: true, name: "GoodbyeDPI" }];
+  if (!inTauri) return demo ? [] : [{ service: true, name: "GoodbyeDPI" }];
   return invoke<ZapretConflict[]>("zapret_conflicts");
 }
 
@@ -2056,8 +2140,8 @@ export async function updateStatus(): Promise<UpdateStatus> {
   if (!inTauri)
     return {
       current: "0.9.4",
-      latest: "0.9.5",
-      available: true,
+      latest: demo ? "0.9.4" : "0.9.5",
+      available: !demo,
       checkedAt: Date.now(),
       error: null,
     };
@@ -2100,7 +2184,7 @@ export async function setAutostart(enabled: boolean): Promise<void> {
 
 /** Идут ли данные через туннель: null — не проверяли или VPN выключен. */
 export async function tunnelState(): Promise<boolean | null> {
-  if (!inTauri) return null;
+  if (!inTauri) return demo && demoState.state === "connected" ? true : null;
   return invoke<boolean | null>("tunnel_state");
 }
 

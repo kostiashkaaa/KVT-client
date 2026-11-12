@@ -32,6 +32,7 @@ Windows 10 или 11, Rust (stable, MSVC), Node.js 20+, Visual Studio Build Tool
 | Окно у правого края экрана с горячей перезагрузкой | `scripts\dev.ps1`; служба: `scripts\dev.ps1 -Service` (спросит UAC) |
 | Только интерфейс в браузере, с тестовыми данными | `cd app && npm run dev` → http://localhost:5173 |
 | Длинный список в превью | http://localhost:5173/?servers=10000 |
+| Скриншоты для README (вид `?demo`: VPN подключён, аккуратные серверы) | при запущенном `npm run dev`: `cd app && npm run screenshots` → `assets/screenshots/`, нужен Microsoft Edge |
 | Тесты Rust | `cargo test --workspace` |
 | Линтеры | `cargo clippy --workspace --all-targets -- -D warnings`, `cd app && npm run check` |
 | Форматирование | `cargo fmt --all` |
