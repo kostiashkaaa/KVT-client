@@ -72,8 +72,8 @@ fn create(path: &Path) -> io::Result<[u8; 32]> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("key.tmp");
-    std::fs::write(&tmp, STANDARD.encode(dpapi::protect(&secret)?))?;
-    std::fs::rename(tmp, path)?;
+    let encoded = STANDARD.encode(dpapi::protect(&secret)?);
+    crate::atomic::write(path, &tmp, encoded.as_bytes())?;
     Ok(secret)
 }
 

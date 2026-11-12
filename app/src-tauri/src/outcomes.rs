@@ -162,6 +162,11 @@ pub fn worked(state: &AppState, key: &str, latency_ms: u64) {
 
 fn save(state: &AppState) {
     let Some(path) = path() else { return };
+    // Пишут полная проверка, «Почему не работает?» и проверка туннеля — из разных
+    // потоков. Снимок — под той же блокировкой, что и запись: иначе более старый
+    // снимок мог бы лечь на диск последним.
+    static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
     let saved: HashMap<String, Saved> = {
         let (Ok(outcomes), Ok(times)) = (state.outcomes.lock(), state.outcome_times.lock()) else {
             return;
@@ -187,14 +192,11 @@ fn save(state: &AppState) {
     let Ok(bytes) = serde_json::to_vec(&saved) else {
         return;
     };
-    // Пишут полная проверка, «Почему не работает?» и проверка туннеля — из разных потоков.
-    static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let tmp = path.with_extension("json.tmp");
-    if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+    if let Err(e) = crate::atomic::write(&path, &tmp, &bytes) {
         tracing::warn!(error = %e, "итоги проверок серверов не сохранились");
     }
 }

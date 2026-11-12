@@ -127,6 +127,29 @@ impl Protocol {
 }
 
 impl Server {
+    /// Пароли и идентификаторы сервера — маскировщику журналов
+    /// (`redact::set_secrets`): короткий пароль сам по себе на токен не похож.
+    pub fn secrets(&self) -> Vec<&str> {
+        match &self.protocol {
+            Protocol::Vless { id, .. } | Protocol::Vmess { id, .. } => vec![id.expose()],
+            Protocol::Trojan { password }
+            | Protocol::Shadowsocks { password, .. }
+            | Protocol::AnyTls { password } => vec![password.expose()],
+            Protocol::Hysteria2 { password, obfs, .. } => std::iter::once(password)
+                .chain(obfs.as_ref().map(|o| &o.password))
+                .map(Secret::expose)
+                .collect(),
+            Protocol::Tuic { uuid, password, .. } => vec![uuid.expose(), password.expose()],
+            Protocol::Socks { username, password } | Protocol::Http { username, password } => {
+                username
+                    .iter()
+                    .chain(password)
+                    .map(Secret::expose)
+                    .collect()
+            }
+        }
+    }
+
     /// Адреса, с которыми соединяется ядро: сервер и, у XHTTP с раздельной загрузкой,
     /// сервер загрузки. Все они — мимо zapret и скрываются в журналах.
     pub fn endpoints(&self) -> Vec<String> {

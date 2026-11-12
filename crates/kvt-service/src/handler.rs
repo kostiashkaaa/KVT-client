@@ -218,12 +218,18 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
             }
         }
         Request::ZapretRepair => install_zapret(state, None).await,
-        Request::StopConflicts => Response::Conflicts {
-            conflicts: crate::zapret::stop_conflicts(
-                state.supervisor.paths(),
-                state.supervisor.zapret_pid(),
-            ),
-        },
+        Request::StopConflicts => {
+            // tasklist и пауза после остановки — не на потоке обработки.
+            let paths = state.supervisor.paths().clone();
+            let own = state.supervisor.zapret_pid();
+            Response::Conflicts {
+                conflicts: tokio::task::spawn_blocking(move || {
+                    crate::zapret::stop_conflicts(&paths, own)
+                })
+                .await
+                .unwrap_or_default(),
+            }
+        }
         Request::Disconnect => {
             state.supervisor.stop().await;
             state.status = ServiceStatus::Disconnected;

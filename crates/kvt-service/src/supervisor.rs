@@ -117,6 +117,18 @@ impl Paths {
 /// (`win::private_dir`). Внутри `ProgramData\KVT` сначала проверяются родители:
 /// пока родитель чужой, в нём можно подложить что угодно.
 pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
+    // Права ставятся раз за запуск службы: в закрытом каталоге пользователь ничего
+    // не подменит, а заново — сотни миллисекунд на каждое подключение. Пропал
+    // каталог или на его месте ссылка — готовим снова.
+    static SECURED: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
+    let still_dir = std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir());
+    if still_dir
+        && SECURED
+            .lock()
+            .is_ok_and(|s| s.as_ref().is_some_and(|s| s.contains(dir)))
+    {
+        return Ok(());
+    }
     let data = data_dir();
     if let Some(parent) = dir.parent().filter(|p| p.starts_with(&data)) {
         secure_dir(parent)?;
@@ -127,7 +139,13 @@ pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
             "couldn't prepare the folder {}: {e}",
             dir.display()
         )
-    })
+    })?;
+    if let Ok(mut secured) = SECURED.lock() {
+        secured
+            .get_or_insert_with(Default::default)
+            .insert(dir.to_path_buf());
+    }
+    Ok(())
 }
 
 pub type Log = Arc<Mutex<VecDeque<String>>>;
@@ -1049,6 +1067,7 @@ fn tail(text: &str, n: usize) -> String {
 fn hide_server_addresses(server: &kvt_core::Server) {
     let endpoints = server.endpoints();
     kvt_core::redact::set_servers(&endpoints);
+    kvt_core::redact::set_secrets(server.secrets());
     for host in endpoints {
         if host.parse::<std::net::IpAddr>().is_err() {
             spawn_hide_resolved(host, server.port);

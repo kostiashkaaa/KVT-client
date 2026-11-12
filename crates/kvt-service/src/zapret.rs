@@ -787,20 +787,13 @@ pub fn conflicts(paths: &Paths, own_pid: Option<u32>) -> Vec<(Conflict, Option<u
             )
         })
         .collect();
-    let ours = [
-        paths.zapret.join("bin").join("winws.exe"),
-        paths.zapret_update.join("bin").join("winws.exe"),
-    ];
     for image in CONFLICTING_PROCESSES {
         for pid in pids(image) {
             if Some(pid) == own_pid {
                 continue;
             }
             let path = crate::win::process_image(pid).ok();
-            if path
-                .as_deref()
-                .is_some_and(|p| ours.iter().any(|o| same_file(p, o)))
-            {
+            if path.as_deref().is_some_and(|p| is_ours(paths, p)) {
                 continue;
             }
             out.push((
@@ -815,6 +808,29 @@ pub fn conflicts(paths: &Paths, own_pid: Option<u32>) -> Vec<(Conflict, Option<u
         }
     }
     out
+}
+
+/// winws из комплекта KVT (основного или обновлённого).
+fn is_ours(paths: &Paths, image: &Path) -> bool {
+    [
+        paths.zapret.join("bin").join("winws.exe"),
+        paths.zapret_update.join("bin").join("winws.exe"),
+    ]
+    .iter()
+    .any(|o| same_file(image, o))
+}
+
+/// Процесс, который можно завершить как конфликт: имя из `CONFLICTING_PROCESSES`,
+/// и это не winws KVT.
+fn is_foreign_bypass(paths: &Paths, image: &Path) -> bool {
+    let name = image
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    CONFLICTING_PROCESSES
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(&name))
+        && !is_ours(paths, image)
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -841,14 +857,16 @@ pub fn stop_conflicts(paths: &Paths, own_pid: Option<u32>) -> Vec<Conflict> {
                     let _ = service.stop();
                 }
             }
-            Some(pid) => {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/F"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .status();
+            // Номер из tasklist мог перейти к другой программе: процесс открывается,
+            // проверяется по образу и завершается через тот же handle.
+            Some(pid) if Some(pid) != own_pid => {
+                match crate::win::terminate_if(pid, |image| is_foreign_bypass(paths, image)) {
+                    Ok(true) => tracing::info!(pid, "чужой обход блокировок остановлен"),
+                    Ok(false) => tracing::info!(pid, "процесс сменился — не трогаем"),
+                    Err(e) => tracing::warn!(pid, error = %e, "чужой обход не остановлен"),
+                }
             }
+            Some(_) => {}
         }
     }
     std::thread::sleep(Duration::from_millis(500));

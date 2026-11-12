@@ -3,7 +3,9 @@
 //!
 //! Что скрывается:
 //! - адреса VPN-серверов — их заранее передают в [`set_servers`] (до запуска ядра),
-//!   а не ищут в тексте по догадке;
+//!   а не ищут в тексте по догадке; IPv6 — в любой записи;
+//! - пароли и идентификаторы серверов — из [`set_secrets`]: короткий пароль на токен
+//!   не похож;
 //! - ссылки: у `http(s)://` остаётся только хост, ссылки на серверы
 //!   (`vless://`, `ss://`…) скрываются целиком;
 //! - UUID (идентификаторы пользователей VLESS / VMess);
@@ -23,16 +25,44 @@ pub const HIDDEN: &str = "***";
 const TOKEN_LEN: usize = 32;
 
 type Servers = HashSet<String>;
+type Secrets = HashSet<String>;
+
+/// Секрет короче — не скрывается: такая строка встречается в журнале и так.
+const SECRET_MIN: usize = 6;
 
 /// Адреса в нижнем регистре. Множество, а не список: подписок с тысячами
 /// серверов много, а маскируется каждая строка журнала.
 static SERVERS: Mutex<Option<Arc<Servers>>> = Mutex::new(None);
+static SECRETS: Mutex<Option<Arc<Secrets>>> = Mutex::new(None);
 
+/// Адрес для сравнения: нижний регистр, IPv6 — в одной записи (`2001:DB8:0::1` и
+/// `2001:db8::1` — один адрес).
 fn normalize(a: &str) -> String {
-    a.trim()
+    let a = a
+        .trim()
         .trim_matches(['[', ']'])
         .trim_end_matches('.')
-        .to_ascii_lowercase()
+        .to_ascii_lowercase();
+    match a.parse::<std::net::Ipv6Addr>() {
+        Ok(ip) => ip.to_string(),
+        Err(_) => a,
+    }
+}
+
+/// Пароли и идентификаторы, которые надо скрывать (заменяет прежний набор).
+pub fn set_secrets<I, S>(secrets: I)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let set: Secrets = secrets
+        .into_iter()
+        .map(|s| s.as_ref().to_owned())
+        .filter(|s| s.chars().count() >= SECRET_MIN)
+        .collect();
+    if let Ok(mut s) = SECRETS.lock() {
+        *s = Some(Arc::new(set));
+    }
 }
 
 /// Адреса серверов, которые надо скрывать (заменяет прежний набор).
@@ -81,18 +111,92 @@ fn current() -> Arc<Servers> {
 
 /// Текст без секретов и адресов серверов.
 pub fn text(s: &str) -> String {
-    text_with(s, &current())
+    let secrets = SECRETS
+        .lock()
+        .ok()
+        .and_then(|s| s.clone())
+        .unwrap_or_default();
+    redact(s, &current(), &secrets)
 }
 
+/// Без списка секретов: в JSON-конфигах их скрывает имя поля (`SECRET_KEYS`).
 fn text_with(s: &str, servers: &Servers) -> String {
-    let s = links(s);
+    redact(s, servers, &Secrets::new())
+}
+
+fn redact(s: &str, servers: &Servers, secrets: &Secrets) -> String {
+    let s = hide_secrets(s, secrets);
+    let s = links(&s);
     let s = hide_servers(&s, servers);
     let s = uuids(&s);
     tokens(&s)
 }
 
+/// Чем отделён секрет от остального текста: `password=…`, `"…"`, `user:pass@`.
+fn is_secret_delim(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '=' | ':'
+                | ','
+                | ';'
+                | '"'
+                | '\''
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | '@'
+                | '/'
+                | '?'
+                | '&'
+                | '#'
+                | '|'
+                | '`'
+        )
+}
+
+/// Секреты — целыми кусками между разделителями (как адреса серверов: часть
+/// другого слова не задевается). Секрет с разделителем внутри — подстрокой.
+fn hide_secrets(s: &str, secrets: &Secrets) -> String {
+    if secrets.is_empty() {
+        return s.to_owned();
+    }
+    let mut text = s.to_owned();
+    for secret in secrets.iter().filter(|x| x.contains(is_secret_delim)) {
+        text = text.replace(secret.as_str(), HIDDEN);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut start: Option<usize> = None;
+    let flush = |out: &mut String, word: &str| {
+        out.push_str(if secrets.contains(word) { HIDDEN } else { word });
+    };
+    for (i, c) in text.char_indices() {
+        match (is_secret_delim(c), start) {
+            (false, None) => start = Some(i),
+            (true, Some(st)) => {
+                flush(&mut out, &text[st..i]);
+                start = None;
+                out.push(c);
+            }
+            (true, None) => out.push(c),
+            (false, Some(_)) => {}
+        }
+    }
+    if let Some(st) = start {
+        flush(&mut out, &text[st..]);
+    }
+    out
+}
+
+/// Двоеточие — часть слова, чтобы IPv6 не резался на куски; `адрес:порт` и
+/// `tcp:адрес:порт` разбирает `hide_servers`.
 fn is_host_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '-' | '.')
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | ':')
 }
 
 /// Ссылки: у веб-ссылок остаётся схема и хост, ссылки на серверы скрываются целиком.
@@ -146,15 +250,30 @@ fn hide_servers(s: &str, servers: &Servers) -> String {
     }
     let mut out = String::with_capacity(s.len());
     let mut word_start: Option<usize> = None;
+    let is_server = |w: &str| w.len() >= 4 && servers.contains(&normalize(w));
     let flush = |out: &mut String, word: &str| {
-        // Точка в конце слова — конец предложения, а не часть имени.
-        let core = word.trim_end_matches('.');
-        if core.len() >= 4 && servers.contains(&core.to_ascii_lowercase()) {
+        // Точка или двоеточие в конце слова — конец предложения, а не часть имени.
+        let core = word.trim_end_matches(['.', ':']);
+        if is_server(core) {
             out.push_str(SERVER);
-            out.push_str(&word[core.len()..]);
+        } else if core.contains(':') {
+            // `адрес:порт`, `tcp:адрес:порт` — по частям.
+            let parts: Vec<&str> = core
+                .split(':')
+                .map(|part| {
+                    let p = part.trim_end_matches('.');
+                    if is_server(p) {
+                        SERVER
+                    } else {
+                        part
+                    }
+                })
+                .collect();
+            out.push_str(&parts.join(":"));
         } else {
-            out.push_str(word);
+            out.push_str(core);
         }
+        out.push_str(&word[core.len()..]);
     };
     for (i, c) in s.char_indices() {
         match (is_host_char(c), word_start) {
@@ -418,6 +537,53 @@ mod tests {
         assert_eq!(ob["tls"]["reality"]["short_id"], HIDDEN);
         assert_eq!(ob["tls"]["server_name"], "a.com");
         assert_eq!(out["dns"]["servers"][0]["server"], "1.1.1.1");
+    }
+
+    /// IPv6-адрес сервера скрывается в любой записи: целиком, в скобках с портом и
+    /// в полной форме; соседние адреса не задеваются.
+    #[test]
+    fn ipv6_servers_are_hidden() {
+        let s: Servers = ["2001:db8::1", "vpn.example.com"]
+            .into_iter()
+            .map(normalize)
+            .collect();
+        assert_eq!(
+            text_with("dial tcp [2001:db8::1]:443: timeout", &s),
+            "dial tcp [[сервер]]:443: timeout"
+        );
+        assert_eq!(
+            text_with("to 2001:DB8:0:0:0:0:0:1 failed", &s),
+            "to [сервер] failed"
+        );
+        assert_eq!(text_with("to 2001:db8::12 ok", &s), "to 2001:db8::12 ok");
+        assert_eq!(
+            text_with("tcp:vpn.example.com:443 accepted", &s),
+            "tcp:[сервер]:443 accepted"
+        );
+        assert_eq!(
+            text_with("2026/11/07 16:43:49.135330 started", &s),
+            "2026/11/07 16:43:49.135330 started"
+        );
+    }
+
+    /// Короткие пароли не похожи на токен — их скрывает список секретов сервера.
+    #[test]
+    fn server_secrets_are_hidden() {
+        let secrets: Secrets = ["hunter22", "p@ss:wd!"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let none = Servers::new();
+        assert_eq!(
+            redact("auth failed: password=hunter22 user", &none, &secrets),
+            "auth failed: password=*** user"
+        );
+        assert_eq!(redact("got \"p@ss:wd!\"", &none, &secrets), "got \"***\"");
+        // Часть другого слова не задевается; слишком короткий секрет не регистрируется.
+        assert_eq!(redact("hunter222 abc", &none, &secrets), "hunter222 abc");
+        set_secrets(["abc", "hunter22"]);
+        assert_eq!(text("x hunter22 abc"), "x *** abc");
+        set_secrets(Vec::<String>::new());
     }
 
     #[test]

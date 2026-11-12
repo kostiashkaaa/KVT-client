@@ -32,8 +32,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, TerminateProcess,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 
 /// Права на pipe службы: SYSTEM и администраторы — полный доступ, пользователи,
@@ -112,26 +112,59 @@ pub fn pipe_client_image(pipe: &NamedPipeServer) -> io::Result<PathBuf> {
     process_image(pid)
 }
 
+/// Открытый handle процесса; закрывается в Drop.
+struct Process(HANDLE);
+
+impl Process {
+    fn open(pid: u32, access: u32) -> io::Result<Self> {
+        // SAFETY: обычный вызов; результат проверяется ниже, handle закрывает Drop.
+        let process = unsafe { OpenProcess(access, 0, pid) };
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(process))
+    }
+
+    fn image(&self) -> io::Result<PathBuf> {
+        let mut buf = vec![0u16; 32 * 1024];
+        let mut len = buf.len() as u32;
+        // SAFETY: буфер на len символов; процесс открыт с правом запроса сведений.
+        let ok = unsafe {
+            QueryFullProcessImageNameW(self.0, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(PathBuf::from(OsString::from_wide(&buf[..len as usize])))
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        // SAFETY: handle открыт в open и закрывается один раз.
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
 /// Полный путь к исполняемому файлу процесса.
 pub fn process_image(pid: u32) -> io::Result<PathBuf> {
-    // SAFETY: обычный вызов; результат проверяется и закрывается ниже.
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if process.is_null() {
+    Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?.image()
+}
+
+/// Завершает процесс, если его исполняемый файл подходит под `accept`. Образ
+/// проверяется и процесс завершается через один и тот же handle: номер процесса
+/// за это время не перейдёт к другой программе (как могло быть с `taskkill /PID`
+/// после `tasklist`). `Ok(false)` — процесс другой, его не тронули.
+pub fn terminate_if(pid: u32, accept: impl Fn(&std::path::Path) -> bool) -> io::Result<bool> {
+    let process = Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE)?;
+    if !accept(&process.image()?) {
+        return Ok(false);
+    }
+    // SAFETY: процесс открыт с правом завершения.
+    if unsafe { TerminateProcess(process.0, 1) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    let mut buf = vec![0u16; 32 * 1024];
-    let mut len = buf.len() as u32;
-    // SAFETY: буфер на len символов; process открыт с нужными правами.
-    let ok = unsafe {
-        QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
-    };
-    let err = io::Error::last_os_error();
-    // SAFETY: закрываем ровно один раз открытый выше handle.
-    unsafe { CloseHandle(process) };
-    if ok == 0 {
-        return Err(err);
-    }
-    Ok(PathBuf::from(OsString::from_wide(&buf[..len as usize])))
+    Ok(true)
 }
 
 /// Когда загрузилась Windows (с точностью до миллисекунд счётчика).

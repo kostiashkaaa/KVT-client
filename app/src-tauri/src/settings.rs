@@ -180,14 +180,12 @@ pub fn save(dir: &Path, choice: &Choice) -> Result<(), String> {
     static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = dir.join(format!("{FILE}.tmp"));
-    std::fs::write(&tmp, bytes)
-        .and_then(|()| std::fs::rename(&tmp, dir.join(FILE)))
-        .map_err(|e| {
-            crate::errors::io(
-                kvt_core::i18n::tr("Не удалось сохранить настройки", "Couldn't save settings"),
-                &e,
-            )
-        })
+    crate::atomic::write(&dir.join(FILE), &tmp, &bytes).map_err(|e| {
+        crate::errors::io(
+            kvt_core::i18n::tr("Не удалось сохранить настройки", "Couldn't save settings"),
+            &e,
+        )
+    })
 }
 
 #[cfg(test)]

@@ -54,8 +54,9 @@ pub fn rebuild(state: &AppState) -> Result<(), String> {
         .lock()
         .map_err(lock_err)?
         .retain(|key, _| entries.iter().any(|e| &e.key == key));
-    // Адреса серверов не должны попасть в журналы и экспорт диагностики.
+    // Адреса и пароли серверов не должны попасть в журналы и экспорт диагностики.
     kvt_core::redact::set_servers(entries.iter().flat_map(|e| e.server.endpoints()));
+    kvt_core::redact::set_secrets(entries.iter().flat_map(|e| e.server.secrets()));
     *state.servers.lock().map_err(lock_err)? = entries;
     *state.groups.lock().map_err(lock_err)? = groups;
     Ok(())

@@ -4,6 +4,7 @@
 
 mod about;
 mod applog;
+mod atomic;
 mod audit;
 mod autostart;
 mod catalog;

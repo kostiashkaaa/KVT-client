@@ -293,8 +293,7 @@ impl Store {
             std::fs::create_dir_all(dir)?;
         }
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(tmp, &self.path)
+        crate::atomic::write(&self.path, &tmp, &bytes)
     }
 
     /// Каталог данных приложения (там же секрет ID устройства).

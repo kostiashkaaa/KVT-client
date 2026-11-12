@@ -85,6 +85,9 @@ fn parse_latest(body: &[u8]) -> Result<String, String> {
     }
 }
 
+/// Предел ответа о последней версии.
+const MAX_ANSWER_BYTES: usize = 1024 * 1024;
+
 async fn fetch_latest() -> Result<String, String> {
     let client = reqwest::Client::builder()
         .https_only(true)
@@ -107,7 +110,20 @@ async fn fetch_latest() -> Result<String, String> {
                 resp.status().as_u16()
             ));
         }
-        resp.bytes().await.map_err(describe)
+        // Ответ о последнем релизе — десятки КБ; больше предела — не он.
+        let mut resp = resp;
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(describe)? {
+            if body.len() + chunk.len() > MAX_ANSWER_BYTES {
+                return Err(kvt_core::i18n::tr(
+                    "GitHub прислал слишком большой ответ",
+                    "GitHub sent too large an answer",
+                )
+                .into());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     }
     .await;
     netlog::record(

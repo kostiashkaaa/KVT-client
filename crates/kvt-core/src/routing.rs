@@ -95,6 +95,55 @@ pub enum RoutingError {
     /// Имя набора превращается в путь к файлу, поэтому неизвестные имена отвергаются.
     #[error("{}", crate::trf!("неизвестный набор правил «{}»", "unknown rule set “{}”", .0))]
     UnknownRuleSet(String),
+    /// Строка правила уходит в конфиг ядра как есть: в ней не должно быть префиксов
+    /// ядра (`regexp:`, `ext:…`), путей и управляющих символов.
+    #[error("{}", crate::trf!("недопустимое правило «{}»", "invalid rule “{}”", .0))]
+    InvalidMatcher(String),
+}
+
+/// Имя хоста или его часть для `domain`/`keyword`: буквы, цифры, `-`, `_`, точки
+/// между частями. Кириллица к этому времени уже в punycode.
+fn valid_host(s: &str, keyword: bool) -> bool {
+    !s.is_empty()
+        && s.len() <= 253
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && (keyword || (!s.starts_with('.') && !s.ends_with('.') && !s.contains("..")))
+}
+
+/// IP или подсеть: `1.2.3.4`, `10.0.0.0/8`, `fe80::/10`.
+fn valid_cidr(s: &str) -> bool {
+    let (ip, prefix) = match s.split_once('/') {
+        Some((ip, prefix)) => (ip, Some(prefix)),
+        None => (s, None),
+    };
+    let Ok(ip) = ip.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    let max = if ip.is_ipv4() { 32 } else { 128 };
+    prefix.map_or(true, |p| p.parse::<u8>().is_ok_and(|p| p <= max))
+}
+
+/// Имя программы (`telegram.exe`), а не путь.
+fn valid_process(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && !s.chars().any(|c| {
+            c.is_control() || matches!(c, '\\' | '/' | ':' | '"' | '*' | '?' | '<' | '>' | '|')
+        })
+}
+
+impl Matcher {
+    fn is_valid(&self) -> bool {
+        match self {
+            Matcher::DomainSuffix(d) | Matcher::Domain(d) => valid_host(d, false),
+            Matcher::DomainKeyword(k) => valid_host(k, true),
+            Matcher::IpCidr(c) => valid_cidr(c),
+            // Имена наборов проверяются отдельно (`UnknownRuleSet`).
+            Matcher::RuleSet(_) => true,
+            Matcher::ProcessName(p) => valid_process(p),
+        }
+    }
 }
 
 impl RoutingPlan {
@@ -218,6 +267,10 @@ impl RoutingPlan {
             if crate::lists::RuleSetRef::parse(name).is_none() {
                 return Err(RoutingError::UnknownRuleSet(name.to_owned()));
             }
+        }
+        // Служба не доверяет окну: строки правил проверяются здесь, а не только при вводе.
+        if let Some(rule) = self.rules.iter().find(|r| !r.matcher.is_valid()) {
+            return Err(RoutingError::InvalidMatcher(format!("{:?}", rule.matcher)));
         }
         for rule in &self.rules {
             if rule.action != Action::Zapret {
@@ -902,6 +955,51 @@ mod tests {
             plan.validate(),
             Err(RoutingError::UnknownRuleSet(_))
         ));
+    }
+
+    /// Злой клиент службы: префиксы ядра, пути, имя процесса с путём — отказ;
+    /// обычные домены, подсети и имена программ — проходят.
+    #[test]
+    fn bad_matcher_strings_are_rejected() {
+        let bad = [
+            Matcher::IpCidr(r"ext:..\..\x.dat:tag".into()),
+            Matcher::IpCidr("10.0.0.0/33".into()),
+            Matcher::Domain("regexp:.*".into()),
+            Matcher::DomainSuffix("a..b".into()),
+            Matcher::DomainSuffix(".example.com".into()),
+            Matcher::DomainKeyword("geosite:ru".into()),
+            Matcher::ProcessName(r"C:\Windows\x.exe".into()),
+            Matcher::ProcessName(String::new()),
+        ];
+        for matcher in bad {
+            let mut plan = russia_smart(Action::Proxy);
+            plan.push(Rule {
+                layer: Layer::User,
+                matcher: matcher.clone(),
+                action: Action::Direct,
+            });
+            assert!(
+                matches!(plan.validate(), Err(RoutingError::InvalidMatcher(_))),
+                "{matcher:?}"
+            );
+        }
+        let good = [
+            Matcher::IpCidr("1.2.3.4".into()),
+            Matcher::IpCidr("fe80::/10".into()),
+            Matcher::DomainSuffix("xn--e1afmkfd.xn--p1ai".into()),
+            Matcher::Domain("_srv.example.com".into()),
+            Matcher::DomainKeyword("google".into()),
+            Matcher::ProcessName("Telegram.exe".into()),
+        ];
+        let mut plan = russia_smart(Action::Proxy);
+        for matcher in good {
+            plan.push(Rule {
+                layer: Layer::User,
+                matcher,
+                action: Action::Direct,
+            });
+        }
+        assert!(plan.validate().is_ok());
     }
 
     fn hybrid() -> RoutingPlan {

@@ -277,13 +277,17 @@ fn agent_order(client: Client<'_>, remembered: Option<&str>) -> Vec<(&'static st
     }
 }
 
+/// Сколько перенаправлений проходит загрузка подписки.
+const MAX_REDIRECTS: usize = 3;
+
 /// Один клиент на всю загрузку: перебор User-Agent и повтор с ID устройства идут по
 /// одному соединению (keep-alive), а не открывают новое TLS-рукопожатие к тому же
-/// SNI на каждую попытку — разрешение NetGovernor у загрузки одно.
+/// SNI на каждую попытку — разрешение NetGovernor у загрузки одно. Перенаправления
+/// — вручную (`fetch_as`): ID устройства не должен уйти на чужой хост.
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .https_only(true)
-        .redirect(reqwest::redirect::Policy::limited(3))
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .build()
@@ -351,6 +355,11 @@ async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
     })
 }
 
+/// Хост и порт совпадают (схема у подписок — только https).
+fn same_host(a: &Url, b: &Url) -> bool {
+    a.host_str() == b.host_str() && a.port_or_known_default() == b.port_or_known_default()
+}
+
 async fn fetch_as(
     client: &reqwest::Client,
     url: &Url,
@@ -358,25 +367,53 @@ async fn fetch_as(
     conditional: Option<&Validators>,
     hwid: Option<&str>,
 ) -> Result<Reply, String> {
-    let mut request = client
-        .get(url.clone())
-        .header(reqwest::header::USER_AGENT, agent);
-    if let Some(v) = conditional {
-        if let Some(etag) = &v.etag {
-            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+    let mut target = url.clone();
+    let mut send_hwid = hwid;
+    let mut answer = None;
+    for _ in 0..=MAX_REDIRECTS {
+        let mut request = client
+            .get(target.clone())
+            .header(reqwest::header::USER_AGENT, agent);
+        if let Some(v) = conditional {
+            if let Some(etag) = &v.etag {
+                request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+            }
+            if let Some(date) = &v.last_modified {
+                request = request.header(reqwest::header::IF_MODIFIED_SINCE, date);
+            }
         }
-        if let Some(date) = &v.last_modified {
-            request = request.header(reqwest::header::IF_MODIFIED_SINCE, date);
+        if let Some(id) = send_hwid {
+            // Как у Happ: ID и общие сведения об устройстве, без имени компьютера.
+            request = request
+                .header("x-hwid", id)
+                .header("x-device-os", "Windows")
+                .header("x-device-model", "KVT");
         }
+        let resp = request.send().await.map_err(describe)?;
+        let next = resp
+            .status()
+            .is_redirection()
+            .then(|| resp.headers().get(reqwest::header::LOCATION))
+            .flatten()
+            .and_then(|l| l.to_str().ok())
+            .and_then(|l| target.join(l).ok());
+        let Some(next) = next else {
+            answer = Some(resp);
+            break;
+        };
+        // ID устройства — только хосту подписки, как reqwest поступает с Authorization.
+        if !same_host(&next, url) {
+            send_hwid = None;
+        }
+        target = next;
     }
-    if let Some(id) = hwid {
-        // Как у Happ: ID и общие сведения об устройстве, без имени компьютера.
-        request = request
-            .header("x-hwid", id)
-            .header("x-device-os", "Windows")
-            .header("x-device-model", "KVT");
-    }
-    let mut resp = request.send().await.map_err(describe)?;
+    let Some(mut resp) = answer else {
+        return Err(kvt_core::i18n::tr(
+            "Сервер подписки перенаправляет слишком много раз",
+            "The subscription server redirects too many times",
+        )
+        .into());
+    };
     let headers: Vec<(String, String)> = resp
         .headers()
         .iter()
@@ -516,6 +553,28 @@ mod tests {
         let n = parse_subscription_body(&fetched.body).servers.len();
         println!("серверов: {n}");
         assert!(n > 0);
+    }
+
+    /// ID устройства не уходит при перенаправлении на другой хост.
+    #[test]
+    fn redirect_to_another_host_is_not_the_same_host() {
+        let sub = Url::parse("https://sub.example.com/abc").unwrap();
+        assert!(same_host(
+            &sub,
+            &Url::parse("https://sub.example.com/x?y").unwrap()
+        ));
+        assert!(same_host(
+            &sub,
+            &Url::parse("https://SUB.example.com:443/").unwrap()
+        ));
+        assert!(!same_host(
+            &sub,
+            &Url::parse("https://cdn.example.net/abc").unwrap()
+        ));
+        assert!(!same_host(
+            &sub,
+            &Url::parse("https://sub.example.com:8443/").unwrap()
+        ));
     }
 
     #[test]
