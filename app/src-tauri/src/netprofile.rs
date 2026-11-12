@@ -135,8 +135,10 @@ async fn on_join(app: &AppHandle, retry: bool, switched: bool) -> bool {
         // Режим уже применён, подключение — когда служба ответит.
         return false;
     }
-    if plan.connect || reconnect || plan.disconnect {
+    if plan.connect || reconnect {
         state.user_acted();
+    } else if plan.disconnect {
+        state.user_disconnected();
     }
     if plan.connect || reconnect {
         if reconnect {

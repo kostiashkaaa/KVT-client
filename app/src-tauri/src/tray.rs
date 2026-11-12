@@ -1123,6 +1123,7 @@ async fn act(app: &AppHandle, id: &str) -> Result<(), String> {
     match id {
         "toggle" => {
             if running || blocked {
+                app.state::<AppState>().user_disconnected();
                 disconnect_service().await?;
                 crate::tunnel::set(app, None);
             } else {
@@ -1164,6 +1165,7 @@ async fn quit(app: &AppHandle) {
         .map(|c| c.kill_switch)
         .unwrap_or(false);
     let (vpn, _, blocked) = active(app);
+    app.state::<AppState>().user_disconnected();
     let _ = disconnect_service().await;
     if ks && (vpn || blocked) {
         crate::notify::show(

@@ -11,7 +11,9 @@ use kvt_core::captive;
 use kvt_core::ipc::{Captive, PingTarget, Response, MAX_PING_TARGETS};
 use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
 use kvt_core::rulesync::Http;
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub struct NetClient {
@@ -186,6 +188,55 @@ pub async fn ping(targets: Vec<Option<PingTarget>>) -> Response {
     }
 }
 
+/// IP, в которые последний раз разрешились имена серверов (ключ — имя в нижнем
+/// регистре). Нужны, когда системный DNS не отвечает: при переподключении с kill
+/// switch прежние фильтры закрывают DNS всем, кроме ядра и службы, а запрос имени
+/// за службу отправляет служба DNS-клиента Windows.
+static RESOLVED: Mutex<Option<HashMap<String, Vec<IpAddr>>>> = Mutex::new(None);
+
+/// Последние известные IP имени (без запроса в сеть).
+pub fn known_ips(host: &str) -> Vec<IpAddr> {
+    RESOLVED
+        .lock()
+        .ok()
+        .and_then(|r| r.as_ref()?.get(&host.to_ascii_lowercase()).cloned())
+        .unwrap_or_default()
+}
+
+/// IP имени VPN-сервера через системный DNS (до 5 с). Не ответил — последние
+/// известные IP этого имени. Запрос пишется в журнал запросов.
+pub async fn resolve(host: &str, port: u16) -> Vec<IpAddr> {
+    let host = host.to_ascii_lowercase();
+    let start = Instant::now();
+    let found: Option<Vec<IpAddr>> = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::lookup_host((host.as_str(), port)),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .map(|addrs| addrs.map(|a| a.ip()).collect())
+    .filter(|ips: &Vec<IpAddr>| !ips.is_empty());
+    record_lookup(&host, found.is_some(), start);
+    match found {
+        Some(mut ips) => {
+            ips.sort();
+            ips.dedup();
+            if let Ok(mut r) = RESOLVED.lock() {
+                r.get_or_insert_with(HashMap::new).insert(host, ips.clone());
+            }
+            ips
+        }
+        None => {
+            let known = known_ips(&host);
+            if !known.is_empty() {
+                tracing::info!("имя сервера не разрешилось — взяты прежние адреса");
+            }
+            known
+        }
+    }
+}
+
 /// Системный DNS-запрос имени VPN-сервера (для маскировки журналов и исключений
 /// zapret) — в журнал запросов, как и всё, что служба отправляет в сеть.
 pub fn record_lookup(host: &str, ok: bool, start: Instant) {
@@ -253,6 +304,24 @@ async fn https_reachable(local: Option<Ipv4Addr>) -> bool {
     false
 }
 
+/// Сколько ответа читать при проверке страницы входа: известные ответы — десятки
+/// байт, а страница входа сети может прислать сколько угодно (память службы).
+const CAPTIVE_BODY: usize = 64 * 1024;
+
+/// Начало тела ответа, не больше `max` байт; остальное не читается. Длиннее
+/// известного ответа — значит, не он, и для `captive::classify` начала хватает.
+async fn head_of(mut resp: reqwest::Response, max: usize) -> String {
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        let room = max.saturating_sub(body.len());
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= max {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
 /// Просит ли сеть войти (отель, кафе). Запрос идёт напрямую через физический
 /// адаптер: TUN и kill switch его не задерживают (служба в списке разрешённых).
 /// Сначала HTTPS к известным серверам: если он проходит, страницы входа нет.
@@ -286,7 +355,7 @@ pub async fn captive_check() -> Captive {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|u| reqwest::Url::parse(u).ok())
                     .and_then(|u| u.host_str().map(str::to_owned));
-                let body = resp.text().await.unwrap_or_default();
+                let body = head_of(resp, CAPTIVE_BODY).await;
                 let state = captive::classify(status, &body);
                 if state == Captive::Portal {
                     tracing::info!(

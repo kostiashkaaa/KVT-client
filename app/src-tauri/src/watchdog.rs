@@ -11,7 +11,7 @@
 //! полчаса: если не помогает, KVT сообщает об этом и больше не пытается.
 
 use crate::catalog::Entry;
-use crate::{connect_current, display_name, health, query_status, save_choice, AppState};
+use crate::{connect_auto, display_name, health, query_status, save_choice, AppState};
 use kvt_core::ipc::{Captive, Request, Response, ServiceStatus};
 use kvt_core::probe::Verdict;
 use kvt_core::tester::{Outcome, QuickResult};
@@ -168,12 +168,13 @@ async fn tunnel_alive(client: &reqwest::Client) -> Option<u64> {
     None
 }
 
-/// Подключается к серверу `key` и проверяет, что данные пошли.
-pub(crate) async fn switch_to(app: &AppHandle, key: &str) -> Result<(), String> {
+/// Подключается к серверу `key` и проверяет, что данные пошли. `epoch` — когда
+/// начали замену: «Отключить» после него подключение не перебьёт (`connect_auto`).
+pub(crate) async fn switch_to(app: &AppHandle, key: &str, epoch: u64) -> Result<(), String> {
     let state = app.state::<AppState>();
     crate::update_choice(app, |c| c.server = Some(key.to_owned()))?;
     let _ = app.emit(CHOICE_EVENT, ());
-    connect_current(app, false).await?;
+    connect_auto(app, epoch, false).await?;
     crate::tray::refresh(app).await;
     tokio::time::sleep(crate::tunnel::SETTLE).await;
     let Some(ms) = tunnel_alive(&state.health).await else {
@@ -224,7 +225,7 @@ async fn handle_incident(app: &AppHandle, epoch: u64) {
             );
             return;
         }
-        if switch_to(app, &key).await.is_ok() {
+        if switch_to(app, &key, epoch).await.is_ok() {
             if stale() {
                 return;
             }
@@ -245,7 +246,7 @@ async fn handle_incident(app: &AppHandle, epoch: u64) {
         return;
     }
     if let (true, Some(original)) = (tried, current.as_ref()) {
-        let _ = restore(app, &original.key).await;
+        let _ = restore(app, &original.key, epoch).await;
     }
     let _ = app.emit(EVENT, Event::NoAlternative { server: from });
 }
@@ -271,10 +272,10 @@ fn revert_failed(app: &AppHandle, failed: Option<&str>, original: Option<&str>) 
 }
 
 /// Возвращает выбор на сервер `key` и подключается к нему без проверки туннеля.
-async fn restore(app: &AppHandle, key: &str) -> Result<(), String> {
+async fn restore(app: &AppHandle, key: &str, epoch: u64) -> Result<(), String> {
     crate::update_choice(app, |c| c.server = Some(key.to_owned()))?;
     let _ = app.emit(CHOICE_EVENT, ());
-    let result = connect_current(app, true).await.map(|_| ());
+    let result = connect_auto(app, epoch, true).await.map(|_| ());
     crate::tray::refresh(app).await;
     result
 }

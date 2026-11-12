@@ -156,17 +156,26 @@ pub async fn stateless(shared: &Shared, request: Request) -> Result<Response, Re
         Request::NetLog => Response::NetLog {
             events: kvt_core::netlog::snapshot(),
         },
-        Request::ServiceLog => Response::ServiceLog {
-            log: crate::logging::tail(),
-            core: kvt_core::redact::text(&shared.recent_log(200).join("\n")),
-        },
+        Request::ServiceLog => fit_service_log(
+            crate::logging::tail(),
+            kvt_core::redact::text(&shared.recent_log(200).join("\n")),
+        ),
         Request::CaptiveCheck => Response::Captive {
             state: crate::net::captive_check().await,
         },
         Request::ZapretStrategies => Response::Strategies {
             strategies: crate::zapret::strategies(shared.paths()),
         },
-        Request::ZapretInfo => Response::ZapretInfo(Box::new(crate::zapret::info(shared.paths()))),
+        Request::ZapretInfo => {
+            // Хэши программ комплекта и запрос к диспетчеру служб — не на потоке обработки.
+            let paths = shared.paths().clone();
+            match tokio::task::spawn_blocking(move || crate::zapret::info(&paths)).await {
+                Ok(info) => Response::ZapretInfo(Box::new(info)),
+                Err(_) => Response::Error {
+                    message: crate::zapret::interrupted(),
+                },
+            }
+        }
         Request::ZapretConflicts => {
             // tasklist работает секунды — не держим поток обработки.
             let shared = shared.clone();
@@ -196,6 +205,40 @@ pub async fn stateless(shared: &Shared, request: Request) -> Result<Response, Re
         request => return Err(request),
     };
     Ok(response)
+}
+
+/// Журнал службы и строки ядра — в один кадр IPC. Больше `MAX_FRAME_LEN` ответ не
+/// ушёл бы вовсе, и экспорт диагностики получил бы «служба не ответила»: поэтому
+/// отбрасывается старая половина журнала (а если и этого мало — строк ядра), пока
+/// ответ не поместится.
+fn fit_service_log(mut log: String, mut core: String) -> Response {
+    loop {
+        let response = Response::ServiceLog {
+            log: log.clone(),
+            core: core.clone(),
+        };
+        if kvt_core::ipc::encode(&response).is_ok() {
+            return response;
+        }
+        if !log.is_empty() {
+            drop_older_half(&mut log);
+        } else if !core.is_empty() {
+            drop_older_half(&mut core);
+        } else {
+            return response;
+        }
+    }
+}
+
+/// Убирает первую половину текста — до начала строки после середины (перевод
+/// строки — всегда граница символа UTF-8).
+fn drop_older_half(text: &mut String) {
+    let half = text.len() / 2;
+    let cut = text.as_bytes()[half..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(text.len(), |i| half + i + 1);
+    text.drain(..cut);
 }
 
 pub async fn handle(state: &mut State, request: Request) -> Response {
@@ -374,13 +417,23 @@ pub async fn install_zapret(
     state.supervisor.stop().await;
     state.status = ServiceStatus::Disconnected;
     state.session = None;
+    // Распаковка, копирование и tasklist идут секунды — не на потоке обработки:
+    // блокировку состояния держим, но служба продолжает отвечать на остальное.
     let result = match prepared {
-        Some(prepared) => crate::zapret::install_update(&paths, prepared),
+        Some(prepared) => {
+            crate::zapret::blocking(move || crate::zapret::install_update(&paths, prepared)).await
+        }
         None => {
             // Драйвер общий: пока им пользуется чужой winws, его не трогаем.
-            let foreign = crate::zapret::conflicts(&paths, None)
-                .iter()
-                .any(|(c, _)| !c.service);
+            let scan = paths.clone();
+            let foreign = tokio::task::spawn_blocking(move || {
+                crate::zapret::conflicts(&scan, None)
+                    .iter()
+                    .any(|(c, _)| !c.service)
+            })
+            .await
+            // Не узнали — считаем, что чужой есть: драйвер не трогаем.
+            .unwrap_or(true);
             crate::zapret::repair(&paths, !foreign).await
         }
     };
@@ -475,6 +528,36 @@ mod tests {
         ] {
             assert!(stateless(&shared, request).await.is_err());
         }
+    }
+
+    /// Журнал больше кадра IPC ужимается со старого конца, а не рвёт соединение.
+    #[test]
+    fn oversized_service_log_is_trimmed() {
+        let line = "строка журнала службы \"с кавычками\" и C:\\путями\n";
+        let log = line.repeat(kvt_core::ipc::MAX_FRAME_LEN / line.len() * 2);
+        let core = "ядро\n".repeat(10);
+        let response = fit_service_log(log.clone() + "последняя\n", core.clone());
+        assert!(kvt_core::ipc::encode(&response).is_ok());
+        let Response::ServiceLog {
+            log: kept,
+            core: kept_core,
+        } = response
+        else {
+            panic!("ожидался ServiceLog");
+        };
+        assert!(kept.len() < log.len() && kept.ends_with("последняя\n"));
+        assert!(kept.starts_with("строка"), "обрезано по началу строки");
+        assert_eq!(kept_core, core);
+
+        // Небольшой журнал не трогается.
+        let small = fit_service_log("a\nb\n".into(), String::new());
+        assert_eq!(
+            small,
+            Response::ServiceLog {
+                log: "a\nb\n".into(),
+                core: String::new()
+            }
+        );
     }
 
     /// «Отключить» во время переподключения по ошибке: всё остановлено.

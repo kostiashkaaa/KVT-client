@@ -2089,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "kvt-app"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.3.4",
@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "kvt-core"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "base64 0.22.1",
  "percent-encoding",
@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "kvt-service"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "anyhow",
  "kvt-core",

@@ -76,16 +76,36 @@ mod service {
         }
     }
 
+    /// Сколько Windows ждать остановки: отмена запуска и ожидание команды
+    /// (`pipe::STOP_WAIT`) с запасом.
+    const STOP_HINT: Duration = Duration::from_secs(15);
+
     fn run() -> anyhow::Result<()> {
         let (tx, rx) = tokio::sync::watch::channel(false);
+        // Handle появляется после регистрации, а нужен уже в обработчике: «Останавливается»
+        // сообщается сразу, иначе Windows считала бы службу зависшей (ошибка 1053).
+        let registered: std::sync::Arc<
+            std::sync::Mutex<Option<service_control_handler::ServiceStatusHandle>>,
+        > = Default::default();
+        let in_handler = std::sync::Arc::clone(&registered);
         let handle = service_control_handler::register(SERVICE_NAME, move |event| match event {
             ServiceControl::Stop | ServiceControl::Shutdown => {
+                if let Some(handle) = in_handler.lock().ok().and_then(|h| *h) {
+                    let mut pending =
+                        status(ServiceState::StopPending, ServiceControlAccept::empty());
+                    pending.checkpoint = 1;
+                    pending.wait_hint = STOP_HINT;
+                    let _ = handle.set_service_status(pending);
+                }
                 let _ = tx.send(true);
                 ServiceControlHandlerResult::NoError
             }
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
             _ => ServiceControlHandlerResult::NotImplemented,
         })?;
+        if let Ok(mut slot) = registered.lock() {
+            *slot = Some(handle);
+        }
         handle.set_service_status(status(
             ServiceState::Running,
             ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,

@@ -377,7 +377,31 @@ async fn download_bundle(
 ) -> Result<bool, String> {
     let http = NetClient::new(kvt_core::netlog::Purpose::Update).map_err(|e| e.to_string())?;
     let bytes = fetch_archive(&http, url, sha256).await?;
-    install_bundle(paths, &bytes, version, fallback_bin)
+    let (paths, version, fallback_bin) = (
+        paths.clone(),
+        version.to_owned(),
+        fallback_bin.to_path_buf(),
+    );
+    blocking(move || install_bundle(&paths, &bytes, &version, &fallback_bin)).await
+}
+
+/// Файловая работа (распаковка, копирование, хэши) и вызовы Windows, которые идут
+/// секунды, — в отдельном потоке, а не на потоке обработки команд службы.
+pub async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|_| Err(interrupted()))
+}
+
+/// Работа в отдельном потоке оборвалась (паника) — текст для окна.
+pub fn interrupted() -> String {
+    kvt_core::i18n::tr(
+        "Операция с zapret прервалась. Повторите; если не выйдет — сохраните диагностику.",
+        "The zapret operation was interrupted. Try again; if it fails, save diagnostics.",
+    )
+    .into()
 }
 
 /// Собирает комплект из проверенного архива в `zapret-bundle`.
@@ -509,56 +533,68 @@ pub fn install_update(paths: &Paths, prepared: Prepared) -> Result<MaintenanceRe
 /// хэшу, если он повреждён), чистые списки и драйвер WinDivert, который поставится заново.
 /// `touch_driver` — нет чужих программ, которые сейчас пользуются WinDivert.
 pub async fn repair(paths: &Paths, touch_driver: bool) -> Result<MaintenanceReport, String> {
-    let mut steps = Vec::new();
-    secure_dir(&data_dir(paths))?;
-    if paths.zapret_update.exists() {
-        std::fs::remove_dir_all(&paths.zapret_update).map_err(|e| e.to_string())?;
-        steps.push(
-            kvt_core::i18n::tr(
-                "Обновление удалено — используется комплект из KVT",
-                "Update removed — using the bundle shipped with KVT",
-            )
-            .to_owned(),
-        );
-    }
-    if paths.zapret_lists.exists() {
-        let _ = std::fs::remove_dir_all(&paths.zapret_lists);
-        steps.push(
-            kvt_core::i18n::tr(
-                "Рабочие списки сброшены — создадутся при запуске",
-                "Working lists reset — they'll be recreated on start",
-            )
-            .to_owned(),
-        );
-    }
-    let mut version = read_version(&paths.zapret);
-    match check_bundle(&paths.zapret) {
-        Ok(_) => steps.push(kvt_core::trf!(
-            "Файлы комплекта целы (Flowseal {version})",
-            "Bundle files are intact (Flowseal {version})"
-        )),
-        Err(problem) => {
-            steps.push(kvt_core::trf!(
-                "Комплект повреждён: {problem}",
-                "The bundle is damaged: {problem}"
-            ));
-            version = zapret::FLOWSEAL_VERSION.to_owned();
-            download_bundle(
-                paths,
-                &zapret::archive_url(&version),
-                zapret::ARCHIVE_SHA256,
-                &version,
-                &paths.zapret.join("bin"),
-            )
-            .await?;
-            steps.push(kvt_core::trf!(
-                "Комплект Flowseal {version} скачан заново и проверен",
-                "Flowseal bundle {version} re-downloaded and verified"
-            ));
+    let local = paths.clone();
+    let (mut steps, mut version, damaged) = blocking(move || {
+        let paths = local;
+        let mut steps = Vec::new();
+        secure_dir(&data_dir(&paths))?;
+        if paths.zapret_update.exists() {
+            std::fs::remove_dir_all(&paths.zapret_update).map_err(|e| e.to_string())?;
+            steps.push(
+                kvt_core::i18n::tr(
+                    "Обновление удалено — используется комплект из KVT",
+                    "Update removed — using the bundle shipped with KVT",
+                )
+                .to_owned(),
+            );
         }
+        if paths.zapret_lists.exists() {
+            let _ = std::fs::remove_dir_all(&paths.zapret_lists);
+            steps.push(
+                kvt_core::i18n::tr(
+                    "Рабочие списки сброшены — создадутся при запуске",
+                    "Working lists reset — they'll be recreated on start",
+                )
+                .to_owned(),
+            );
+        }
+        let version = read_version(&paths.zapret);
+        let damaged = match check_bundle(&paths.zapret) {
+            Ok(_) => {
+                steps.push(kvt_core::trf!(
+                    "Файлы комплекта целы (Flowseal {version})",
+                    "Bundle files are intact (Flowseal {version})"
+                ));
+                false
+            }
+            Err(problem) => {
+                steps.push(kvt_core::trf!(
+                    "Комплект повреждён: {problem}",
+                    "The bundle is damaged: {problem}"
+                ));
+                true
+            }
+        };
+        Ok((steps, version, damaged))
+    })
+    .await?;
+    if damaged {
+        version = zapret::FLOWSEAL_VERSION.to_owned();
+        download_bundle(
+            paths,
+            &zapret::archive_url(&version),
+            zapret::ARCHIVE_SHA256,
+            &version,
+            &paths.zapret.join("bin"),
+        )
+        .await?;
+        steps.push(kvt_core::trf!(
+            "Комплект Flowseal {version} скачан заново и проверен",
+            "Flowseal bundle {version} re-downloaded and verified"
+        ));
     }
     if touch_driver {
-        match remove_driver() {
+        match blocking(|| Ok(remove_driver())).await.and_then(|r| r) {
             Ok(()) => steps.push(
                 kvt_core::i18n::tr(
                     "Драйвер WinDivert удалён — установится заново при запуске",
@@ -638,34 +674,36 @@ fn enable_tcp_timestamps() {
         .status();
 }
 
-/// Адреса VPN-серверов: IP как есть, домены — как домены и их текущие IP.
-async fn server_addresses(servers: &[String]) -> (Vec<String>, Vec<IpAddr>) {
-    let mut domains = Vec::new();
-    let mut ips = Vec::new();
+/// Адреса VPN-серверов, которые winws не трогает (в гибриде).
+#[derive(Debug, Default)]
+pub struct ServerAddresses {
+    pub domains: Vec<String>,
+    pub ips: Vec<IpAddr>,
+}
+
+/// Адреса VPN-серверов: IP как есть, домены — как домены и их текущие IP (все имена
+/// разом, не по очереди). Звать до остановки прежнего ядра: пока его туннель жив,
+/// DNS отвечает и при kill switch; не ответил — берутся прежние IP (`net::resolve`).
+pub async fn server_addresses(servers: &[String], port: u16) -> ServerAddresses {
+    let mut out = ServerAddresses::default();
+    let mut lookups = tokio::task::JoinSet::new();
     for s in servers {
         if let Ok(ip) = s.parse::<IpAddr>() {
-            ips.push(ip);
+            out.ips.push(ip);
             continue;
         }
         let host = s.to_ascii_lowercase();
         if zapret::valid_domain(&host) {
-            let start = std::time::Instant::now();
-            let found: Option<Vec<IpAddr>> = tokio::time::timeout(
-                Duration::from_secs(5),
-                tokio::net::lookup_host((host.as_str(), 443)),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .map(|addrs| addrs.map(|a| a.ip()).collect());
-            crate::net::record_lookup(&host, found.is_some(), start);
-            ips.extend(found.unwrap_or_default());
-            domains.push(host);
+            out.domains.push(host.clone());
+            lookups.spawn(async move { crate::net::resolve(&host, port).await });
         }
     }
-    ips.sort();
-    ips.dedup();
-    (domains, ips)
+    while let Some(found) = lookups.join_next().await {
+        out.ips.extend(found.unwrap_or_default());
+    }
+    out.ips.sort();
+    out.ips.dedup();
+    out
 }
 
 fn with_separator(dir: &Path) -> String {
@@ -676,13 +714,13 @@ fn with_separator(dir: &Path) -> String {
     s
 }
 
-/// Запускает winws. `servers` — адреса VPN-серверов (в гибриде), `interface` —
-/// физический интерфейс, если рядом работает TUN.
+/// Запускает winws. `servers` — адреса VPN-серверов (в гибриде, см.
+/// [`server_addresses`]), `interface` — физический интерфейс, если рядом работает TUN.
 pub async fn start(
     paths: &Paths,
     plan: &ZapretPlan,
     domains: &[String],
-    servers: &[String],
+    servers: &ServerAddresses,
     interface: Option<u32>,
     log: &Log,
 ) -> Result<Winws, String> {
@@ -713,9 +751,13 @@ pub async fn start(
         )
     })?;
 
-    let (server_domains, server_ips) = server_addresses(servers).await;
-    let lists = zapret::user_lists(domains, &plan.exclude_domains, &server_domains, &server_ips)
-        .map_err(|e| e.to_string())?;
+    let lists = zapret::user_lists(
+        domains,
+        &plan.exclude_domains,
+        &servers.domains,
+        &servers.ips,
+    )
+    .map_err(|e| e.to_string())?;
     prepare_lists(paths, &bundle, &lists, plan.ipset)?;
     if strategy.needs_timestamps && plan.tcp_timestamps {
         enable_tcp_timestamps();
@@ -900,14 +942,19 @@ mod tests {
 
     #[tokio::test]
     async fn server_ips_and_domains_are_split() {
-        let (domains, ips) = server_addresses(&[
-            "203.0.113.10".into(),
-            "bad name;".into(),
-            "localhost".into(),
-        ])
+        let found = server_addresses(
+            &[
+                "203.0.113.10".into(),
+                "bad name;".into(),
+                "localhost".into(),
+            ],
+            443,
+        )
         .await;
-        assert_eq!(domains, ["localhost"]);
-        assert!(ips.contains(&"203.0.113.10".parse().unwrap()));
+        assert_eq!(found.domains, ["localhost"]);
+        assert!(found.ips.contains(&"203.0.113.10".parse().unwrap()));
+        // Разрешённое имя запомнено: если DNS потом не ответит, IP возьмутся отсюда.
+        assert!(!crate::net::known_ips("localhost").is_empty());
     }
 
     /// Комплект для разработки (`scripts/fetch-zapret.ps1`): все стратегии и хэши.

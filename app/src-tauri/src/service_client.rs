@@ -11,11 +11,12 @@
 
 use kvt_core::ipc::{self, Request, Response, PIPE_NAME, PROTOCOL_VERSION};
 use std::fs::File;
-use std::io::{Read, Write};
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, IntoRawHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::windows::named_pipe::NamedPipeClient;
 
 const ERROR_FILE_NOT_FOUND: i32 = 2;
 const ERROR_ACCESS_DENIED: i32 = 5;
@@ -25,6 +26,8 @@ const ERROR_PIPE_BUSY: i32 = 231;
 const ACCESS: u32 = 0x0012_0089 | 0x0000_0002;
 /// Служба не может действовать от имени окна (`SECURITY_IDENTIFICATION`).
 const SECURITY_IDENTIFICATION: u32 = 1 << 16;
+/// Асинхронный ввод-вывод: так pipe принимает tokio.
+const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 
 /// Владелец канала — SYSTEM или администраторы: так создаёт pipe служба (или
 /// `kvt-service --console` из терминала администратора). Обычный пользователь
@@ -65,14 +68,29 @@ fn owned_by_system(pipe: &File) -> bool {
     trusted
 }
 
-fn open() -> Result<File, String> {
+fn open_raw(name: &str) -> std::io::Result<File> {
+    std::fs::OpenOptions::new()
+        .access_mode(ACCESS)
+        .security_qos_flags(SECURITY_IDENTIFICATION)
+        .custom_flags(FILE_FLAG_OVERLAPPED)
+        .open(name)
+}
+
+fn into_tokio(pipe: File) -> std::io::Result<NamedPipeClient> {
+    // SAFETY: handle открыт с FILE_FLAG_OVERLAPPED (`open_raw`), как требует tokio, и
+    // переходит ему во владение: после into_raw_handle File его не закроет.
+    unsafe { NamedPipeClient::from_raw_handle(pipe.into_raw_handle()) }
+}
+
+/// Pipe открывается через `std` (у клиента tokio не задать права доступа) в
+/// асинхронном режиме и отдаётся tokio: тогда таймаут `call` закрывает канал, а не
+/// оставляет поток висеть на чтении, пока служба не ответит.
+async fn open() -> Result<NamedPipeClient, String> {
     for _ in 0..20 {
-        let opened = std::fs::OpenOptions::new()
-            .access_mode(ACCESS)
-            .security_qos_flags(SECURITY_IDENTIFICATION)
-            .open(PIPE_NAME);
-        match opened {
-            Ok(pipe) if owned_by_system(&pipe) => return Ok(pipe),
+        match open_raw(PIPE_NAME) {
+            Ok(pipe) if owned_by_system(&pipe) => {
+                return into_tokio(pipe).map_err(|e| crate::errors::logged(broken(), e));
+            }
             Ok(_) => {
                 tracing::error!("канал службы KVT создан не службой — команды не отправлены");
                 return Err(kvt_core::i18n::tr(
@@ -82,7 +100,7 @@ fn open() -> Result<File, String> {
                 .into());
             }
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                std::thread::sleep(Duration::from_millis(50));
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(e) if e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => {
                 return Err(crate::errors::no_service().into())
@@ -121,16 +139,19 @@ fn broken() -> &'static str {
     )
 }
 
-fn exchange(pipe: &mut File, request: &Request) -> Result<Response, String> {
+async fn exchange(pipe: &mut NamedPipeClient, request: &Request) -> Result<Response, String> {
     let frame = ipc::encode(request).map_err(|e| crate::errors::logged(broken(), e))?;
     pipe.write_all(&frame)
+        .await
         .map_err(|e| crate::errors::logged(broken(), e))?;
     let mut header = [0u8; 4];
     pipe.read_exact(&mut header)
+        .await
         .map_err(|e| crate::errors::logged(broken(), e))?;
     let len = ipc::frame_len(header).map_err(|e| crate::errors::logged(broken(), e))?;
     let mut body = vec![0u8; len];
     pipe.read_exact(&mut body)
+        .await
         .map_err(|e| crate::errors::logged(broken(), e))?;
     ipc::decode(&body).map_err(|e| crate::errors::logged(crate::errors::unexpected(), e))
 }
@@ -182,34 +203,34 @@ fn no_answer() -> &'static str {
     )
 }
 
-/// Запрос целиком — в отдельном потоке: pipe открыт синхронно (у асинхронного
-/// клиента tokio права доступа не задать), а ответ на `Connect` идёт десятки секунд.
-/// По истечении `deadline` окно перестаёт ждать; поток дочитает ответ сам и закроется.
+/// Запрос целиком. По истечении `deadline` окно перестаёт ждать, и канал
+/// закрывается вместе с брошенным запросом: зависшая служба не копит у окна потоки,
+/// застрявшие на чтении (трей спрашивает статус каждые несколько секунд).
 pub async fn call(request: Request) -> Result<Response, String> {
     let deadline = deadline(&request);
-    let task = tokio::task::spawn_blocking(move || call_blocking(request));
-    let joined = match deadline {
-        Some(limit) => match tokio::time::timeout(limit, task).await {
-            Ok(joined) => joined,
+    let work = call_inner(request);
+    match deadline {
+        Some(limit) => match tokio::time::timeout(limit, work).await {
+            Ok(result) => result,
             Err(_) => {
                 tracing::warn!(secs = limit.as_secs(), "служба не ответила вовремя");
-                return Err(no_answer().into());
+                Err(no_answer().into())
             }
         },
-        None => task.await,
-    };
-    joined.unwrap_or_else(|_| Err(broken().into()))
+        None => work.await,
+    }
 }
 
-fn call_blocking(request: Request) -> Result<Response, String> {
-    let mut pipe = open()?;
+async fn call_inner(request: Request) -> Result<Response, String> {
+    let mut pipe = open().await?;
     let hello = exchange(
         &mut pipe,
         &Request::Hello {
             protocol_version: PROTOCOL_VERSION,
             lang: kvt_core::i18n::current(),
         },
-    );
+    )
+    .await;
     match hello {
         Ok(Response::Hello { .. }) => MISMATCH.store(false, Ordering::Relaxed),
         // Связь оборвалась — это не версия, а сбой канала.
@@ -220,7 +241,7 @@ fn call_blocking(request: Request) -> Result<Response, String> {
             return Err(crate::errors::version_mismatch().into());
         }
     }
-    exchange(&mut pipe, &request)
+    exchange(&mut pipe, &request).await
 }
 
 #[cfg(test)]
@@ -236,11 +257,7 @@ mod tests {
             .first_pipe_instance(true)
             .create(&name)
             .unwrap();
-        let client = std::fs::OpenOptions::new()
-            .access_mode(ACCESS)
-            .security_qos_flags(SECURITY_IDENTIFICATION)
-            .open(&name)
-            .unwrap();
+        let client = open_raw(&name).unwrap();
         // Под администратором владелец — группа администраторов: проверять нечего.
         let elevated = std::process::Command::new("net")
             .arg("session")
@@ -249,5 +266,35 @@ mod tests {
         if !elevated {
             assert!(!owned_by_system(&client));
         }
+    }
+
+    /// Канал работает асинхронно: обмен идёт, а брошенное по таймауту чтение
+    /// закрывает канал — служба видит конец соединения, поток окна не висит.
+    #[tokio::test]
+    async fn abandoned_read_closes_the_pipe() {
+        let name = format!(r"\\.\pipe\kvt-test-async-{}", std::process::id());
+        let mut server = tokio::net::windows::named_pipe::ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)
+            .unwrap();
+        let mut client = into_tokio(open_raw(&name).unwrap()).unwrap();
+        server.connect().await.unwrap();
+
+        client.write_all(b"ping").await.unwrap();
+        let mut got = [0u8; 4];
+        server.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"ping");
+
+        // Служба молчит: окно перестаёт ждать.
+        let mut header = [0u8; 4];
+        let waited =
+            tokio::time::timeout(Duration::from_millis(200), client.read_exact(&mut header)).await;
+        assert!(waited.is_err());
+        drop(client);
+
+        let mut rest = Vec::new();
+        let closed =
+            tokio::time::timeout(Duration::from_secs(2), server.read_to_end(&mut rest)).await;
+        assert!(closed.is_ok(), "служба должна увидеть закрытие канала");
     }
 }

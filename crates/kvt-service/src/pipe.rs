@@ -90,9 +90,27 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
             Err(e) => tracing::warn!(error = %e, "не удалось определить клиента"),
         }
     }
-    state.lock().await.shutdown().await;
+    // Остановка службы прерывает запуск и переподключение, как «Отключить»: иначе она
+    // ждала бы, пока подключение докачает списки (минуты), а установщик тем временем
+    // менял бы файлы работающей службы.
+    cancel.send_modify(|n| *n = n.wrapping_add(1));
+    match tokio::time::timeout(STOP_WAIT, state.lock()).await {
+        Ok(mut guard) => guard.shutdown().await,
+        // Команду без отмены (переустановка zapret качает архив) не ждём: процесс
+        // завершится, ядро и winws закроются вместе с job, фильтры WFP — вместе с
+        // сессией. Отметку kill switch стираем: её восстановление — только после сбоя.
+        Err(_) => {
+            tracing::warn!(
+                "команда не завершилась за {STOP_WAIT:?} — служба останавливается без неё"
+            );
+            shared.forget_kill_switch();
+        }
+    }
     Ok(())
 }
+
+/// Сколько остановка службы ждёт текущую команду (после отмены запуска).
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Новый экземпляр pipe. Временный сбой (нехватка ресурсов) не должен
 /// останавливать службу: несколько попыток с паузой.
@@ -206,7 +224,21 @@ async fn handle_client(mut pipe: NamedPipeServer, ctx: Context) -> anyhow::Resul
                 message: kvt_core::i18n::tr("неизвестная команда", "unknown command").into(),
             },
         };
-        pipe.write_all(&ipc::encode(&response)?).await?;
+        // Ответ больше кадра — понятная ошибка, а не оборванное соединение.
+        let frame = match ipc::encode(&response) {
+            Ok(frame) => frame,
+            Err(e) => {
+                tracing::warn!(error = %e, "ответ не помещается в кадр");
+                ipc::encode(&Response::Error {
+                    message: kvt_core::i18n::tr(
+                        "Ответ службы слишком большой. Сохраните диагностику и сообщите о проблеме.",
+                        "The service's answer is too large. Save diagnostics and report the problem.",
+                    )
+                    .into(),
+                })?
+            }
+        };
+        pipe.write_all(&frame).await?;
     }
 }
 

@@ -89,14 +89,28 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let mut set: Servers = current().as_ref().clone();
-    set.extend(
-        addresses
-            .into_iter()
-            .map(|a| normalize(a.as_ref()))
-            .filter(|a| a.len() >= 4),
-    );
-    if let Ok(mut s) = SERVERS.lock() {
+    add_to(&SERVERS, addresses);
+}
+
+/// Чтение, дополнение и запись — под одной блокировкой: иначе две задачи, которые
+/// добавляют адреса одновременно, затёрли бы друг друга, и адрес сервера ушёл бы в
+/// журнал открытым.
+fn add_to<I, S>(slot: &Mutex<Option<Arc<Servers>>>, addresses: I)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let new: Vec<String> = addresses
+        .into_iter()
+        .map(|a| normalize(a.as_ref()))
+        .filter(|a| a.len() >= 4)
+        .collect();
+    if new.is_empty() {
+        return;
+    }
+    if let Ok(mut s) = slot.lock() {
+        let mut set: Servers = s.as_deref().cloned().unwrap_or_default();
+        set.extend(new);
         *s = Some(Arc::new(set));
     }
 }
@@ -591,5 +605,26 @@ mod tests {
         set_servers(["a", "vpn.example.com"]);
         assert_eq!(text("a b vpn.example.com"), "a b [сервер]");
         set_servers(Vec::<String>::new());
+    }
+
+    /// Адреса, которые добавляют одновременно (сервер и сервер загрузки XHTTP),
+    /// не теряются.
+    #[test]
+    fn concurrent_additions_are_all_kept() {
+        static SLOT: Mutex<Option<Arc<Servers>>> = Mutex::new(None);
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    for i in 0..50 {
+                        add_to(&SLOT, [format!("10.{t}.0.{i}")]);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let set = SLOT.lock().unwrap().clone().unwrap();
+        assert_eq!(set.len(), 8 * 50);
     }
 }

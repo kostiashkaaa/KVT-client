@@ -109,6 +109,8 @@ pub(crate) struct AppState {
     /// Растёт с каждым подключением и отключением по воле пользователя (окно, трей,
     /// профиль сети). Автоматика, начатая раньше, видит, что её решение устарело.
     epoch: std::sync::atomic::AtomicU64,
+    /// `epoch` последнего отключения по воле пользователя (`user_disconnected`).
+    disconnected_at: std::sync::atomic::AtomicU64,
 }
 
 /// Выбор пользователя. Секретов не содержит, поэтому хранится в settings.json
@@ -266,6 +268,7 @@ impl Default for AppState {
             session: Mutex::default(),
             pending_page: Mutex::default(),
             epoch: Default::default(),
+            disconnected_at: Default::default(),
         }
     }
 }
@@ -296,6 +299,47 @@ impl AppState {
     pub(crate) fn epoch(&self) -> u64 {
         self.epoch.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// Пользователь отключил VPN (или KVT отключил его за него: сервер исчез, сеть
+    /// из профиля «без VPN»). Как `user_acted`, и ещё запоминается, что это было
+    /// отключение, — см. `connect_auto`.
+    pub(crate) fn user_disconnected(&self) {
+        use std::sync::atomic::Ordering;
+        let now = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        self.disconnected_at.store(now, Ordering::SeqCst);
+    }
+
+    /// После `epoch` пользователь отключился, и это его последнее действие.
+    fn disconnected_after(&self, epoch: u64) -> bool {
+        let at = self
+            .disconnected_at
+            .load(std::sync::atomic::Ordering::SeqCst);
+        at > epoch && at == self.epoch()
+    }
+}
+
+/// Подключение, которое KVT начал сам (автопереключение, после сна, при запуске),
+/// по состоянию на `epoch`. «Отключить», нажатое после проверки `epoch`, но раньше,
+/// чем служба приняла «Подключить», служба не отменяет: она прерывает только запуск,
+/// начатый до «Отключить». Тогда VPN включился бы вопреки пользователю — отключаем
+/// снова. `Err` с текстом отмены — пользователь вмешался.
+pub(crate) async fn connect_auto(
+    app: &AppHandle,
+    epoch: u64,
+    verify: bool,
+) -> Result<ServiceStatus, String> {
+    let state = app.state::<AppState>();
+    if state.epoch() != epoch {
+        return Err(kvt_core::ipc::cancelled().into());
+    }
+    let result = connect_current(app, verify).await;
+    if state.disconnected_after(epoch) {
+        tracing::info!("пользователь отключился во время автоматического подключения — отключаем");
+        let _ = disconnect_service().await;
+        tunnel::set(app, None);
+        return Err(kvt_core::ipc::cancelled().into());
+    }
+    result
 }
 
 /// Название сервера для трея и уведомлений, где флаг картинкой не нарисовать:
@@ -647,7 +691,7 @@ async fn disconnect_service() -> Result<ServiceStatus, String> {
 
 #[tauri::command]
 async fn disconnect(app: AppHandle) -> Result<ServiceStatus, String> {
-    app.state::<AppState>().user_acted();
+    app.state::<AppState>().user_disconnected();
     let result = disconnect_service().await;
     tray::refresh(&app).await;
     result
@@ -771,7 +815,10 @@ fn spawn_connect_on_start(app: AppHandle) {
             // Пока ждали, пользователь сам подключился или отключился.
             Ok(_) if app.state::<AppState>().epoch() != epoch => return,
             Ok(ServiceStatus::Disconnected | ServiceStatus::Failed { .. }) => {
-                connect_current(&app, true).await.map(|_| ())
+                match connect_auto(&app, epoch, true).await {
+                    Err(e) if kvt_core::ipc::is_cancelled(&e) => return,
+                    other => other.map(|_| ()),
+                }
             }
             // Уже подключено (профиль сети) или идёт подключение.
             Ok(_) => return,
@@ -970,4 +1017,30 @@ fn main() {
             api.prevent_exit();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppState;
+
+    /// Автоматическое подключение отменяется, только если последним действием
+    /// пользователя после его начала было «Отключить».
+    #[test]
+    fn disconnect_after_auto_start_is_detected() {
+        let state = AppState::default();
+        let start = state.epoch();
+        assert!(!state.disconnected_after(start));
+
+        state.user_disconnected();
+        assert!(state.disconnected_after(start));
+
+        // Потом пользователь снова что-то сделал (подключился) — это уже не отмена.
+        state.user_acted();
+        assert!(!state.disconnected_after(start));
+
+        // Отключение до начала автоматики не в счёт.
+        state.user_disconnected();
+        let later = state.epoch();
+        assert!(!state.disconnected_after(later));
+    }
 }

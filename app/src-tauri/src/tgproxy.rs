@@ -192,6 +192,11 @@ fn secret(app: &AppHandle) -> Result<String, String> {
         )
         .to_owned()
     })?;
+    // Запуск прокси и «Открыть в Telegram» при первом включении приходят почти разом:
+    // без блокировки каждый создал бы свой секрет, и Telegram получил бы не тот, с
+    // которым запущен прокси.
+    static CREATE: Mutex<()> = Mutex::new(());
+    let _creating = CREATE.lock().unwrap_or_else(|e| e.into_inner());
     let path = dir.join(SECRET_FILE);
     if let Some(s) = std::fs::read(&path)
         .ok()
@@ -204,7 +209,10 @@ fn secret(app: &AppHandle) -> Result<String, String> {
     let s = random_secret()?;
     let sealed = crate::dpapi::protect(s.as_bytes()).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(&path, sealed).map_err(|e| e.to_string())?;
+    // Целиком или никак: оборванная запись дала бы новый секрет при следующем
+    // запуске, и Telegram пришлось бы настраивать заново.
+    crate::atomic::write(&path, &dir.join(format!("{SECRET_FILE}.tmp")), &sealed)
+        .map_err(|e| e.to_string())?;
     Ok(s)
 }
 

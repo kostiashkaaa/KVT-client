@@ -18,7 +18,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -28,6 +28,8 @@ const STARTUP_GRACE: Duration = Duration::from_secs(2);
 /// Как часто во время `STARTUP_GRACE` смотрим, не готов ли процесс.
 const READY_POLL: Duration = Duration::from_millis(50);
 const LOG_LINES: usize = 200;
+/// Сколько байт строки вывода ядра хранить (см. `clip`).
+const MAX_LINE: usize = 1024;
 /// Адрес, по маршруту к которому видно, куда сейчас идёт интернет: в старый TUN,
 /// в новый или в физический адаптер.
 const ROUTE_PROBE: std::net::Ipv4Addr = std::net::Ipv4Addr::new(8, 8, 8, 8);
@@ -177,6 +179,20 @@ impl Shared {
     pub fn zapret_pid(&self) -> Option<u32> {
         Some(self.zapret_pid.load(Ordering::Relaxed)).filter(|&pid| pid != 0)
     }
+
+    /// Стереть отметку kill switch, не дожидаясь блокировки состояния: служба
+    /// останавливается штатно, и после запуска закрывать интернет не нужно.
+    pub fn forget_kill_switch(&self) {
+        clear_marker(&self.paths.run.join(KILL_SWITCH_MARKER));
+    }
+}
+
+fn clear_marker(marker: &Path) {
+    match std::fs::remove_file(marker) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!(error = %e, "отметка kill switch не стёрта"),
+    }
 }
 /// Сработавшее правило ошибок ядра, которое ещё не обработано.
 pub type Issues = Arc<Mutex<Option<Triggered>>>;
@@ -300,6 +316,17 @@ impl Supervisor {
     }
 
     async fn start_inner(&mut self, plan: &ConnectPlan) -> Result<(), String> {
+        // Адрес сервера — маскировщику и (в гибриде) в исключения winws — до остановки
+        // прежнего ядра: пока его туннель жив, DNS отвечает. Потом при kill switch
+        // прежние фильтры закрывают DNS всем, кроме ядра и службы, а имя за службу
+        // спрашивает служба DNS-клиента Windows — запрос ждал бы 5 с и не дал IP.
+        hide_server_addresses(&plan.server);
+        let servers = match &plan.zapret {
+            Some(_) => {
+                crate::zapret::server_addresses(&plan.server.endpoints(), plan.server.port).await
+            }
+            None => crate::zapret::ServerAddresses::default(),
+        };
         self.stop_running().await;
         remove_stale_wintun_devices().await;
         wait_adapter_removed().await;
@@ -312,7 +339,6 @@ impl Supervisor {
             )
             .into());
         }
-        hide_server_addresses(&plan.server);
         secure_dir(&self.paths.rules)?;
         secure_dir(&self.paths.run)?;
 
@@ -364,7 +390,7 @@ impl Supervisor {
                 zp,
                 &plan.routing.zapret_hostlist(),
                 // И сервер загрузки XHTTP: winws не должен трогать соединения ядра.
-                &plan.server.endpoints(),
+                &servers,
                 interface,
                 &self.log,
             )
@@ -722,8 +748,15 @@ impl Supervisor {
             )
             .into());
         }
-        let winws =
-            crate::zapret::start(&self.paths, plan, &plan.domains, &[], None, &self.log).await?;
+        let winws = crate::zapret::start(
+            &self.paths,
+            plan,
+            &plan.domains,
+            &crate::zapret::ServerAddresses::default(),
+            None,
+            &self.log,
+        )
+        .await?;
         let strategy = winws.strategy.clone();
         self.set_zapret(Some(winws));
         Ok(strategy)
@@ -972,9 +1005,11 @@ async fn collect<R: AsyncRead + Unpin>(reader: R, log: Log, watch: Option<(CoreK
     let mut watcher = core_errors::Watcher::default();
     let mut logged: std::collections::HashMap<&'static str, std::time::Instant> =
         std::collections::HashMap::new();
-    let mut lines = BufReader::new(reader).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = kvt_core::redact::text(&line);
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    while let Some(line) = next_line(&mut reader, &mut buf).await {
+        // Обрезка — после маскировки: разрезанный пароль или UUID маскировщик бы не узнал.
+        let line = clip(kvt_core::redact::text(&line), MAX_LINE);
         if let Some((core, issues)) = &watch {
             // На диск попадают только строки, которые узнало правило. У правил «только
             // записать» (таймауты, DNS) в строке бывают адреса сайтов, которые открывал
@@ -1006,6 +1041,45 @@ async fn collect<R: AsyncRead + Unpin>(reader: R, log: Log, watch: Option<(CoreK
                 l.pop_front();
             }
             l.push_back(line);
+        }
+    }
+}
+
+/// Не длиннее `max` байт, по границе символа: 200 строк журнала ядра должны
+/// помещаться в ответ службы (кадр IPC — 1 МБ).
+fn clip(mut s: String, max: usize) -> String {
+    if s.len() > max {
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+        s.push('…');
+    }
+    s
+}
+
+/// Следующая строка вывода процесса; `None` — вывод закрыт. Байты не в UTF-8
+/// (домен из перехваченного трафика, текст чужой ошибки) заменяются, а не
+/// обрывают чтение: `Lines` на такой строке возвращает ошибку, после неё служба
+/// перестала бы читать ядро — правила ошибок и журнал ядра молча выключились бы
+/// до конца сеанса.
+async fn next_line<R: AsyncBufRead + Unpin>(reader: &mut R, buf: &mut Vec<u8>) -> Option<String> {
+    buf.clear();
+    match reader.read_until(b'\n', buf).await {
+        Ok(0) => None,
+        Ok(_) => {
+            if buf.last() == Some(&b'\n') {
+                buf.pop();
+            }
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            Some(String::from_utf8_lossy(buf).into_owned())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "вывод процесса не читается");
+            None
         }
     }
 }
@@ -1061,32 +1135,30 @@ fn tail(text: &str, n: usize) -> String {
 }
 
 /// Адрес сервера — маскировщику журналов до запуска ядра: в строках ядра его не
-/// придётся угадывать. IP, в которые разрешается имя, добавляются в фоне: при
-/// переподключении с kill switch системный DNS может не отвечать, и ждать его нельзя.
-/// Сервер загрузки XHTTP (`downloadSettings`) скрывается так же.
+/// придётся угадывать. Сервер загрузки XHTTP (`downloadSettings`) скрывается так же.
+///
+/// Адреса только добавляются: прежнее ядро ещё допишет строки о прежнем сервере, а
+/// поздний ответ DNS по нему не должен вытеснить новый. Прежние IP имени — сразу,
+/// свежие — в фоне: при переподключении с kill switch системный DNS может не
+/// отвечать, и ждать его нельзя.
 fn hide_server_addresses(server: &kvt_core::Server) {
     let endpoints = server.endpoints();
-    kvt_core::redact::set_servers(&endpoints);
+    kvt_core::redact::add_servers(&endpoints);
     kvt_core::redact::set_secrets(server.secrets());
     for host in endpoints {
         if host.parse::<std::net::IpAddr>().is_err() {
-            spawn_hide_resolved(host, server.port);
+            kvt_core::redact::add_servers(
+                crate::net::known_ips(&host)
+                    .iter()
+                    .map(std::net::IpAddr::to_string),
+            );
+            let port = server.port;
+            tokio::spawn(async move {
+                let ips = crate::net::resolve(&host, port).await;
+                kvt_core::redact::add_servers(ips.iter().map(std::net::IpAddr::to_string));
+            });
         }
     }
-}
-
-fn spawn_hide_resolved(host: String, port: u16) {
-    tokio::spawn(async move {
-        let start = std::time::Instant::now();
-        let lookup = tokio::net::lookup_host((host.as_str(), port));
-        let found: Option<Vec<String>> = tokio::time::timeout(Duration::from_secs(5), lookup)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .map(|addrs| addrs.map(|a| a.ip().to_string()).collect());
-        crate::net::record_lookup(&host, found.is_some(), start);
-        kvt_core::redact::add_servers(found.unwrap_or_default());
-    });
 }
 
 fn unix_now() -> u64 {
@@ -1219,6 +1291,49 @@ mod tests {
             panic!("ожидалась ошибка")
         };
         assert!(err.contains("bad config"), "{err}");
+    }
+
+    /// Строка не в UTF-8 не обрывает чтение: следующие строки ядра по-прежнему
+    /// доходят до журнала и правил ошибок.
+    #[tokio::test]
+    async fn invalid_utf8_does_not_stop_reading() {
+        let log = Log::default();
+        let input: &[u8] = b"first\r\nbad \xFF\xFE byte\nlast";
+        collect(input, Arc::clone(&log), None).await;
+        let lines: Vec<String> = log.lock().unwrap().iter().cloned().collect();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[0], "first");
+        assert!(lines[1].starts_with("bad ") && lines[1].ends_with(" byte"));
+        assert_eq!(lines[2], "last");
+    }
+
+    /// Очень длинная строка ядра хранится обрезанной — журнал помещается в ответ службы.
+    #[tokio::test]
+    async fn long_lines_are_clipped() {
+        let log = Log::default();
+        let input = format!("{}\nnext\n", "ж".repeat(MAX_LINE));
+        collect(input.as_bytes(), Arc::clone(&log), None).await;
+        let lines: Vec<String> = log.lock().unwrap().iter().cloned().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].len() <= MAX_LINE + '…'.len_utf8(),
+            "{}",
+            lines[0].len()
+        );
+        assert!(lines[0].ends_with('…'));
+        assert_eq!(lines[1], "next");
+    }
+
+    /// UUID на месте обрезки скрывается целиком, а не остаётся видна его половина.
+    #[tokio::test]
+    async fn secrets_are_hidden_before_clipping() {
+        let log = Log::default();
+        let uuid = "123e4567-e89b-12d3-a456-426614174000";
+        // Короткие слова: длинным токеном маскировщик скрыл бы всё и так.
+        let input = format!("{}{uuid}\n", "a ".repeat((MAX_LINE - 10) / 2));
+        collect(input.as_bytes(), Arc::clone(&log), None).await;
+        let line = log.lock().unwrap().front().cloned().unwrap();
+        assert!(!line.contains("123e4567"), "{line}");
     }
 
     #[test]

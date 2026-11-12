@@ -91,8 +91,10 @@ async fn on_resume(app: &AppHandle) {
         return;
     }
     tracing::info!("после сна данные не идут — переподключение");
-    if let Err(e) = crate::connect_current(app, true).await {
-        tracing::warn!(error = %e, "переподключение после сна не удалось");
+    match crate::connect_auto(app, epoch, true).await {
+        Err(e) if kvt_core::ipc::is_cancelled(&e) => return,
+        Err(e) => tracing::warn!(error = %e, "переподключение после сна не удалось"),
+        Ok(_) => {}
     }
     crate::tray::refresh(app).await;
     // Если и это не помогло — автопереключение проверит и заменит сервер.

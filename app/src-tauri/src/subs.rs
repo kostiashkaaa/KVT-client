@@ -78,7 +78,7 @@ async fn guard_selected(app: &AppHandle, before: Option<catalog::Entry>) {
         return;
     }
     tracing::info!("выбранный сервер исчез из подписок — VPN отключён");
-    state.user_acted();
+    state.user_disconnected();
     let _ = disconnect_service().await;
     crate::tray::refresh(app).await;
     let _ = app.emit(
