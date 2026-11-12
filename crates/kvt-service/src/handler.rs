@@ -13,9 +13,19 @@ pub struct State {
 
 impl State {
     pub fn new(supervisor: Supervisor) -> Self {
+        // Kill switch восстановлен после сбоя службы (`restore_kill_switch`). Причину
+        // пишет `status_response`: язык окна служба узнаёт только из Hello.
+        let status = if supervisor.kill_switch_active() {
+            ServiceStatus::Failed {
+                reason: String::new(),
+                blocked: true,
+            }
+        } else {
+            ServiceStatus::Disconnected
+        };
         Self {
             supervisor,
-            status: ServiceStatus::Disconnected,
+            status,
             session: None,
         }
     }
@@ -71,10 +81,21 @@ impl State {
             }
             _ => None,
         };
-        Response::Status {
-            status: self.status.clone(),
-            session,
+        let mut status = self.status.clone();
+        if let ServiceStatus::Failed {
+            reason,
+            blocked: true,
+        } = &mut status
+        {
+            if reason.is_empty() {
+                *reason = kvt_core::i18n::tr(
+                    "Служба KVT перезапустилась после сбоя. Kill switch держит интернет закрытым — подключитесь заново или нажмите «Отключить».",
+                    "The KVT service restarted after a failure. The kill switch is keeping the internet blocked — connect again or press “Disconnect”.",
+                )
+                .into();
+            }
         }
+        Response::Status { status, session }
     }
 
     pub async fn shutdown(&mut self) {
@@ -342,6 +363,27 @@ mod tests {
             zapret_lists: tmp.clone(),
             zapret_update: tmp,
         }))
+    }
+
+    /// Без восстановленного kill switch служба стартует отключённой; восстановленный
+    /// (`restore_kill_switch`) виден окну как «интернет закрыт» с причиной.
+    #[test]
+    fn restored_kill_switch_status_has_reason() {
+        let mut st = state();
+        assert!(matches!(st.status, ServiceStatus::Disconnected));
+        st.status = ServiceStatus::Failed {
+            reason: String::new(),
+            blocked: true,
+        };
+        let Response::Status {
+            status: ServiceStatus::Failed { reason, blocked },
+            ..
+        } = st.status_response()
+        else {
+            panic!("ожидался статус Failed");
+        };
+        assert!(blocked);
+        assert!(reason.contains("Kill switch"), "{reason}");
     }
 
     #[tokio::test]

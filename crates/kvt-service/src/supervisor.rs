@@ -4,7 +4,7 @@
 //! Job Object и не переживает службу.
 
 use crate::net::NetClient;
-use crate::wfp::{self, KillSwitch};
+use crate::wfp::{self, DnsGuard, KillSwitch};
 use crate::win::Job;
 use kvt_core::compile::{compile, CompileInput, TUN_INTERFACE};
 use kvt_core::core_errors::{self, Triggered};
@@ -136,6 +136,8 @@ pub type Issues = Arc<Mutex<Option<Triggered>>>;
 struct Running {
     child: Child,
     _job: Job,
+    /// DNS мимо туннеля закрыт, пока работает ядро (`wfp::DnsGuard`).
+    dns_guard: Option<DnsGuard>,
 }
 
 /// Файл, который удаляется при выходе из области видимости — в том числе когда
@@ -169,6 +171,9 @@ pub struct Supervisor {
     /// `exited` положил её в `issues`, `handle_issue` переподключит.
     retry_after_exit: bool,
 }
+
+/// Отметка «kill switch включён» в каталоге `run` (см. `mark_kill_switch`).
+const KILL_SWITCH_MARKER: &str = "kill-switch.on";
 
 /// Код правила из `presets/core-errors.json`: ядро не может задать адаптеру IPv6.
 const TUN_IPV6: &str = "tun_ipv6";
@@ -219,6 +224,7 @@ impl Supervisor {
             if self.kill_switch.is_none() {
                 // Защиту включали до переподключения — не снимаем её из-за сбоя.
                 self.kill_switch = Some(previous);
+                self.mark_kill_switch(true);
                 return Err(kvt_core::trf!(
                     "{e}. Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново",
                     "{e}. The kill switch is keeping the internet blocked — press “Disconnect” or connect again"
@@ -229,7 +235,7 @@ impl Supervisor {
     }
 
     async fn start_inner(&mut self, plan: &ConnectPlan) -> Result<(), String> {
-        self.stop().await;
+        self.stop_running().await;
         remove_stale_wintun_devices().await;
         wait_adapter_removed().await;
         plan.routing.validate().map_err(|e| e.to_string())?;
@@ -345,12 +351,33 @@ impl Supervisor {
             .await;
         drop(config_file);
         let (child, job) = result?;
-        self.running = Some(Running { child, _job: job });
+        self.running = Some(Running {
+            child,
+            _job: job,
+            dns_guard: None,
+        });
 
+        // Ядро уже проверило, что интернет пошёл через его TUN, — адаптер на месте.
+        let luid = match self.wait_tun().await {
+            Ok(luid) => luid,
+            Err(e) => {
+                self.stop_running().await;
+                return Err(e);
+            }
+        };
+        if let Err(e) = self.enable_dns_guard(luid) {
+            // Как и с kill switch: не оставляем соединение, у которого DNS уходит мимо.
+            self.stop_running().await;
+            tracing::error!(error = %e, "DNS мимо туннеля не закрыт");
+            return Err(kvt_core::trf!(
+                "Не удалось закрыть DNS-запросы мимо VPN, поэтому подключение остановлено. Подключитесь снова; если повторится — сохраните диагностику. ({e})",
+                "Couldn't block DNS requests outside the VPN, so the connection was stopped. Connect again; if it happens again, save diagnostics. ({e})"
+            ));
+        }
         if plan.kill_switch {
-            if let Err(e) = self.enable_kill_switch(&spec).await {
+            if let Err(e) = self.enable_kill_switch(&spec, luid) {
                 // Защиту обещали, но включить не смогли — не оставляем «полузащищённое» соединение.
-                self.stop().await;
+                self.stop_running().await;
                 tracing::error!(error = %e, "kill switch не включился");
                 return Err(kvt_core::trf!(
                     "Не удалось включить kill switch, поэтому подключение остановлено. Подключитесь снова; если повторится — выключите kill switch в настройках и сохраните диагностику. ({e})",
@@ -425,14 +452,12 @@ impl Supervisor {
         self.running.is_some()
     }
 
-    async fn enable_kill_switch(&mut self, spec: &CoreSpec) -> Result<(), String> {
-        // Интерфейс TUN появляется не мгновенно после старта ядра: Wintun сам ждёт
-        // устройство до 15 с. Ждём дольше, но не дольше, чем живёт ядро.
-        let mut luid = None;
+    /// Ждёт интерфейс TUN. Он появляется не мгновенно после старта ядра: Wintun сам
+    /// ждёт устройство до 15 с. Ждём дольше, но не дольше, чем живёт ядро.
+    async fn wait_tun(&mut self) -> Result<u64, String> {
         for _ in 0..200 {
-            luid = wfp::interface_luid(TUN_INTERFACE);
-            if luid.is_some() {
-                break;
+            if let Some(luid) = wfp::interface_luid(TUN_INTERFACE) {
+                return Ok(luid);
             }
             let exited = self
                 .running
@@ -447,19 +472,99 @@ impl Supervisor {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let luid = luid.ok_or(kvt_core::i18n::tr(
+        Err(kvt_core::i18n::tr(
             "интерфейс TUN не появился за 20 с",
             "the TUN interface didn't appear within 20 s",
-        ))?;
+        )
+        .into())
+    }
+
+    /// Ядра и служба. Оба ядра: тестовое ядро проверки серверов бывает не тем,
+    /// что подключено.
+    fn trusted_apps(&self) -> Result<Vec<PathBuf>, String> {
+        let service = std::env::current_exe().map_err(|e| e.to_string())?;
+        Ok(vec![
+            CoreSpec::new(CoreKind::Xray, &self.paths).exe,
+            CoreSpec::new(CoreKind::SingBox, &self.paths).exe,
+            service,
+        ])
+    }
+
+    fn enable_dns_guard(&mut self, luid: u64) -> Result<(), String> {
+        let apps = self.trusted_apps()?;
+        let apps: Vec<&Path> = apps.iter().map(PathBuf::as_path).collect();
+        let guard = DnsGuard::enable(&apps, luid).map_err(|e| e.to_string())?;
+        if let Some(running) = self.running.as_mut() {
+            running.dns_guard = Some(guard);
+        }
+        Ok(())
+    }
+
+    fn enable_kill_switch(&mut self, spec: &CoreSpec, luid: u64) -> Result<(), String> {
         let service = std::env::current_exe().map_err(|e| e.to_string())?;
         // «Гибрид»: пакеты, которые winws отправляет заново, Windows приписывает ядру
-        // системы — kill switch должен их пропускать (см. `wfp::KillSwitch::add_rules`).
+        // системы — kill switch должен их пропускать (см. `wfp::KillSwitch::enable`).
         let hybrid = self.zapret.is_some();
         let apps = [spec.exe.as_path(), service.as_path()];
         let ks = KillSwitch::enable(&apps, Some(luid), hybrid).map_err(|e| e.to_string())?;
         tracing::info!("kill switch включён");
         self.kill_switch = Some(ks);
+        self.mark_kill_switch(true);
         Ok(())
+    }
+
+    /// Отметка на диске «kill switch включён»: фильтры WFP динамические и пропадают
+    /// вместе с процессом службы, а отметка переживает падение — по ней служба после
+    /// перезапуска снова закрывает интернет (`restore_kill_switch`).
+    fn mark_kill_switch(&self, on: bool) {
+        let marker = self.paths.run.join(KILL_SWITCH_MARKER);
+        let result = if on {
+            std::fs::write(&marker, b"")
+        } else {
+            match std::fs::remove_file(&marker) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            }
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, on, "отметка kill switch не записана");
+        }
+    }
+
+    /// Служба запустилась, а отметка kill switch осталась: прошлый процесс упал с
+    /// включённым kill switch. Интернет снова закрывается до решения окна
+    /// («Подключить» или «Отключить»). Отметка с прошлой загрузки Windows (выключили
+    /// питание) не действует: после перезагрузки закрытого интернета никто не ждёт.
+    pub fn restore_kill_switch(&mut self) -> bool {
+        // Каталог только для SYSTEM и администраторов: чужой каталог `private_dir`
+        // убирает в сторону вместе с отметкой.
+        if secure_dir(&self.paths.run).is_err() {
+            return false;
+        }
+        let marker = self.paths.run.join(KILL_SWITCH_MARKER);
+        let Ok(written) = std::fs::metadata(&marker).and_then(|m| m.modified()) else {
+            return false;
+        };
+        if crate::win::boot_time().map_or(true, |boot| written < boot) {
+            tracing::info!("отметка kill switch с прошлой загрузки Windows — не восстанавливаем");
+            self.mark_kill_switch(false);
+            return false;
+        }
+        let enabled = self.trusted_apps().and_then(|apps| {
+            let apps: Vec<&Path> = apps.iter().map(PathBuf::as_path).collect();
+            KillSwitch::enable(&apps, None, false).map_err(|e| e.to_string())
+        });
+        match enabled {
+            Ok(ks) => {
+                tracing::warn!("служба перезапустилась после сбоя: kill switch восстановлен");
+                self.kill_switch = Some(ks);
+                true
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "kill switch после сбоя не восстановлен");
+                false
+            }
+        }
     }
 
     async fn check_and_spawn(
@@ -547,7 +652,17 @@ impl Supervisor {
         self.zapret.as_ref().and_then(|z| z.pid())
     }
 
+    /// Всё остановить и выключить kill switch: «Отключить», отмена, выход службы.
+    /// Отметка стирается и тогда, когда kill switch уже снят: отмена переподключения
+    /// бросает прежний kill switch вместе с недоделанным запуском.
     pub async fn stop(&mut self) {
+        self.stop_running().await;
+        self.mark_kill_switch(false);
+    }
+
+    /// Остановка внутри запуска. Прежний kill switch при переподключении держит
+    /// `connect`, и его отметка остаётся.
+    async fn stop_running(&mut self) {
         if let Some(mut running) = self.running.take() {
             let _ = running.child.kill().await;
             tracing::info!("ядро остановлено");
@@ -556,6 +671,7 @@ impl Supervisor {
             tracing::info!("zapret остановлен");
         }
         if self.kill_switch.take().is_some() {
+            self.mark_kill_switch(false);
             tracing::info!("kill switch выключен");
         }
     }

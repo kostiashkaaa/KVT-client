@@ -134,6 +134,13 @@ pub fn process_image(pid: u32) -> io::Result<PathBuf> {
     Ok(PathBuf::from(OsString::from_wide(&buf[..len as usize])))
 }
 
+/// Когда загрузилась Windows (с точностью до миллисекунд счётчика).
+pub fn boot_time() -> Option<std::time::SystemTime> {
+    // SAFETY: функция без аргументов, только читает счётчик.
+    let uptime = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() };
+    std::time::SystemTime::now().checked_sub(std::time::Duration::from_millis(uptime))
+}
+
 /// Запущен ли процесс с правами администратора (повышенный токен или SYSTEM).
 pub fn is_elevated() -> bool {
     let mut token: HANDLE = std::ptr::null_mut();

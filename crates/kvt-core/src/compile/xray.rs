@@ -52,7 +52,7 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
             "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true }
         }],
         "outbounds": [
-            outbound(input.server)?,
+            server_outbound(input.server)?,
             { "tag": TAG_DIRECT, "protocol": "freedom" },
             { "tag": TAG_BLOCK, "protocol": "blackhole" },
             { "tag": TAG_DNS, "protocol": "dns" }
@@ -71,7 +71,13 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
 
 /// Домены, которые резолвятся локальным DNS: прямые правила и адрес сервера.
 fn direct_domains(input: &CompileInput<'_>) -> Vec<String> {
-    input
+    let server = input
+        .server
+        .endpoints()
+        .into_iter()
+        .filter(|h| h.parse::<std::net::IpAddr>().is_err())
+        .map(|h| format!("full:{h}"));
+    let rules = input
         .routing
         .ordered()
         .into_iter()
@@ -82,8 +88,27 @@ fn direct_domains(input: &CompileInput<'_>) -> Vec<String> {
             m => rule_set(m)
                 .filter(|s| !s.is_ip_only())
                 .map(|s| s.xray_expr()),
-        })
-        .collect()
+        });
+    server.chain(rules).collect()
+}
+
+/// Выход к VPN-серверу в режиме TUN. Имя сервера Xray резолвит встроенным DNS —
+/// локальным резолвером (`direct_domains`) от имени xray.exe, как sing-box
+/// (`default_domain_resolver`). По умолчанию Xray спрашивает системный DNS: запрос
+/// уходит от службы DNS Windows, а её запросы мимо туннеля служба блокирует
+/// (`wfp::DnsGuard`) — имя сервера резолвилось бы через сам туннель.
+fn server_outbound(s: &Server) -> Result<Value, CompileError> {
+    let mut out = outbound(s)?;
+    let local_dns = json!({ "domainStrategy": "UseIPv4" });
+    out["streamSettings"]["sockopt"] = local_dns.clone();
+    // Сервер загрузки XHTTP — свой `streamSettings` со своим адресом.
+    if let Some(download) = out
+        .pointer_mut("/streamSettings/xhttpSettings/extra/downloadSettings")
+        .filter(|d| d.is_object())
+    {
+        download["sockopt"] = local_dns;
+    }
+    Ok(out)
 }
 
 fn rules(input: &CompileInput<'_>) -> Vec<Value> {
@@ -478,6 +503,34 @@ mod tests {
         assert!(!crate::compile::mux_applies(&reality));
         assert!(outbound(&reality).unwrap().get("mux").is_none());
         assert!(!reality.warnings().is_empty());
+    }
+
+    /// Имя сервера (и сервера загрузки XHTTP) — встроенным DNS через локальный
+    /// резолвер, а не системным: системный DNS мимо туннеля служба закрывает.
+    #[test]
+    fn server_name_resolves_by_local_dns() {
+        let extra = percent_encoding::utf8_percent_encode(
+            r#"{"downloadSettings":{"address":"dl.example.com","port":443,"network":"xhttp","security":"tls","tlsSettings":{"serverName":"dl.example.com"}}}"#,
+            percent_encoding::NON_ALPHANUMERIC,
+        );
+        let c = build(&format!("vless://b831381d-6324-4d53-ad4f-8cda48b30811@up.example.com:443?type=xhttp&security=tls&path=%2Fx&extra={extra}#x"));
+        let st = &c.config["outbounds"][0]["streamSettings"];
+        assert_eq!(st["sockopt"]["domainStrategy"], "UseIPv4");
+        assert_eq!(
+            st["xhttpSettings"]["extra"]["downloadSettings"]["sockopt"]["domainStrategy"],
+            "UseIPv4"
+        );
+        let domains = c.config["dns"]["servers"][1]["domains"].as_array().unwrap();
+        assert!(domains.contains(&"full:up.example.com".into()));
+        assert!(domains.contains(&"full:dl.example.com".into()));
+
+        // IP в список доменов не попадает; у других транспортов лишних ключей нет.
+        let c = build(REALITY);
+        let domains = c.config["dns"]["servers"][1]["domains"].as_array().unwrap();
+        assert!(!domains.iter().any(|d| d == "full:203.0.113.10"));
+        let st = &c.config["outbounds"][0]["streamSettings"];
+        assert!(st.get("xhttpSettings").is_none());
+        assert_eq!(st["sockopt"]["domainStrategy"], "UseIPv4");
     }
 
     #[test]

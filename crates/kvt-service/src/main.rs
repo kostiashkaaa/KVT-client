@@ -234,7 +234,10 @@ async fn serve(shutdown: tokio::sync::watch::Receiver<bool>) -> anyhow::Result<(
         tracing::warn!("служба запущена без прав администратора — подключение работать не будет");
     }
     tracing::info!(cores = %paths.cores.display(), rules = %paths.rules.display(), "каталоги");
-    let state = handler::State::new(supervisor::Supervisor::new(paths));
+    let mut supervisor = supervisor::Supervisor::new(paths);
+    // Раньше pipe: пока окно не подключилось, интернет уже закрыт.
+    supervisor.restore_kill_switch();
+    let state = handler::State::new(supervisor);
     pipe::serve(state, shutdown).await
 }
 
