@@ -277,7 +277,21 @@ fn agent_order(client: Client<'_>, remembered: Option<&str>) -> Vec<(&'static st
     }
 }
 
+/// Один клиент на всю загрузку: перебор User-Agent и повтор с ID устройства идут по
+/// одному соединению (keep-alive), а не открывают новое TLS-рукопожатие к тому же
+/// SNI на каждую попытку — разрешение NetGovernor у загрузки одно.
+fn client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(describe)
+}
+
 async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
+    let client = client()?;
     let mut first_error = None;
     let mut hwid = match hints.hwid {
         Hwid::Send(id) => Some(id),
@@ -285,12 +299,12 @@ async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
     };
     for (key, agent) in agent_order(hints.client, hints.agent) {
         let conditional = hints.validators.filter(|_| hints.agent == Some(key));
-        let mut reply = fetch_as(url, &agent, conditional, hwid).await;
+        let mut reply = fetch_as(&client, url, &agent, conditional, hwid).await;
         if let (Ok(Reply::HwidRequired), Hwid::OnRequest(id)) = (&reply, hints.hwid) {
             // Провайдер сам сказал, что без ID не отдаст: повтор с ним, и дальше
             // по очереди — тоже с ним.
             hwid = Some(id);
-            reply = fetch_as(url, &agent, conditional, hwid).await;
+            reply = fetch_as(&client, url, &agent, conditional, hwid).await;
         }
         match reply {
             Ok(Reply::NotModified(meta)) => return Ok(Loaded::NotModified(meta)),
@@ -338,21 +352,15 @@ async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
 }
 
 async fn fetch_as(
+    client: &reqwest::Client,
     url: &Url,
     agent: &str,
     conditional: Option<&Validators>,
     hwid: Option<&str>,
 ) -> Result<Reply, String> {
-    let client = reqwest::Client::builder()
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .user_agent(agent)
-        .build()
-        .map_err(describe)?;
-
-    let mut request = client.get(url.clone());
+    let mut request = client
+        .get(url.clone())
+        .header(reqwest::header::USER_AGENT, agent);
     if let Some(v) = conditional {
         if let Some(etag) = &v.etag {
             request = request.header(reqwest::header::IF_NONE_MATCH, etag);

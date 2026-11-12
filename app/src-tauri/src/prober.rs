@@ -296,15 +296,14 @@ pub async fn full_check(
     let result = async {
         let (keys, servers) = crate::servers_of(&state, group.as_deref())?;
         let prober = Arc::new(CoreProber::new(source)?);
-        // Состояние NetGovernor (лимиты и заморозки по SNI) общее для всего приложения.
-        let mut governor =
-            std::mem::take(&mut *state.governor.lock().map_err(crate::errors::state)?);
+        // Состояние NetGovernor (лимиты и заморозки по SNI) общее для всего приложения:
+        // проверка берёт его на каждое решение, остальные видят её записи сразу.
         let events = app.clone();
         let event_keys = keys.clone();
         let outcomes = tester::full_check(
             &servers,
             prober,
-            &mut governor,
+            &state.governor,
             BUDGET,
             move |index, outcome| {
                 let _ = events.emit(
@@ -317,7 +316,6 @@ pub async fn full_check(
             },
         )
         .await;
-        *state.governor.lock().map_err(crate::errors::state)? = governor;
         // Результаты нужны и автопереключению: оно выбирает замену среди проверенных
         // (и после перезапуска KVT).
         crate::outcomes::record(&state, keys.into_iter().zip(outcomes));

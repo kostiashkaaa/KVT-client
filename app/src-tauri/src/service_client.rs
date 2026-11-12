@@ -149,12 +149,56 @@ pub fn service_mismatch() -> bool {
     version_mismatch()
 }
 
+/// Сколько ждать ответа службы. Статус, журналы и сведения служба отдаёт, не
+/// дожидаясь подключения, — если их нет дольше, служба зависла, и окно с треем не
+/// должны висеть вместе с ней. Запуск, остановка и обслуживание идут сколько нужно:
+/// у них свой предел внутри службы и отмена по «Отключить».
+fn deadline(request: &Request) -> Option<Duration> {
+    match request {
+        Request::Hello { .. }
+        | Request::Status
+        | Request::NetLog
+        | Request::ServiceLog
+        | Request::ZapretStrategies
+        | Request::ZapretInfo => Some(Duration::from_secs(15)),
+        // tasklist, проверка страницы входа (до 10 с), пинг десятков серверов.
+        Request::ZapretConflicts | Request::CaptiveCheck | Request::Ping { .. } => {
+            Some(Duration::from_secs(60))
+        }
+        Request::Connect(_)
+        | Request::StartZapret(_)
+        | Request::Disconnect
+        | Request::StopConflicts
+        | Request::ZapretUpdate
+        | Request::ZapretRepair
+        | Request::AuditFix(_) => None,
+    }
+}
+
+fn no_answer() -> &'static str {
+    kvt_core::i18n::tr(
+        "Служба KVT не ответила вовремя. Повторите через несколько секунд; если не выйдет — перезагрузите компьютер и сохраните диагностику.",
+        "The KVT service didn't answer in time. Try again in a few seconds; if it fails, restart the computer and save diagnostics.",
+    )
+}
+
 /// Запрос целиком — в отдельном потоке: pipe открыт синхронно (у асинхронного
 /// клиента tokio права доступа не задать), а ответ на `Connect` идёт десятки секунд.
+/// По истечении `deadline` окно перестаёт ждать; поток дочитает ответ сам и закроется.
 pub async fn call(request: Request) -> Result<Response, String> {
-    tokio::task::spawn_blocking(move || call_blocking(request))
-        .await
-        .unwrap_or_else(|_| Err(broken().into()))
+    let deadline = deadline(&request);
+    let task = tokio::task::spawn_blocking(move || call_blocking(request));
+    let joined = match deadline {
+        Some(limit) => match tokio::time::timeout(limit, task).await {
+            Ok(joined) => joined,
+            Err(_) => {
+                tracing::warn!(secs = limit.as_secs(), "служба не ответила вовремя");
+                return Err(no_answer().into());
+            }
+        },
+        None => task.await,
+    };
+    joined.unwrap_or_else(|_| Err(broken().into()))
 }
 
 fn call_blocking(request: Request) -> Result<Response, String> {

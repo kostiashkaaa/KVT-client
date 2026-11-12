@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::task::JoinSet;
@@ -50,10 +50,14 @@ pub fn sni_key(server: &Server) -> String {
 /// Полная проверка. `budget` ограничивает общее время: что не успели —
 /// возвращается как `Deferred`. `on_result` вызывается для каждого сервера, как
 /// только его результат известен (интерфейс показывает их по мере готовности).
+///
+/// `governor` — общий для всего приложения и блокируется только на каждое решение:
+/// проверка идёт минутами, а подписки, «Почему не работает?» и автопереключение всё
+/// это время должны видеть те же лимиты и заморозки.
 pub async fn full_check<P: Prober>(
     servers: &[Server],
     prober: Arc<P>,
-    governor: &mut NetGovernor,
+    governor: &Mutex<NetGovernor>,
     budget: Duration,
     mut on_result: impl FnMut(usize, &Outcome),
 ) -> Vec<Outcome> {
@@ -63,7 +67,7 @@ pub async fn full_check<P: Prober>(
         outcomes[i] = Some(o);
     };
     let deadline = Instant::now() + budget;
-    let max_parallel = governor.policy().max_parallel_probes.max(1);
+    let max_parallel = lock(governor).policy().max_parallel_probes.max(1);
     let mut pending: VecDeque<usize> = (0..servers.len()).collect();
     let mut running: JoinSet<(usize, String, ProbeObservation)> = JoinSet::new();
 
@@ -91,7 +95,9 @@ pub async fn full_check<P: Prober>(
                 continue;
             }
             let sni = sni_key(&servers[i]);
-            match governor.try_acquire_endpoint(&sni, Some(&servers[i].address), now) {
+            let decision =
+                lock(governor).try_acquire_endpoint(&sni, Some(&servers[i].address), now);
+            match decision {
                 Decision::Allowed => {
                     let prober = Arc::clone(&prober);
                     let server = servers[i].clone();
@@ -131,7 +137,7 @@ pub async fn full_check<P: Prober>(
                     let verdict = classify(&observation);
                     log_probe(&sni, verdict, &observation);
                     if verdict.is_freeze() {
-                        governor.report_freeze(&sni, Instant::now().into_std());
+                        lock(governor).report_freeze(&sni, Instant::now().into_std());
                     }
                     let latency_ms = observation.latency.map(|l| l.as_millis() as u64);
                     record(&mut outcomes, i, Outcome::Checked { verdict, latency_ms });
@@ -149,6 +155,14 @@ pub async fn full_check<P: Prober>(
             })
         })
         .collect()
+}
+
+/// Состояние NetGovernor переживает панику в другом потоке: лимиты и заморозки
+/// важнее, чем согласованность одной записи.
+fn lock(governor: &Mutex<NetGovernor>) -> std::sync::MutexGuard<'_, NetGovernor> {
+    governor
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Запись полной проверки сервера в журнал запросов.
@@ -419,13 +433,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn same_sni_never_trips_tspu() {
         let emu = Arc::new(TspuEmulator::default());
-        let mut gov = NetGovernor::new(strict());
+        let gov = Mutex::new(NetGovernor::new(strict()));
         let list = same_sni(10);
         let started = Instant::now();
         let out = full_check(
             &list,
             Arc::clone(&emu),
-            &mut gov,
+            &gov,
             Duration::from_secs(3600),
             |_, _| {},
         )
@@ -441,15 +455,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn per_endpoint_is_fast_when_tspu_counts_per_endpoint() {
         let emu = Arc::new(TspuEmulator::default().per_endpoint());
-        let mut gov = NetGovernor::new(NetPolicy {
+        let gov = Mutex::new(NetGovernor::new(NetPolicy {
             per_endpoint: true,
             ..NetPolicy::default()
-        });
+        }));
         let started = Instant::now();
         let out = full_check(
             &same_sni(10),
             Arc::clone(&emu),
-            &mut gov,
+            &gov,
             Duration::from_secs(3600),
             |_, _| {},
         )
@@ -471,20 +485,22 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn per_endpoint_damage_is_one_freeze_when_tspu_counts_per_sni() {
         let emu = Arc::new(TspuEmulator::default());
-        let mut gov = NetGovernor::new(NetPolicy {
+        let gov = Mutex::new(NetGovernor::new(NetPolicy {
             per_endpoint: true,
             ..NetPolicy::default()
-        });
+        }));
         let out = full_check(
             &same_sni(10),
             Arc::clone(&emu),
-            &mut gov,
+            &gov,
             Duration::from_secs(60),
             |_, _| {},
         )
         .await;
         assert_eq!(emu.violations(), 1);
         assert!(gov
+            .lock()
+            .unwrap()
             .frozen_until("www.microsoft.com", std::time::Instant::now())
             .is_some());
         let count = |f: fn(&Outcome) -> bool| out.iter().filter(|o| f(o)).count();
@@ -509,7 +525,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn different_snis_run_in_parallel() {
         let emu = Arc::new(TspuEmulator::default());
-        let mut gov = NetGovernor::new(NetPolicy::default());
+        let gov = Mutex::new(NetGovernor::new(NetPolicy::default()));
         let list = servers(&[
             ("203.0.113.1", "a.example.com"),
             ("203.0.113.2", "b.example.com"),
@@ -517,7 +533,7 @@ mod tests {
             ("203.0.113.4", "d.example.com"),
         ]);
         let started = Instant::now();
-        let out = full_check(&list, emu, &mut gov, Duration::from_secs(60), |_, _| {}).await;
+        let out = full_check(&list, emu, &gov, Duration::from_secs(60), |_, _| {}).await;
         assert!(out.iter().all(works));
         assert!(started.elapsed() < Duration::from_secs(1));
     }
@@ -525,12 +541,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn data_freeze_stops_attempts_on_that_sni() {
         let emu = Arc::new(TspuEmulator::default().with_flagged("203.0.113.1"));
-        let mut gov = NetGovernor::new(strict());
+        let gov = Mutex::new(NetGovernor::new(strict()));
         let list = same_sni(5);
         let out = full_check(
             &list,
             Arc::clone(&emu),
-            &mut gov,
+            &gov,
             Duration::from_secs(3600),
             |_, _| {},
         )
@@ -554,15 +570,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn budget_defers_the_rest() {
         let emu = Arc::new(TspuEmulator::default());
-        let mut gov = NetGovernor::new(strict());
-        let out = full_check(
-            &same_sni(6),
-            emu,
-            &mut gov,
-            Duration::from_secs(30),
-            |_, _| {},
-        )
-        .await;
+        let gov = Mutex::new(NetGovernor::new(strict()));
+        let out = full_check(&same_sni(6), emu, &gov, Duration::from_secs(30), |_, _| {}).await;
         assert!(works(&out[0]) && works(&out[1]));
         assert!(
             out[2..]
@@ -575,12 +584,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn progress_reports_every_server_once() {
         let emu = Arc::new(TspuEmulator::default().with_flagged("203.0.113.1"));
-        let mut gov = NetGovernor::new(strict());
+        let gov = Mutex::new(NetGovernor::new(strict()));
         let mut seen = Vec::new();
         let out = full_check(
             &same_sni(4),
             emu,
-            &mut gov,
+            &gov,
             Duration::from_secs(3600),
             |i, o| seen.push((i, o.clone())),
         )

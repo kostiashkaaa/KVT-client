@@ -15,6 +15,7 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -130,6 +131,35 @@ pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
 }
 
 pub type Log = Arc<Mutex<VecDeque<String>>>;
+
+fn recent(log: &Log, n: usize) -> Vec<String> {
+    let log = log.lock().map(|l| l.clone()).unwrap_or_default();
+    log.iter().rev().take(n).rev().cloned().collect()
+}
+
+/// То, что нужно командам без состояния подключения (журналы, сведения о zapret,
+/// конфликты): служба отвечает на них, не дожидаясь блокировки, которую держит
+/// подключение или установка обновления.
+#[derive(Clone)]
+pub struct Shared {
+    paths: Paths,
+    log: Log,
+    zapret_pid: Arc<AtomicU32>,
+}
+
+impl Shared {
+    pub fn paths(&self) -> &Paths {
+        &self.paths
+    }
+
+    pub fn recent_log(&self, n: usize) -> Vec<String> {
+        recent(&self.log, n)
+    }
+
+    pub fn zapret_pid(&self) -> Option<u32> {
+        Some(self.zapret_pid.load(Ordering::Relaxed)).filter(|&pid| pid != 0)
+    }
+}
 /// Сработавшее правило ошибок ядра, которое ещё не обработано.
 pub type Issues = Arc<Mutex<Option<Triggered>>>;
 
@@ -156,8 +186,10 @@ pub struct Supervisor {
     /// Живёт отдельно от процесса ядра: если ядро упало, блокировка остаётся
     /// до явного «Отключить».
     kill_switch: Option<KillSwitch>,
-    /// winws: в гибриде рядом с ядром, в режиме zapret — один.
+    /// winws: в гибриде рядом с ядром, в режиме zapret — один. Менять только через
+    /// `set_zapret`: его pid читают команды без блокировки (`Shared`).
     zapret: Option<crate::zapret::Winws>,
+    zapret_pid: Arc<AtomicU32>,
     log: Log,
     issues: Issues,
     /// Последний план подключения — для переподключения по ошибке ядра.
@@ -185,6 +217,7 @@ impl Supervisor {
             running: None,
             kill_switch: None,
             zapret: None,
+            zapret_pid: Arc::default(),
             log: Log::default(),
             issues: Issues::default(),
             last_plan: None,
@@ -195,8 +228,22 @@ impl Supervisor {
     }
 
     pub fn recent_log(&self, n: usize) -> Vec<String> {
-        let log = self.log.lock().map(|l| l.clone()).unwrap_or_default();
-        log.iter().rev().take(n).rev().cloned().collect()
+        recent(&self.log, n)
+    }
+
+    /// Для команд без блокировки состояния (см. `Shared`).
+    pub fn shared(&self) -> Shared {
+        Shared {
+            paths: self.paths.clone(),
+            log: Arc::clone(&self.log),
+            zapret_pid: Arc::clone(&self.zapret_pid),
+        }
+    }
+
+    fn set_zapret(&mut self, winws: Option<crate::zapret::Winws>) {
+        let pid = winws.as_ref().and_then(crate::zapret::Winws::pid);
+        self.zapret_pid.store(pid.unwrap_or(0), Ordering::Relaxed);
+        self.zapret = winws;
     }
 
     /// Запуск или переподключение. При смене сервера с kill switch прежние фильтры
@@ -218,7 +265,7 @@ impl Supervisor {
         let result = self.start_inner(plan).await;
         if result.is_err() {
             // Ядро не поднялось — zapret без него в гибриде не нужен.
-            self.zapret = None;
+            self.set_zapret(None);
         }
         if let (Err(e), Some(previous)) = (&result, previous) {
             if self.kill_switch.is_none() {
@@ -294,18 +341,17 @@ impl Supervisor {
         if let Some(zp) = &plan.zapret {
             // winws — до ядра, пока трафик ещё идёт через физический интерфейс.
             let interface = physical_interface().await;
-            self.zapret = Some(
-                crate::zapret::start(
-                    &self.paths,
-                    zp,
-                    &plan.routing.zapret_hostlist(),
-                    // И сервер загрузки XHTTP: winws не должен трогать соединения ядра.
-                    &plan.server.endpoints(),
-                    interface,
-                    &self.log,
-                )
-                .await?,
-            );
+            let winws = crate::zapret::start(
+                &self.paths,
+                zp,
+                &plan.routing.zapret_hostlist(),
+                // И сервер загрузки XHTTP: winws не должен трогать соединения ядра.
+                &plan.server.endpoints(),
+                interface,
+                &self.log,
+            )
+            .await?;
+            self.set_zapret(Some(winws));
         }
 
         let rules = self.paths.rules.to_string_lossy().replace('\\', "/");
@@ -392,9 +438,30 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Сработало правило ошибок ядра, после которого положено переподключиться.
+    /// Переподключение идёт секунды, поэтому `Status` его не делает: служба
+    /// запускает его отдельно, и «Отключить» его прерывает (`pipe::reconnect`).
+    pub fn reconnect_pending(&self) -> bool {
+        let Ok(issues) = self.issues.lock() else {
+            return false;
+        };
+        let Some(issue) = issues.as_ref() else {
+            return false;
+        };
+        if self.running.is_none() && !self.retry_after_exit {
+            return false;
+        }
+        issue.action == core_errors::Action::Reconnect
+            && ((issue.code == TUN_IPV6 && !self.ipv6_failed) || !self.reconnected)
+    }
+
     /// Обрабатывает сработавшее правило ошибок ядра. `Some(текст)` — подключение
-    /// остановлено, текст — причина для пользователя.
-    pub async fn handle_issue(&mut self) -> Option<String> {
+    /// остановлено, текст — причина для пользователя. Без `reconnect` правило, по
+    /// которому надо переподключиться, остаётся ждать (`reconnect_pending`).
+    pub async fn handle_issue(&mut self, reconnect: bool) -> Option<String> {
+        if !reconnect && self.reconnect_pending() {
+            return None;
+        }
         let issue = self.issues.lock().ok()?.take()?;
         // Ядро уже не работает — действуем, только если это повтор после его выхода.
         let after_exit = std::mem::take(&mut self.retry_after_exit);
@@ -444,7 +511,7 @@ impl Supervisor {
         if let Some(mut running) = self.running.take() {
             let _ = running.child.kill().await;
         }
-        self.zapret = None;
+        self.set_zapret(None);
     }
 
     /// VPN-ядро сейчас работает.
@@ -640,7 +707,7 @@ impl Supervisor {
         let winws =
             crate::zapret::start(&self.paths, plan, &plan.domains, &[], None, &self.log).await?;
         let strategy = winws.strategy.clone();
-        self.zapret = Some(winws);
+        self.set_zapret(Some(winws));
         Ok(strategy)
     }
 
@@ -667,13 +734,19 @@ impl Supervisor {
             let _ = running.child.kill().await;
             tracing::info!("ядро остановлено");
         }
-        if self.zapret.take().is_some() {
+        if self.zapret.is_some() {
+            self.set_zapret(None);
             tracing::info!("zapret остановлен");
         }
         if self.kill_switch.take().is_some() {
             self.mark_kill_switch(false);
             tracing::info!("kill switch выключен");
         }
+        // Правило ошибок прежнего ядра не должно переподключить то, что остановлено.
+        if let Ok(mut issues) = self.issues.lock() {
+            *issues = None;
+        }
+        self.retry_after_exit = false;
     }
 
     pub fn kill_switch_active(&self) -> bool {
@@ -683,7 +756,7 @@ impl Supervisor {
     /// Если ядро или zapret завершились сами — причина (последние строки лога).
     pub fn exited(&mut self) -> Option<String> {
         if let Some(reason) = self.zapret.as_mut().and_then(crate::zapret::Winws::exited) {
-            self.zapret = None;
+            self.set_zapret(None);
             let last = self.recent_log(1).pop().unwrap_or_default();
             tracing::error!(%reason, %last, "zapret завершился");
             // «Гибрид»: без winws ядро осталось бы работать, а статус — «ошибка»:
@@ -702,6 +775,12 @@ impl Supervisor {
                 self.running = None;
                 let last = self.recent_log(1).pop().unwrap_or_default();
                 tracing::error!(%status, %last, "ядро завершилось само");
+                // «Гибрид»: без ядра winws продолжал бы менять трафик, а статус —
+                // «ошибка». Переподключение запустит его заново вместе с ядром.
+                if self.zapret.is_some() {
+                    self.set_zapret(None);
+                    tracing::info!("zapret остановлен вслед за ядром");
+                }
                 // Понятный текст, если последняя строка подходит под правило.
                 let rule = self
                     .last_plan
@@ -1026,6 +1105,50 @@ fn spawn_rules_sync(dir: PathBuf, files: Vec<rulesync::RuleFile>, force: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn supervisor() -> Supervisor {
+        let tmp = std::env::temp_dir().join("kvt-supervisor-test");
+        Supervisor::new(Paths {
+            cores: tmp.clone(),
+            rules: tmp.clone(),
+            run: tmp.clone(),
+            zapret: tmp.clone(),
+            zapret_lists: tmp.clone(),
+            zapret_update: tmp,
+        })
+    }
+
+    /// Ядро завершилось с ошибкой, после которой положено переподключиться:
+    /// `Status` переподключение не делает и правило не съедает — его делает
+    /// отдельная задача, а «Отключить» стирает правило, и переподключаться нечего.
+    #[tokio::test]
+    async fn reconnect_waits_for_its_task_and_disconnect_drops_it() {
+        let mut sup = supervisor();
+        *sup.issues.lock().unwrap() = Some(Triggered {
+            code: "wintun_busy".into(),
+            text: "адаптер занят".into(),
+            action: core_errors::Action::Reconnect,
+        });
+        sup.retry_after_exit = true;
+        assert!(sup.reconnect_pending());
+        assert_eq!(sup.handle_issue(false).await, None);
+        assert!(
+            sup.reconnect_pending(),
+            "правило должно дождаться переподключения"
+        );
+
+        sup.stop().await;
+        assert!(!sup.reconnect_pending());
+        assert_eq!(sup.handle_issue(true).await, None);
+    }
+
+    /// pid winws для команд без блокировки: нет winws — нет pid.
+    #[test]
+    fn shared_has_no_zapret_pid_without_winws() {
+        let sup = supervisor();
+        assert_eq!(sup.shared().zapret_pid(), None);
+        assert!(sup.shared().recent_log(10).is_empty());
+    }
 
     #[tokio::test]
     async fn instant_exit_is_reported() {

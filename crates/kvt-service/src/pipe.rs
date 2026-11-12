@@ -10,15 +10,18 @@
 //! TODO(этап 5): дополнительно проверять Authenticode-подпись клиента.
 
 use crate::handler::{self, State};
+use crate::supervisor::Shared;
 use crate::win;
 use kvt_core::ipc::{self, Request, Response, ServiceStatus, PIPE_NAME};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::NamedPipeServer;
 use tokio::sync::{watch, Mutex};
 
 pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
+    let shared = state.shared();
     let state = Arc::new(Mutex::new(state));
     let allowed_dir = std::env::current_exe()?
         .parent()
@@ -33,6 +36,7 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
         session: None,
     }));
     let cancel: Cancel = Arc::new(watch::channel(0).0);
+    let reconnecting = Arc::new(AtomicBool::new(false));
     // Первый экземпляр: имя уже занято — значит, работает другая служба KVT.
     let mut server = win::create_pipe(PIPE_NAME, true).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -69,11 +73,15 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
                     && manifest.as_ref().map_or(true, |m| m.check(&image)) =>
             {
                 tracing::debug!(image = %image.display(), "клиент принят");
-                let state = Arc::clone(&state);
-                let snapshot = Arc::clone(&snapshot);
-                let cancel = Arc::clone(&cancel);
+                let ctx = Context {
+                    state: Arc::clone(&state),
+                    shared: shared.clone(),
+                    snapshot: Arc::clone(&snapshot),
+                    cancel: Arc::clone(&cancel),
+                    reconnecting: Arc::clone(&reconnecting),
+                };
                 tokio::spawn(async move {
-                    if let Err(e) = handle_client(client, state, snapshot, cancel).await {
+                    if let Err(e) = handle_client(client, ctx).await {
                         tracing::warn!(error = %e, "клиент отключён с ошибкой");
                     }
                 });
@@ -130,12 +138,54 @@ fn set_snapshot(snapshot: &Snapshot, response: Response) {
 /// Счётчик команд «Отключить»: запуск следит, не выросло ли число с его прихода.
 type Cancel = Arc<watch::Sender<u64>>;
 
-async fn handle_client(
-    mut pipe: NamedPipeServer,
+/// Всё, что делят между собой клиенты pipe.
+#[derive(Clone)]
+struct Context {
     state: Arc<Mutex<State>>,
+    /// Для команд без блокировки состояния (`handler::stateless`).
+    shared: Shared,
     snapshot: Snapshot,
     cancel: Cancel,
-) -> anyhow::Result<()> {
+    /// Переподключение по ошибке ядра уже запущено (`spawn_reconnect`).
+    reconnecting: Arc<AtomicBool>,
+}
+
+impl Context {
+    /// Будущее, которое завершится, когда придёт «Отключить» после этого момента.
+    fn cancelled(&self) -> impl std::future::Future<Output = ()> {
+        let issued = *self.cancel.borrow();
+        let mut cancelled = self.cancel.subscribe();
+        async move {
+            // Ошибка — отправитель закрыт, служба останавливается.
+            let _ = cancelled.wait_for(|n| *n != issued).await;
+        }
+    }
+
+    fn connecting(&self) {
+        set_snapshot(
+            &self.snapshot,
+            Response::Status {
+                status: ServiceStatus::Connecting,
+                session: None,
+            },
+        );
+    }
+
+    /// VPN работает по последнему известному статусу.
+    fn vpn_running(&self) -> bool {
+        self.snapshot.lock().is_ok_and(|s| {
+            matches!(
+                *s,
+                Response::Status {
+                    status: ServiceStatus::Connected { .. },
+                    ..
+                }
+            )
+        })
+    }
+}
+
+async fn handle_client(mut pipe: NamedPipeServer, ctx: Context) -> anyhow::Result<()> {
     loop {
         let mut header = [0u8; 4];
         if pipe.read_exact(&mut header).await.is_err() {
@@ -146,62 +196,93 @@ async fn handle_client(
         pipe.read_exact(&mut body).await?;
 
         let response = match ipc::decode::<Request>(&body) {
-            // Пинг идёт секунды и состояния не трогает: не держим блокировку,
-            // чтобы окно тем временем получало статус.
-            Ok(Request::Ping { targets }) => crate::net::ping(targets).await,
-            // Сверка версии не зависит от состояния.
-            Ok(request @ Request::Hello { .. }) => handler::hello(&request),
-            Ok(Request::Status) => match state.try_lock() {
-                Ok(mut guard) => {
-                    let response = handler::handle(&mut guard, Request::Status).await;
-                    set_snapshot(&snapshot, response.clone());
-                    response
-                }
-                Err(_) => snapshot
-                    .lock()
-                    .map(|s| s.clone())
-                    .unwrap_or(Response::Status {
-                        status: ServiceStatus::Connecting,
-                        session: None,
-                    }),
+            Ok(request) => match handler::stateless(&ctx.shared, request).await {
+                Ok(response) => response,
+                Err(Request::Status) => status(&ctx).await,
+                Err(Request::ZapretUpdate) => zapret_update(&ctx).await,
+                Err(request) => locked(&ctx, request).await,
             },
-            Ok(request) => {
-                let starts = matches!(request, Request::Connect(_) | Request::StartZapret(_));
-                if starts {
-                    set_snapshot(
-                        &snapshot,
-                        Response::Status {
-                            status: ServiceStatus::Connecting,
-                            session: None,
-                        },
-                    );
-                }
-                // «Отключить» прерывает запуск, начатый до него, — ещё до блокировки,
-                // которую запуск держит. Запуск, пришедший позже, не отменяется.
-                if matches!(request, Request::Disconnect) {
-                    cancel.send_modify(|n| *n = n.wrapping_add(1));
-                }
-                let issued = *cancel.borrow();
-                let mut cancelled = cancel.subscribe();
-                let mut guard = state.lock().await;
-                let response = if starts {
-                    let cancel = async move {
-                        // Ошибка — отправитель закрыт, служба останавливается.
-                        let _ = cancelled.wait_for(|n| *n != issued).await;
-                    };
-                    handler::handle_or_cancel(&mut guard, request, cancel).await
-                } else {
-                    handler::handle(&mut guard, request).await
-                };
-                set_snapshot(&snapshot, guard.status_response());
-                response
-            }
             Err(_) => Response::Error {
                 message: kvt_core::i18n::tr("неизвестная команда", "unknown command").into(),
             },
         };
         pipe.write_all(&ipc::encode(&response)?).await?;
     }
+}
+
+/// Статус не ждёт блокировку: пока её держит другая команда, отдаётся снимок.
+/// Переподключение по ошибке ядра — отдельной задачей (`spawn_reconnect`), чтобы
+/// ни статус, ни «Отключить» не ждали его десятки секунд.
+async fn status(ctx: &Context) -> Response {
+    let Ok(mut guard) = ctx.state.try_lock() else {
+        return ctx
+            .snapshot
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(Response::Status {
+                status: ServiceStatus::Connecting,
+                session: None,
+            });
+    };
+    let response = handler::handle(&mut guard, Request::Status).await;
+    set_snapshot(&ctx.snapshot, response.clone());
+    if guard.reconnect_pending() {
+        spawn_reconnect(ctx);
+    }
+    response
+}
+
+/// Отмена считается от этого момента: «Отключить», пришедшее раньше, уже остановило
+/// ядро и стёрло правило ошибок, и переподключаться будет нечего.
+fn spawn_reconnect(ctx: &Context) {
+    if ctx.reconnecting.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let cancelled = ctx.cancelled();
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        let mut guard = ctx.state.lock().await;
+        ctx.connecting();
+        handler::reconnect_or_cancel(&mut guard, cancelled).await;
+        set_snapshot(&ctx.snapshot, guard.status_response());
+        ctx.reconnecting.store(false, Ordering::Release);
+    });
+}
+
+/// «Обновить zapret»: архив качается минутами — до блокировки, иначе всё это
+/// время не работали бы «Отключить» и «Подключить». Блокировка — только на установку.
+async fn zapret_update(ctx: &Context) -> Response {
+    match handler::fetch_zapret_update(&ctx.shared, ctx.vpn_running()).await {
+        Ok(prepared) => {
+            let mut guard = ctx.state.lock().await;
+            let response = handler::install_zapret(&mut guard, Some(prepared)).await;
+            set_snapshot(&ctx.snapshot, guard.status_response());
+            response
+        }
+        Err(response) => response,
+    }
+}
+
+/// Команды, которым нужно состояние: запуск, остановка, переустановка zapret.
+async fn locked(ctx: &Context, request: Request) -> Response {
+    let starts = matches!(request, Request::Connect(_) | Request::StartZapret(_));
+    if starts {
+        ctx.connecting();
+    }
+    // «Отключить» прерывает запуск и переподключение, начатые до него, — ещё до
+    // блокировки, которую они держат. Запуск, пришедший позже, не отменяется.
+    if matches!(request, Request::Disconnect) {
+        ctx.cancel.send_modify(|n| *n = n.wrapping_add(1));
+    }
+    let cancelled = ctx.cancelled();
+    let mut guard = ctx.state.lock().await;
+    let response = if starts {
+        handler::handle_or_cancel(&mut guard, request, cancelled).await
+    } else {
+        handler::handle(&mut guard, request).await
+    };
+    set_snapshot(&ctx.snapshot, guard.status_response());
+    response
 }
 
 #[cfg(test)]

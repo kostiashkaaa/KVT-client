@@ -1,7 +1,7 @@
 //! Обработка команд. Не зависит от транспорта (pipe), поэтому покрыта тестами.
 
 use crate::session::Session;
-use crate::supervisor::Supervisor;
+use crate::supervisor::{Shared, Supervisor};
 use kvt_core::ipc::{ConnectPlan, Request, Response, ServiceStatus, ZapretPlan, PROTOCOL_VERSION};
 
 pub struct State {
@@ -31,11 +31,12 @@ impl State {
     }
 
     /// Актуальный статус: если ядро упало само или в его журнале сработало
-    /// правило ошибок, это видно сразу.
-    async fn refresh(&mut self) {
+    /// правило ошибок, это видно сразу. Переподключение по ошибке (`reconnect`)
+    /// идёт секунды — его делает только `reconnect_or_cancel`.
+    async fn refresh(&mut self, reconnect: bool) {
         let reason = match self.supervisor.exited() {
             Some(reason) => Some(reason),
-            None => self.supervisor.handle_issue().await,
+            None => self.supervisor.handle_issue(reconnect).await,
         };
         if let Some(mut reason) = reason {
             if self.supervisor.kill_switch_active() {
@@ -101,6 +102,23 @@ impl State {
     pub async fn shutdown(&mut self) {
         self.supervisor.stop().await;
     }
+
+    pub fn shared(&self) -> Shared {
+        self.supervisor.shared()
+    }
+
+    /// Ядро сообщило об ошибке, после которой положено переподключиться.
+    pub fn reconnect_pending(&self) -> bool {
+        self.supervisor.reconnect_pending()
+    }
+
+    /// Всё остановлено по «Отключить», прервавшему запуск или переподключение.
+    async fn abort(&mut self) {
+        tracing::info!("подключение отменено");
+        self.supervisor.stop().await;
+        self.status = ServiceStatus::Disconnected;
+        self.session = None;
+    }
 }
 
 /// Ответ на Hello: сверка версии протокола, состояние не нужно.
@@ -127,38 +145,40 @@ pub fn hello(request: &Request) -> Response {
     }
 }
 
-pub async fn handle(state: &mut State, request: Request) -> Response {
-    if matches!(request, Request::Hello { .. }) {
-        return hello(&request);
-    }
-    state.refresh().await;
-    match request {
+/// Команды, которым не нужно состояние подключения: служба отвечает на них сразу, не
+/// дожидаясь блокировки, которую держит «Подключить» (качает списки, ждёт адаптер)
+/// или установка обновления zapret. Иначе журнал, меню трея, проверка страницы входа
+/// и экспорт диагностики висели бы всё это время. `Err` — команде нужно состояние.
+pub async fn stateless(shared: &Shared, request: Request) -> Result<Response, Request> {
+    let response = match request {
         request @ Request::Hello { .. } => hello(&request),
-        Request::Status => state.status_response(),
-        Request::Connect(plan) => connect(state, &plan).await,
-        Request::StartZapret(plan) => start_zapret(state, &plan).await,
+        Request::Ping { targets } => crate::net::ping(targets).await,
+        Request::NetLog => Response::NetLog {
+            events: kvt_core::netlog::snapshot(),
+        },
+        Request::ServiceLog => Response::ServiceLog {
+            log: crate::logging::tail(),
+            core: kvt_core::redact::text(&shared.recent_log(200).join("\n")),
+        },
+        Request::CaptiveCheck => Response::Captive {
+            state: crate::net::captive_check().await,
+        },
         Request::ZapretStrategies => Response::Strategies {
-            strategies: crate::zapret::strategies(state.supervisor.paths()),
+            strategies: crate::zapret::strategies(shared.paths()),
         },
-        Request::ZapretConflicts => Response::Conflicts {
-            conflicts: crate::zapret::conflicts(
-                state.supervisor.paths(),
-                state.supervisor.zapret_pid(),
-            )
-            .into_iter()
-            .map(|(c, _)| c)
-            .collect(),
-        },
-        Request::ZapretInfo => {
-            Response::ZapretInfo(Box::new(crate::zapret::info(state.supervisor.paths())))
+        Request::ZapretInfo => Response::ZapretInfo(Box::new(crate::zapret::info(shared.paths()))),
+        Request::ZapretConflicts => {
+            // tasklist работает секунды — не держим поток обработки.
+            let shared = shared.clone();
+            let found = tokio::task::spawn_blocking(move || {
+                crate::zapret::conflicts(shared.paths(), shared.zapret_pid())
+            })
+            .await
+            .unwrap_or_default();
+            Response::Conflicts {
+                conflicts: found.into_iter().map(|(c, _)| c).collect(),
+            }
         }
-        Request::ZapretUpdate | Request::ZapretRepair => maintain(state, &request).await,
-        Request::StopConflicts => Response::Conflicts {
-            conflicts: crate::zapret::stop_conflicts(
-                state.supervisor.paths(),
-                state.supervisor.zapret_pid(),
-            ),
-        },
         Request::AuditFix(fix) => {
             // PowerShell и sc.exe работают секунды — не держим поток обработки.
             match tokio::task::spawn_blocking(move || crate::audit::fix(&fix)).await {
@@ -173,23 +193,47 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
                 },
             }
         }
-        Request::NetLog => Response::NetLog {
-            events: kvt_core::netlog::snapshot(),
+        request => return Err(request),
+    };
+    Ok(response)
+}
+
+pub async fn handle(state: &mut State, request: Request) -> Response {
+    let request = match stateless(&state.shared(), request).await {
+        Ok(response) => return response,
+        Err(request) => request,
+    };
+    match request {
+        Request::Status => {
+            state.refresh(false).await;
+            state.status_response()
+        }
+        Request::Connect(plan) => connect(state, &plan).await,
+        Request::StartZapret(plan) => start_zapret(state, &plan).await,
+        Request::ZapretUpdate => {
+            let vpn = state.supervisor.vpn_running();
+            match fetch_zapret_update(&state.shared(), vpn).await {
+                Ok(prepared) => install_zapret(state, Some(prepared)).await,
+                Err(response) => response,
+            }
+        }
+        Request::ZapretRepair => install_zapret(state, None).await,
+        Request::StopConflicts => Response::Conflicts {
+            conflicts: crate::zapret::stop_conflicts(
+                state.supervisor.paths(),
+                state.supervisor.zapret_pid(),
+            ),
         },
-        Request::ServiceLog => Response::ServiceLog {
-            log: crate::logging::tail(),
-            core: kvt_core::redact::text(&state.supervisor.recent_log(200).join("\n")),
-        },
-        Request::CaptiveCheck => Response::Captive {
-            state: crate::net::captive_check().await,
-        },
-        Request::Ping { targets } => crate::net::ping(targets).await,
         Request::Disconnect => {
             state.supervisor.stop().await;
             state.status = ServiceStatus::Disconnected;
             state.session = None;
             Response::Ok
         }
+        // Остальное обслуживает `stateless`.
+        _ => Response::Error {
+            message: kvt_core::i18n::tr("неизвестная команда", "unknown command").into(),
+        },
     }
 }
 
@@ -211,14 +255,24 @@ pub async fn handle_or_cancel(
     match done {
         Some(response) => response,
         None => {
-            tracing::info!("подключение отменено");
-            state.supervisor.stop().await;
-            state.status = ServiceStatus::Disconnected;
-            state.session = None;
+            state.abort().await;
             Response::Error {
                 message: kvt_core::ipc::cancelled().into(),
             }
         }
+    }
+}
+
+/// Переподключение по ошибке ядра (`State::reconnect_pending`). Идёт отдельно от
+/// команд окна и прерывается «Отключить», как обычный запуск.
+pub async fn reconnect_or_cancel(state: &mut State, cancel: impl std::future::Future<Output = ()>) {
+    let done = tokio::select! {
+        biased;
+        () = cancel => false,
+        () = state.refresh(true) => true,
+    };
+    if !done {
+        state.abort().await;
     }
 }
 
@@ -279,31 +333,38 @@ fn invalid_zapret(plan: &ZapretPlan) -> Option<String> {
         .map(|d| kvt_core::trf!("недопустимый домен «{d}»", "invalid domain “{d}”"))
 }
 
-/// Обновление и переустановка трогают файлы, которыми пользуется winws, поэтому
-/// перед установкой всё останавливается; переподключает приложение. Обновление
-/// скачивается заранее, пока VPN работает: GitHub бывает доступен только через туннель.
-async fn maintain(state: &mut State, request: &Request) -> Response {
-    let paths = state.supervisor.paths().clone();
-    let prepared = match request {
-        Request::ZapretUpdate => {
-            let http = match crate::net::NetClient::new(kvt_core::netlog::Purpose::Update) {
-                Ok(h) if state.supervisor.vpn_running() => h.with_tunnel_fallback(),
-                Ok(h) => h,
-                Err(e) => {
-                    return Response::Error {
-                        message: e.to_string(),
-                    }
-                }
-            };
-            match crate::zapret::fetch_update(&paths, &http).await {
-                // Обновлять нечего — подключение не трогаем.
-                Ok(Err(report)) => return Response::Maintenance(Box::new(report)),
-                Ok(Ok(prepared)) => Some(prepared),
-                Err(message) => return Response::Error { message },
-            }
+/// «Обновить zapret», шаг 1 — без блокировки состояния: узнать последний релиз и
+/// скачать архив (до нескольких минут), пока VPN и winws работают: GitHub бывает
+/// доступен только через туннель. `Err` — ответ окну: обновлять нечего или ошибка.
+pub async fn fetch_zapret_update(
+    shared: &Shared,
+    vpn_running: bool,
+) -> Result<crate::zapret::Prepared, Response> {
+    let http = match crate::net::NetClient::new(kvt_core::netlog::Purpose::Update) {
+        Ok(h) if vpn_running => h.with_tunnel_fallback(),
+        Ok(h) => h,
+        Err(e) => {
+            return Err(Response::Error {
+                message: e.to_string(),
+            })
         }
-        _ => None,
     };
+    match crate::zapret::fetch_update(shared.paths(), &http).await {
+        // Обновлять нечего — подключение не трогаем.
+        Ok(Err(report)) => Err(Response::Maintenance(Box::new(report))),
+        Ok(Ok(prepared)) => Ok(prepared),
+        Err(message) => Err(Response::Error { message }),
+    }
+}
+
+/// Шаг 2 обновления (`prepared`) или переустановка (`None`). Они трогают файлы,
+/// которыми пользуется winws, поэтому сначала всё останавливается; переподключает
+/// приложение.
+pub async fn install_zapret(
+    state: &mut State,
+    prepared: Option<crate::zapret::Prepared>,
+) -> Response {
+    let paths = state.supervisor.paths().clone();
     state.supervisor.stop().await;
     state.status = ServiceStatus::Disconnected;
     state.session = None;
@@ -384,6 +445,41 @@ mod tests {
         };
         assert!(blocked);
         assert!(reason.contains("Kill switch"), "{reason}");
+    }
+
+    /// Журналы и сведения — без состояния (служба отвечает, не дожидаясь подключения);
+    /// запуск, остановка и обслуживание zapret — только под блокировкой.
+    #[tokio::test]
+    async fn stateless_requests_do_not_need_state() {
+        let shared = state().shared();
+        assert!(matches!(
+            stateless(&shared, Request::NetLog).await,
+            Ok(Response::NetLog { .. })
+        ));
+        assert!(matches!(
+            stateless(&shared, Request::ServiceLog).await,
+            Ok(Response::ServiceLog { .. })
+        ));
+        for request in [
+            Request::Status,
+            Request::Disconnect,
+            Request::StopConflicts,
+            Request::ZapretUpdate,
+            Request::ZapretRepair,
+        ] {
+            assert!(stateless(&shared, request).await.is_err());
+        }
+    }
+
+    /// «Отключить» во время переподключения по ошибке: всё остановлено.
+    #[tokio::test]
+    async fn cancelled_reconnect_disconnects() {
+        let mut st = state();
+        st.status = ServiceStatus::Connected {
+            core: kvt_core::core_select::CoreKind::Xray,
+        };
+        reconnect_or_cancel(&mut st, std::future::ready(())).await;
+        assert!(matches!(st.status, ServiceStatus::Disconnected));
     }
 
     #[tokio::test]
