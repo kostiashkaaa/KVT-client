@@ -12,7 +12,7 @@ use crate::{display_name, query_status, watchdog, AppState};
 use kvt_core::i18n::tr;
 use kvt_core::ipc::ServiceStatus;
 use kvt_core::probe::{classify, Verdict};
-use kvt_core::tester::{sni_key, tcp_ping, Outcome, Prober, QuickResult};
+use kvt_core::tester::{sni_key, Outcome, Prober, QuickResult};
 use kvt_core::trf;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -671,7 +671,12 @@ async fn gather(state: &AppState) -> Facts {
 
     let connected = matches!(f.service, Some(ServiceStatus::Connected { .. }));
     if !server.protocol.is_quic() {
-        f.server_tcp = Some(tcp_ping(&server.address, server.port, Duration::from_secs(4)).await);
+        // При подключённом VPN пингует служба мимо туннеля: соединение окна принял
+        // бы сам TUN за 0 мс, и мёртвый сервер выглядел бы рабочим.
+        f.server_tcp = crate::ping_servers(std::slice::from_ref(server))
+            .await
+            .ok()
+            .and_then(|mut results| results.pop());
     }
     let server_down = matches!(
         f.server_tcp,

@@ -394,6 +394,9 @@
 
   async function check(group: string) {
     checking = group;
+    // Итог прошлой «Проверить» закрывал бы свежий пинг: цифры не менялись бы.
+    const keys = new Set(groups.find((g) => g.id === group)?.servers.map((s) => s.key));
+    outcomes = Object.fromEntries(Object.entries(outcomes).filter(([k]) => !keys.has(k)));
     try {
       results = { ...results, ...(await quickCheck(group)) };
     } catch (e) {

@@ -6,17 +6,18 @@
 //! к VPN-серверу уходит ровно одно TLS-рукопожатие, а по потоку видно и задержку,
 //! и заморозку после первых килобайт.
 //!
-//! Если VPN подключён, тестовое ядро и TCP-пинг уходят с адреса физического
-//! адаптера (`netinfo::physical_ipv4`) — мимо TUN, как без VPN. Kill switch их
-//! пропускает: фильтр разрешает исполняемый файл ядра, а тестовое ядро — тот же
-//! файл из каталога программы.
+//! Если VPN подключён, тестовое ядро уходит с адреса физического адаптера
+//! (`netinfo::physical_ipv4`) — мимо TUN, как без VPN. Kill switch его пропускает:
+//! фильтр разрешает исполняемый файл ядра, а тестовое ядро — тот же файл из каталога
+//! программы. TCP-пинг перед ним делает служба (`ping_servers`): окно kill switch
+//! мимо туннеля не пускает.
 
 use crate::{query_status, AppState};
 use kvt_core::compile::{compile_probe, ProbeInbound};
 use kvt_core::core_select::{select_core, CoreKind};
 use kvt_core::ipc::ServiceStatus;
 use kvt_core::probe::ProbeObservation;
-use kvt_core::tester::{self, tcp_ping_from, Outcome, Prober, QuickResult};
+use kvt_core::tester::{self, tcp_ping, Outcome, Prober, QuickResult};
 use kvt_core::Server;
 use serde::Serialize;
 use std::collections::hash_map::RandomState;
@@ -132,6 +133,20 @@ async fn download_via_socks(port: u16, user: &str, password: &str) -> Measured {
 }
 
 impl CoreProber {
+    /// TCP-пинг перед запуском тестового ядра. При подключённом VPN пингует служба:
+    /// kill switch пропускает мимо туннеля только ядро и службу, а соединение окна
+    /// с адреса физического адаптера блокирует — любой сервер выглядел бы
+    /// недоступным. `None` — служба не ответила: пинг пропускаем, проверит ядро.
+    async fn ping(&self, server: &Server) -> Option<QuickResult> {
+        if self.source.is_none() {
+            return Some(tcp_ping(&server.address, server.port, Duration::from_secs(4)).await);
+        }
+        crate::ping_servers(std::slice::from_ref(server))
+            .await
+            .ok()
+            .and_then(|mut results| results.pop())
+    }
+
     async fn run_core(&self, server: &Server) -> Result<Measured, ()> {
         let core = select_core(server).core;
         let port = free_port().map_err(|_| ())?;
@@ -193,19 +208,12 @@ impl Prober for CoreProber {
         };
         // Сначала дешёвая проверка TCP (без TLS); Hysteria2 работает по UDP — её не проверить так.
         if !server.protocol.is_quic() {
-            match tcp_ping_from(
-                &server.address,
-                server.port,
-                self.source,
-                Duration::from_secs(4),
-            )
-            .await
-            {
-                QuickResult::DnsFailed => {
+            match self.ping(&server).await {
+                Some(QuickResult::DnsFailed) => {
                     obs.dns_resolved = false;
                     return obs;
                 }
-                QuickResult::Unreachable => return obs,
+                Some(QuickResult::Unreachable) => return obs,
                 _ => {}
             }
         }
