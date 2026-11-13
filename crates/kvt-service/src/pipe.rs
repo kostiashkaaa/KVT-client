@@ -4,10 +4,12 @@
 //! - только локальные клиенты;
 //! - клиент должен быть `kvt.exe` из каталога службы (Program Files в установке,
 //!   target\debug при разработке) — чужая программа управлять VPN не сможет;
-//! - у установленной службы SHA-256 клиента сверяется с манифестом установки;
+//! - у установленной службы SHA-256 клиента сверяется с манифестом установки; нет
+//!   манифеста — отказ, а окну ответ «переустановите KVT» вместо оборванной связи;
 //! - кадры с ограничением длины, неизвестные команды отвергаются.
 //!
-//! TODO(этап 5): дополнительно проверять Authenticode-подпись клиента.
+//! TODO(этап 6): дополнительно проверять Authenticode-подпись клиента, когда будет
+//! сертификат.
 
 use crate::handler::{self, State};
 use crate::supervisor::Shared;
@@ -31,6 +33,12 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
     // стоять установленный KVT со своим манифестом, а kvt.exe из сборки — другой.
     let manifest =
         crate::manifest::installed(&allowed_dir).then(crate::manifest::Verifier::default);
+    if manifest.as_ref().is_some_and(|m| !m.usable()) {
+        tracing::error!(
+            "манифест установки не найден или повреждён — окно KVT не будет принято, \
+             пока KVT не переустановят"
+        );
+    }
     let snapshot = Arc::new(std::sync::Mutex::new(Response::Status {
         status: ServiceStatus::Disconnected,
         session: None,
@@ -70,8 +78,12 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
         match win::pipe_client_image(&client) {
             Ok(image)
                 if is_trusted_client(&image, &allowed_dir)
-                    && manifest.as_ref().map_or(true, |m| m.check(&image)) =>
+                    && manifest.as_ref().is_some_and(|m| !m.check(&image)) =>
             {
+                tracing::warn!(image = %image.display(), "клиент не совпал с манифестом установки");
+                tokio::spawn(refuse(client));
+            }
+            Ok(image) if is_trusted_client(&image, &allowed_dir) => {
                 tracing::debug!(image = %image.display(), "клиент принят");
                 let ctx = Context {
                     state: Arc::clone(&state),
@@ -107,6 +119,31 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
         }
     }
     Ok(())
+}
+
+/// Отказ окну из каталога службы, которое не совпало с манифестом (обновление
+/// прервалось, манифест пропал): на приветствие — ошибка, по которой окно просит
+/// переустановить KVT, а не оборванная связь («повторите, перезагрузите компьютер»).
+async fn refuse(mut pipe: NamedPipeServer) {
+    let reply = async {
+        let mut header = [0u8; 4];
+        pipe.read_exact(&mut header).await?;
+        let mut body = vec![0u8; ipc::frame_len(header)?];
+        pipe.read_exact(&mut body).await?;
+        let frame = ipc::encode(&Response::Error {
+            message: kvt_core::i18n::tr(
+                "Служба KVT не узнала это окно: файлы установки не совпадают. Переустановите KVT.",
+                "The KVT service didn't recognize this window: the installed files don't match. Reinstall KVT.",
+            )
+            .into(),
+        })?;
+        pipe.write_all(&frame).await?;
+        // Закрыть канал раньше, чем окно прочтёт ответ, — ответ может пропасть.
+        let mut rest = [0u8; 1];
+        let _ = pipe.read(&mut rest).await;
+        anyhow::Ok(())
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), reply).await;
 }
 
 /// Сколько остановка службы ждёт текущую команду (после отмены запуска).

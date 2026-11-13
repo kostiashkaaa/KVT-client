@@ -647,7 +647,7 @@ async fn pick(
                 passed: check.passed,
             });
             let full = check.passed == MAX_SCORE;
-            if best.as_ref().map_or(true, |(_, b)| check.better_than(b)) {
+            if best.as_ref().is_none_or(|(_, b)| check.better_than(b)) {
                 best = Some((strategy.clone(), check));
             }
             if full {

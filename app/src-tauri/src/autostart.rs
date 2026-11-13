@@ -44,7 +44,7 @@ fn command_line() -> Result<String, String> {
 /// Отметка `StartupApproved`: 12 байт, младший бит первого — «выключено»
 /// (02/06 — разрешено, 03/07 — запрещено). Нет отметки или она пустая — разрешено.
 fn approved(mark: Option<&[u8]>) -> bool {
-    mark.and_then(|m| m.first()).map_or(true, |b| b & 1 == 0)
+    mark.and_then(|m| m.first()).is_none_or(|b| b & 1 == 0)
 }
 
 fn classify(run: Option<&str>, ours: &str, mark: Option<&[u8]>) -> AutostartState {

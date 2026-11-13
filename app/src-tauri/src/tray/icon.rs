@@ -77,7 +77,7 @@ fn look(tone: Tone, frame: u32) -> Look {
         // Кадры пульса: полная точка — уменьшенная.
         Tone::Connecting => off(Some((
             AMBER,
-            Badge::Dot(if frame % 2 == 0 { 1.0 } else { 0.62 }),
+            Badge::Dot(if frame.is_multiple_of(2) { 1.0 } else { 0.62 }),
         ))),
         Tone::Error => off(Some((RED, Badge::Alert))),
         Tone::Vpn => Look {

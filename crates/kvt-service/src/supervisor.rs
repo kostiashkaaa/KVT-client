@@ -465,7 +465,7 @@ impl Supervisor {
             ));
         }
         if plan.kill_switch {
-            if let Err(e) = self.enable_kill_switch(&spec, luid) {
+            if let Err(e) = self.enable_kill_switch(luid) {
                 // Защиту обещали, но включить не смогли — не оставляем «полузащищённое» соединение.
                 self.stop_running().await;
                 tracing::error!(error = %e, "kill switch не включился");
@@ -573,7 +573,7 @@ impl Supervisor {
             let exited = self
                 .running
                 .as_mut()
-                .map_or(true, |r| matches!(r.child.try_wait(), Ok(Some(_))));
+                .is_none_or(|r| matches!(r.child.try_wait(), Ok(Some(_))));
             if exited {
                 let last = self.recent_log(1).pop().unwrap_or_default();
                 return Err(kvt_core::trf!(
@@ -611,12 +611,15 @@ impl Supervisor {
         Ok(())
     }
 
-    fn enable_kill_switch(&mut self, spec: &CoreSpec, luid: u64) -> Result<(), String> {
-        let service = std::env::current_exe().map_err(|e| e.to_string())?;
+    /// Kill switch пропускает оба ядра, а не только подключённое: «Проверить» при VPN
+    /// запускает тестовое ядро того типа, который нужен серверу, и без этого сервер на
+    /// другом ядре выглядел бы мёртвым. Оба файла лежат рядом со службой.
+    fn enable_kill_switch(&mut self, luid: u64) -> Result<(), String> {
+        let apps = self.trusted_apps()?;
+        let apps: Vec<&Path> = apps.iter().map(PathBuf::as_path).collect();
         // «Гибрид»: пакеты, которые winws отправляет заново, Windows приписывает ядру
         // системы — kill switch должен их пропускать (см. `wfp::KillSwitch::enable`).
         let hybrid = self.zapret.is_some();
-        let apps = [spec.exe.as_path(), service.as_path()];
         let ks = KillSwitch::enable(&apps, Some(luid), hybrid).map_err(|e| e.to_string())?;
         tracing::info!("kill switch включён");
         self.kill_switch = Some(ks);
@@ -656,7 +659,7 @@ impl Supervisor {
         let Ok(written) = std::fs::metadata(&marker).and_then(|m| m.modified()) else {
             return false;
         };
-        if crate::win::boot_time().map_or(true, |boot| written < boot) {
+        if crate::win::boot_time().is_none_or(|boot| written < boot) {
             tracing::info!("отметка kill switch с прошлой загрузки Windows — не восстанавливаем");
             self.mark_kill_switch(false);
             return false;
@@ -1017,7 +1020,7 @@ async fn collect<R: AsyncRead + Unpin>(reader: R, log: Log, watch: Option<(CoreK
             if let Some(rule) = core_errors::classify(*core, &line) {
                 let due = logged
                     .get(rule.code.as_str())
-                    .map_or(true, |t| t.elapsed() >= Duration::from_secs(60));
+                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
                 if rule.action != core_errors::Action::Log {
                     tracing::warn!(code = %rule.code, "ядро: {line}");
                 } else if due {

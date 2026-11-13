@@ -108,7 +108,7 @@ pub(crate) async fn alternatives(state: &AppState, current: Option<&Entry>) -> V
     let mut others = |same: bool| -> Vec<&Entry> {
         entries
             .iter()
-            .filter(|e| current.map_or(true, |c| (c.sub == e.sub) == same))
+            .filter(|e| current.is_none_or(|c| (c.sub == e.sub) == same))
             .filter(|e| exits.insert(e.exit_key()))
             .collect()
     };

@@ -175,7 +175,7 @@ mod tests {
         // Правило только для Xray не срабатывает на sing-box.
         assert!(
             classify(CoreKind::SingBox, "REALITY: received real certificate")
-                .map_or(true, |r| r.code != "reality_mismatch")
+                .is_none_or(|r| r.code != "reality_mismatch")
         );
         let line = "ERROR outbound/vless[proxy]: tls: failed to verify certificate: x509: certificate has expired";
         assert_eq!(
@@ -229,7 +229,7 @@ mod tests {
             "2026/11/07 16:43:49.135330 from DNS accepted udp:77.88.8.8:53 [xray.system -> direct]",
         ] {
             assert!(
-                classify(CoreKind::Xray, line).map_or(true, |r| r.action == Action::Log),
+                classify(CoreKind::Xray, line).is_none_or(|r| r.action == Action::Log),
                 "{line}"
             );
         }

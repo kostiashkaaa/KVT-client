@@ -1,0 +1,33 @@
+name: Audit
+
+# Сверка Cargo.lock с базой уязвимостей RustSec. Отдельно от CI: новые уязвимости
+# появляются и без наших коммитов, поэтому ещё и раз в неделю.
+on:
+  push:
+    branches: [main]
+    paths: ["Cargo.lock", "**/Cargo.toml", ".github/workflows/audit.yml"]
+  pull_request:
+    paths: ["Cargo.lock", "**/Cargo.toml", ".github/workflows/audit.yml"]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # Действия закреплены по SHA: тег можно переписать, коммит — нет.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      # Кэш хранит и ~/.cargo/bin — cargo-audit не собирается заново каждый раз.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Версия закреплена: свежевыпущенный инструмент в цепочку поставки не берём.
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      # Падает только на уязвимостях. Предупреждения (unmaintained, yanked) — в выводе:
+      # сейчас все они у зависимостей Tauri для Linux и macOS, в сборку под Windows не входят.
+      - run: cargo audit

@@ -232,7 +232,9 @@ fn validate_reality_key(key: &str) -> Result<(), ParseError> {
 
 /// shortId: до 16 hex-символов, чётной длины.
 fn validate_short_id(sid: &str) -> Result<(), ParseError> {
-    let ok = sid.len() <= 16 && sid.len() % 2 == 0 && sid.chars().all(|c| c.is_ascii_hexdigit());
+    let ok = sid.len() <= 16
+        && sid.len().is_multiple_of(2)
+        && sid.chars().all(|c| c.is_ascii_hexdigit());
     if ok {
         Ok(())
     } else {

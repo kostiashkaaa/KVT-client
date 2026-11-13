@@ -22,7 +22,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 # Архив экспорта диагностики.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 tauri = { version = "2", features = ["tray-icon"] }
 # Второй запуск не падает на занятой папке WebView2, а показывает уже открытое окно.
 tauri-plugin-single-instance = "2"

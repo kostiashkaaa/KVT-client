@@ -492,7 +492,7 @@ fn servers_of(state: &AppState, group: Option<&str>) -> Result<(Vec<String>, Vec
         .lock()
         .map_err(crate::errors::state)?
         .iter()
-        .filter(|e| group.map_or(true, |g| e.sub == g))
+        .filter(|e| group.is_none_or(|g| e.sub == g))
         .map(|e| (e.key.clone(), e.server.clone()))
         .unzip())
 }

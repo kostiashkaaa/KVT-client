@@ -247,7 +247,7 @@ pub async fn ping_all(
     out
 }
 
-// TODO(этап 3): резолвить имена серверов через выбранный DoH, а не системный DNS.
+// TODO(этап 6): резолвить имена серверов через выбранный DoH, а не системный DNS.
 pub async fn tcp_ping(host: &str, port: u16, timeout: Duration) -> QuickResult {
     ping_logged(host, port, None, Origin::App, Purpose::ServerPing, timeout).await
 }

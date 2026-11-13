@@ -455,8 +455,19 @@ async fn start(app: &AppHandle) -> Result<Running, String> {
         *p = Some(log.clone());
     }
     let domains = domains();
-    let args = tgproxy::args(&secret, &domains, &log.to_string_lossy());
-    let child = tokio::process::Command::new(&exe)
+    let args = tgproxy::args(&domains, &log.to_string_lossy());
+    let mut cmd = tokio::process::Command::new(&exe);
+    for (key, _) in std::env::vars_os() {
+        let inherited = key.to_str().is_some_and(|k| {
+            k.get(..tgproxy::ENV_PREFIX.len())
+                .is_some_and(|p| p.eq_ignore_ascii_case(tgproxy::ENV_PREFIX))
+        });
+        if inherited {
+            cmd.env_remove(&key);
+        }
+    }
+    let child = cmd
+        .env(tgproxy::SECRET_ENV, &secret)
         .args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

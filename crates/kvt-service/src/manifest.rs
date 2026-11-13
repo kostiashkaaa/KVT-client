@@ -7,6 +7,8 @@
 //! примет, пока установщик (или обновление) не запишет новый хэш.
 //!
 //! При разработке (служба не из Program Files) манифеста нет — проверяется только путь.
+//! У установленной службы пропавший или битый манифест — отказ (fail-closed): помогает
+//! переустановка, которая запишет его заново.
 
 use kvt_core::rulesync::sha256_hex;
 use serde_json::json;
@@ -43,23 +45,48 @@ pub fn write(exe_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn expected() -> Option<String> {
-    let bytes = std::fs::read(path()).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    value.get("sha256")?.as_str().map(str::to_ascii_lowercase)
+/// Ожидаемый хэш из файла манифеста; `None` — файла нет или он битый.
+fn read_expected(manifest: &Path) -> Option<String> {
+    parse_expected(&std::fs::read(manifest).ok()?)
+}
+
+/// Хэш из содержимого манифеста: ровно 64 шестнадцатеричных символа.
+fn parse_expected(bytes: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let hash = value.get("sha256")?.as_str()?.to_ascii_lowercase();
+    (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hash)
 }
 
 /// Проверка клиента по манифесту. Хэш файла запоминается по размеру и времени
 /// изменения: 15 МБ не читаются на каждое подключение окна к службе.
-#[derive(Default)]
 pub struct Verifier {
+    manifest: PathBuf,
     cache: Mutex<Option<(u64, SystemTime, String)>>,
 }
 
+impl Default for Verifier {
+    fn default() -> Self {
+        Self::new(path())
+    }
+}
+
 impl Verifier {
+    fn new(manifest: PathBuf) -> Self {
+        Self {
+            manifest,
+            cache: Mutex::new(None),
+        }
+    }
+
+    /// Манифест на месте и читается. Без него служба не примет ни одно окно.
+    pub fn usable(&self) -> bool {
+        read_expected(&self.manifest).is_some()
+    }
+
     pub fn check(&self, image: &Path) -> bool {
-        let Some(expected) = expected() else {
-            return true;
+        // Нет манифеста — отказ; об этом служба пишет в журнал при запуске.
+        let Some(expected) = read_expected(&self.manifest) else {
+            return false;
         };
         let Ok(meta) = std::fs::metadata(image) else {
             return false;
@@ -89,6 +116,66 @@ impl Verifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("kvt-manifest-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("каталог");
+        dir
+    }
+
+    #[test]
+    fn bad_manifests_are_rejected() {
+        let good = "a".repeat(64);
+        assert_eq!(
+            parse_expected(format!(r#"{{"sha256":"{}"}}"#, good.to_uppercase()).as_bytes()),
+            Some(good)
+        );
+        for bad in [
+            &b""[..],
+            b"\xff\xfe",
+            b"[]",
+            b"{}",
+            br#"{"sha256":null}"#,
+            br#"{"sha256":42}"#,
+            br#"{"sha256":""}"#,
+            br#"{"sha256":"abc"}"#,
+            br#"{"sha256":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}"#,
+        ] {
+            assert_eq!(parse_expected(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn missing_or_broken_manifest_fails_closed() {
+        let dir = temp("closed");
+        let client = dir.join(CLIENT);
+        std::fs::write(&client, b"client").expect("клиент");
+        let verifier = Verifier::new(dir.join(FILE));
+        assert!(!verifier.usable());
+        assert!(
+            !verifier.check(&client),
+            "без манифеста окно не принимается"
+        );
+        std::fs::write(dir.join(FILE), b"{not json").expect("манифест");
+        assert!(!verifier.check(&client), "битый манифест — тоже отказ");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn matching_client_is_accepted_and_changed_one_is_not() {
+        let dir = temp("match");
+        let client = dir.join(CLIENT);
+        std::fs::write(&client, b"client v1").expect("клиент");
+        let body = json!({ "client": CLIENT, "sha256": sha256_hex(b"client v1") });
+        std::fs::write(dir.join(FILE), body.to_string()).expect("манифест");
+        let verifier = Verifier::new(dir.join(FILE));
+        assert!(verifier.usable());
+        assert!(verifier.check(&client));
+        std::fs::write(&client, b"client v2, other size").expect("подмена");
+        assert!(!verifier.check(&client));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn build_dirs_are_not_installed() {

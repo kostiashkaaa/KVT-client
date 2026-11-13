@@ -209,7 +209,7 @@ fn is_due(
         || files.iter().any(|f| !dir.join(&f.local).exists())
         || m.checked
             .get(source)
-            .map_or(true, |t| now.saturating_sub(*t) >= every)
+            .is_none_or(|t| now.saturating_sub(*t) >= every)
 }
 
 async fn sync_itdog<H: Http>(

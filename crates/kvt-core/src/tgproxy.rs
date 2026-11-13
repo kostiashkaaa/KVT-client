@@ -92,16 +92,25 @@ pub fn telegram_hosts() -> Vec<String> {
     .collect()
 }
 
-/// Аргументы tg-ws-proxy. Адрес задан явно: без `--host` прокси, найдя адрес в
-/// локальной сети, слушал бы `0.0.0.0` — и им могли бы пользоваться другие устройства.
-pub fn args(secret: &str, cf_domains: &[String], log_file: &str) -> Vec<String> {
+/// Переменная окружения, из которой tg-ws-proxy берёт секрет. В аргументах его не
+/// передаём: командную строку процесса видят Диспетчер задач, WMI и журналы
+/// антивирусов и Sysmon.
+pub const SECRET_ENV: &str = "TG_SECRET";
+
+/// Префикс переменных окружения, которыми tg-ws-proxy заменяет флаги (`TG_PORT`,
+/// `TG_SOCKS_ENABLED`…). Унаследованные от пользователя не передаются: иначе они
+/// поменяли бы настройки прокси — например, открыли бы ещё и SOCKS-порт.
+pub const ENV_PREFIX: &str = "TG_";
+
+/// Аргументы tg-ws-proxy (секрет — в [`SECRET_ENV`]). Адрес задан явно: без `--host`
+/// прокси, найдя адрес в локальной сети, слушал бы `0.0.0.0` — и им могли бы
+/// пользоваться другие устройства.
+pub fn args(cf_domains: &[String], log_file: &str) -> Vec<String> {
     let mut args = vec![
         "--host".into(),
         "127.0.0.1".into(),
         "--port".into(),
         PORT.to_string(),
-        "--secret".into(),
-        secret.into(),
         // Переменные окружения с прокси системы к Telegram не относятся.
         "--no-outbound-proxy".into(),
         "--log-file".into(),
@@ -222,19 +231,16 @@ mod tests {
 
     #[test]
     fn listens_only_on_loopback() {
-        let a = args(
-            "00112233445566778899aabbccddeeff",
-            &["abc.co.uk".into()],
-            "p.log",
-        );
+        let a = args(&["abc.co.uk".into()], "p.log");
         let host = a.iter().position(|x| x == "--host").unwrap();
         assert_eq!(a[host + 1], "127.0.0.1");
+        // Секрет — только в окружении, не в командной строке.
+        assert!(!a.iter().any(|x| x == "--secret"));
         assert!(a.windows(2).any(|w| w == ["--cf-domain", "abc.co.uk"]));
         // Прямой путь к Telegram задан всегда, иначе медиа уходят только в Cloudflare.
         assert!(a.windows(2).any(|w| w == ["--dc-ip", "2:149.154.167.220"]));
         assert!(a.windows(2).any(|w| w == ["--dc-ip", "4:149.154.167.220"]));
-        assert!(!args("00112233445566778899aabbccddeeff", &[], "p.log")
-            .contains(&"--cf-domain".to_owned()));
+        assert!(!args(&[], "p.log").contains(&"--cf-domain".to_owned()));
     }
 
     #[test]

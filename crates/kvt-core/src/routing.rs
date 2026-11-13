@@ -121,7 +121,7 @@ fn valid_cidr(s: &str) -> bool {
         return false;
     };
     let max = if ip.is_ipv4() { 32 } else { 128 };
-    prefix.map_or(true, |p| p.parse::<u8>().is_ok_and(|p| p <= max))
+    prefix.is_none_or(|p| p.parse::<u8>().is_ok_and(|p| p <= max))
 }
 
 /// Имя программы (`telegram.exe`), а не путь.

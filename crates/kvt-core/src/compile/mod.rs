@@ -118,7 +118,7 @@ fn tun_addresses(ipv6: bool) -> Vec<&'static str> {
 /// выключают «оптимизаторы» и инструкции «отключите IPv6» (обычно значение 0xFF).
 #[must_use]
 pub fn ipv6_enabled(disabled_components: Option<u32>) -> bool {
-    disabled_components.map_or(true, |v| v & 0x10 == 0)
+    disabled_components.is_none_or(|v| v & 0x10 == 0)
 }
 
 #[derive(Debug, Clone, PartialEq)]
