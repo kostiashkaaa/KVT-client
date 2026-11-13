@@ -48,7 +48,7 @@ use kvt_core::subscription::SubscriptionMeta;
 use kvt_core::tester::{self, Outcome, QuickResult};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
@@ -59,7 +59,8 @@ pub(crate) struct AppState {
     store: Mutex<Option<store::Store>>,
     /// Серверы всех подписок подряд, с ключами.
     servers: Mutex<Vec<catalog::Entry>>,
-    governor: Mutex<NetGovernor>,
+    /// В `Arc`: полная проверка отдаёт его и тестовому ядру (`CoreProber`).
+    governor: Arc<Mutex<NetGovernor>>,
     /// Найденное в других клиентах для переноса (со ссылками — только в Rust).
     migration: Mutex<Vec<kvt_core::migrate::Collected>>,
     /// Подписки в виде для интерфейса: окно может быть закрыто (WebView
@@ -244,7 +245,7 @@ impl Default for AppState {
         Self {
             store: Mutex::default(),
             servers: Mutex::default(),
-            governor: Mutex::new(NetGovernor::new(NetPolicy::default())),
+            governor: Arc::new(Mutex::new(NetGovernor::new(NetPolicy::default()))),
             migration: Mutex::default(),
             groups: Mutex::default(),
             checking: Default::default(),
@@ -281,6 +282,15 @@ impl AppState {
             .iter()
             .find(|e| e.key == key)
             .cloned()
+    }
+
+    /// Резолвер DoH из настроек туннеля: его первым спрашивают имена серверов при
+    /// проверке (`kvt_core::dns::names`).
+    pub(crate) fn doh_first(&self) -> String {
+        self.choice
+            .lock()
+            .map(|c| c.dns.remote.clone())
+            .unwrap_or_default()
     }
 
     /// Выбранный сервер; `None` — не выбран или его больше нет в подписках.
@@ -505,21 +515,29 @@ async fn quick_check(
     state: State<'_, AppState>,
 ) -> Result<HashMap<String, QuickResult>, String> {
     let (keys, servers) = servers_of(&state, group.as_deref())?;
-    let results = ping_servers(&servers).await?;
+    let first = state.doh_first();
+    let doh = tester::Doh {
+        first: &first,
+        governor: &state.governor,
+    };
+    let results = ping_servers(&doh, &servers).await?;
     Ok(keys.into_iter().zip(results).collect())
 }
 
 /// TCP-пинг серверов мимо туннеля. С VPN соединение из приложения принял бы сам
 /// TUN (за 0 мс, и любой сервер выглядел бы рабочим) — тогда пингует служба,
-/// напрямую через физический адаптер.
-pub(crate) async fn ping_servers(servers: &[Server]) -> Result<Vec<QuickResult>, String> {
+/// напрямую через физический адаптер. Имена в обоих случаях — через DoH.
+pub(crate) async fn ping_servers(
+    doh: &tester::Doh<'_>,
+    servers: &[Server],
+) -> Result<Vec<QuickResult>, String> {
     if !matches!(
         query_status().await,
         Ok(Some(
             ServiceStatus::Connected { .. } | ServiceStatus::Connecting
         ))
     ) {
-        return Ok(tester::quick_check(servers, Duration::from_secs(3), 8).await);
+        return Ok(tester::quick_check(servers, doh, Duration::from_secs(3), 8).await);
     }
     let targets = servers
         .iter()
@@ -530,7 +548,11 @@ pub(crate) async fn ping_servers(servers: &[Server]) -> Result<Vec<QuickResult>,
             })
         })
         .collect();
-    match service_client::call(Request::Ping { targets }).await {
+    let request = Request::Ping {
+        targets,
+        doh: doh.first.to_owned(),
+    };
+    match service_client::call(request).await {
         Ok(Response::Ping { results }) if results.len() == servers.len() => Ok(results),
         Ok(Response::Error { message }) => Err(message),
         Ok(_) => Err(crate::errors::unexpected().into()),

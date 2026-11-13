@@ -15,13 +15,17 @@
 use crate::{query_status, AppState};
 use kvt_core::compile::{compile_probe, ProbeInbound};
 use kvt_core::core_select::{select_core, CoreKind};
+use kvt_core::dns::names::Lookup;
+use kvt_core::governor::NetGovernor;
 use kvt_core::ipc::ServiceStatus;
+use kvt_core::netlog::Origin;
 use kvt_core::probe::ProbeObservation;
 use kvt_core::tester::{self, tcp_ping, Outcome, Prober, QuickResult};
 use kvt_core::Server;
 use serde::Serialize;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
@@ -51,6 +55,9 @@ pub struct CoreProber {
     work: PathBuf,
     /// Адрес физического адаптера при подключённом VPN.
     source: Option<std::net::Ipv4Addr>,
+    /// Первый резолвер DoH для имени сервера перед пингом и NetGovernor приложения.
+    doh: String,
+    governor: Arc<std::sync::Mutex<NetGovernor>>,
 }
 
 fn random_token() -> String {
@@ -138,16 +145,44 @@ impl CoreProber {
     /// с адреса физического адаптера блокирует — любой сервер выглядел бы
     /// недоступным. `None` — служба не ответила: пинг пропускаем, проверит ядро.
     async fn ping(&self, server: &Server) -> Option<QuickResult> {
+        let doh = tester::Doh {
+            first: &self.doh,
+            governor: &self.governor,
+        };
         if self.source.is_none() {
-            return Some(tcp_ping(&server.address, server.port, Duration::from_secs(4)).await);
+            let timeout = Duration::from_secs(4);
+            return Some(tcp_ping(&server.address, server.port, &doh, timeout).await);
         }
-        crate::ping_servers(std::slice::from_ref(server))
+        crate::ping_servers(&doh, std::slice::from_ref(server))
             .await
             .ok()
             .and_then(|mut results| results.pop())
     }
 
-    async fn run_core(&self, server: &Server) -> Result<Measured, ()> {
+    /// Адреса имён сервера для тестового ядра — через DoH (после пинга они уже в
+    /// кэше). При VPN окно спрашивает DoH через туннель: мимо него его не пускает
+    /// kill switch. `None` — адрес какого-то имени не нашёлся.
+    async fn hosts(&self, server: &Server) -> Option<Vec<(String, Vec<IpAddr>)>> {
+        let doh = tester::Doh {
+            first: &self.doh,
+            governor: &self.governor,
+        };
+        let names = server.endpoints();
+        let found = kvt_core::dns::names::resolve(&names, &doh, None, Origin::App).await;
+        names
+            .into_iter()
+            .map(|name| match found.get(&name) {
+                Some(Lookup::Found(ips)) => Some((name, ips.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn run_core(
+        &self,
+        server: &Server,
+        hosts: &[(String, Vec<IpAddr>)],
+    ) -> Result<Measured, ()> {
         let core = select_core(server).core;
         let port = free_port().map_err(|_| ())?;
         let (user, password) = (random_token(), random_token());
@@ -159,6 +194,7 @@ impl CoreProber {
                 user: &user,
                 password: &password,
                 source: self.source,
+                hosts,
             },
         )
         .map_err(|_| ())?;
@@ -217,8 +253,12 @@ impl Prober for CoreProber {
                 _ => {}
             }
         }
+        let Some(hosts) = self.hosts(&server).await else {
+            obs.dns_resolved = false;
+            return obs;
+        };
         obs.tcp_connected = true;
-        match self.run_core(&server).await {
+        match self.run_core(&server, &hosts).await {
             Err(()) => obs.core_error = true,
             Ok(m) => {
                 obs.tls_handshake_done = m.responded;
@@ -242,13 +282,18 @@ struct ProbeEvent {
 impl CoreProber {
     /// Тестовые ядра из каталога программы, рабочие файлы — во временном каталоге.
     /// `source` — адрес физического адаптера, если VPN подключён.
-    pub(crate) fn new(source: Option<std::net::Ipv4Addr>) -> Result<Self, String> {
+    pub(crate) fn new(
+        state: &AppState,
+        source: Option<std::net::Ipv4Addr>,
+    ) -> Result<Self, String> {
         let work = std::env::temp_dir().join("kvt-probe");
         std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
         Ok(Self {
             cores: cores_dir()?,
             work,
             source,
+            doh: state.doh_first(),
+            governor: Arc::clone(&state.governor),
         })
     }
 }
@@ -303,7 +348,7 @@ pub async fn full_check(
     }
     let result = async {
         let (keys, servers) = crate::servers_of(&state, group.as_deref())?;
-        let prober = Arc::new(CoreProber::new(source)?);
+        let prober = Arc::new(CoreProber::new(&state, source)?);
         // Состояние NetGovernor (лимиты и заморозки по SNI) общее для всего приложения:
         // проверка берёт его на каждое решение, остальные видят её записи сразу.
         let events = app.clone();
@@ -394,10 +439,13 @@ mod tests {
             "тестовый сервер не запустился"
         );
 
+        // Сервер — по IP: резолвер DoH не нужен.
         let prober = CoreProber {
             cores,
             work,
             source: None,
+            doh: "cloudflare".into(),
+            governor: Arc::default(),
         };
         let obs = prober.probe(ss_server(port)).await;
         println!("{obs:?} → {:?}", classify(&obs));

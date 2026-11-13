@@ -152,7 +152,7 @@ pub fn hello(request: &Request) -> Response {
 pub async fn stateless(shared: &Shared, request: Request) -> Result<Response, Request> {
     let response = match request {
         request @ Request::Hello { .. } => hello(&request),
-        Request::Ping { targets } => crate::net::ping(targets).await,
+        Request::Ping { targets, doh } => crate::net::ping(targets, &doh).await,
         Request::NetLog => Response::NetLog {
             events: kvt_core::netlog::snapshot(),
         },

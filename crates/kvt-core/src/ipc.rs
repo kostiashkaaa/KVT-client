@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 /// Сколько адресов можно пингнуть одной командой `Ping`.
 pub const MAX_PING_TARGETS: usize = 1024;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
@@ -68,8 +68,10 @@ pub enum Request {
     CaptiveCheck,
     /// TCP-пинг серверов напрямую через физический адаптер — когда VPN подключён,
     /// пинг из окна принял бы сам TUN. `None` — не проверять (UDP-протоколы).
+    /// Имена служба узнаёт через DoH, первым — резолвер `doh` (id из каталога).
     Ping {
         targets: Vec<Option<PingTarget>>,
+        doh: String,
     },
 }
 

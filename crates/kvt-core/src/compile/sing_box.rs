@@ -341,9 +341,17 @@ pub(super) fn probe_config(
     server: &Server,
     inbound: &super::ProbeInbound<'_>,
 ) -> Result<Value, CompileError> {
+    // Имена сервера — из найденных через DoH адресов (`hosts`), системный DNS ядро
+    // не спрашивает. Сервер по IP резолвить нечего.
+    let hosts = super::probe_hosts(server, inbound.hosts)?;
+    let dns = if hosts.is_empty() {
+        json!({ "type": "local", "tag": "local" })
+    } else {
+        json!({ "type": "hosts", "tag": "local", "predefined": hosts })
+    };
     Ok(json!({
         "log": { "level": "warn" },
-        "dns": { "servers": [{ "type": "local", "tag": "local" }] },
+        "dns": { "servers": [dns] },
         "inbounds": [{
             "type": "socks",
             "tag": "probe-in",

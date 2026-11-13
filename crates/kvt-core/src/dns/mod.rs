@@ -14,6 +14,7 @@
 //!   резолвер вернёт им разные адреса, а заглушка провайдера — один и тот же адрес
 //!   страницы блокировки (или адрес из частной сети).
 
+pub mod names;
 pub mod wire;
 
 use crate::i18n::tr;
@@ -636,6 +637,7 @@ mod tests {
             answer: Answer {
                 rcode: 0,
                 a: ips.to_vec(),
+                ..Answer::default()
             },
             ms: 20,
         }
@@ -645,7 +647,7 @@ mod tests {
         QueryResult::Answer {
             answer: Answer {
                 rcode: code,
-                a: Vec::new(),
+                ..Answer::default()
             },
             ms: 20,
         }

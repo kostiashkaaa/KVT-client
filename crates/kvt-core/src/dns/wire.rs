@@ -1,10 +1,11 @@
 //! Минимальный DNS (RFC 1035): запрос одной записи и разбор ответа. Этого хватает
 //! для проверки резолверов; полноценный DNS делают ядра.
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use thiserror::Error;
 
 pub const TYPE_A: u16 = 1;
+pub const TYPE_AAAA: u16 = 28;
 pub const RCODE_NXDOMAIN: u8 = 3;
 pub const RCODE_REFUSED: u8 = 5;
 
@@ -27,6 +28,7 @@ pub enum WireError {
 pub struct Answer {
     pub rcode: u8,
     pub a: Vec<Ipv4Addr>,
+    pub aaaa: Vec<Ipv6Addr>,
 }
 
 /// Запрос с флагом рекурсии, класс IN.
@@ -106,7 +108,7 @@ pub fn parse(msg: &[u8], id: u16) -> Result<Answer, WireError> {
     }
     let mut out = Answer {
         rcode: (flags & 0x000F) as u8,
-        a: Vec::new(),
+        ..Answer::default()
     };
     for _ in 0..answers {
         r.skip_name()?;
@@ -118,6 +120,10 @@ pub fn parse(msg: &[u8], id: u16) -> Result<Answer, WireError> {
         if rtype == TYPE_A && len == 4 {
             out.a
                 .push(Ipv4Addr::new(data[0], data[1], data[2], data[3]));
+        } else if rtype == TYPE_AAAA {
+            if let Ok(octets) = <[u8; 16]>::try_from(data) {
+                out.aaaa.push(Ipv6Addr::from(octets));
+            }
         }
     }
     Ok(out)
@@ -167,6 +173,30 @@ mod tests {
         assert_eq!(parse(&sample_response(7), 8), Err(WireError::IdMismatch));
         let q = query(9, "ya.ru", TYPE_A).unwrap();
         assert_eq!(parse(&q, 9), Err(WireError::NotResponse));
+    }
+
+    #[test]
+    fn parses_aaaa() {
+        let mut m = query(4, "v6.example", TYPE_AAAA).unwrap();
+        m[2] = 0x81;
+        m[3] = 0x80;
+        m[7] = 1;
+        m.extend_from_slice(&[0xC0, 12, 0, 28, 0, 1, 0, 0, 0, 60, 0, 16]);
+        m.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let a = parse(&m, 4).unwrap();
+        assert!(a.a.is_empty());
+        assert_eq!(a.aaaa, ["2001:db8::1".parse::<Ipv6Addr>().unwrap()]);
+    }
+
+    /// AAAA неверной длины пропускается, а не роняет разбор.
+    #[test]
+    fn aaaa_with_wrong_length_skipped() {
+        let mut m = query(5, "v6.example", TYPE_AAAA).unwrap();
+        m[2] = 0x81;
+        m[3] = 0x80;
+        m[7] = 1;
+        m.extend_from_slice(&[0xC0, 12, 0, 28, 0, 1, 0, 0, 0, 60, 0, 4, 1, 2, 3, 4]);
+        assert!(parse(&m, 5).unwrap().aaaa.is_empty());
     }
 
     #[test]

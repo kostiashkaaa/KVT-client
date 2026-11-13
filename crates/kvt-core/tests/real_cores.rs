@@ -78,12 +78,19 @@ fn generated_configs_pass_real_core_checks() {
         let s = server(uri);
 
         // Конфиг тестового ядра для полной проверки сервера.
+        let hosts: Vec<(String, Vec<std::net::IpAddr>)> = s
+            .endpoints()
+            .into_iter()
+            .map(|name| (name, vec![std::net::IpAddr::from([203, 0, 113, 10])]))
+            .collect();
         let probe = ProbeInbound {
             port: 41_000 + i as u16,
             user: "u",
             password: "p",
             // Через раз — с адресом источника, как при подключённом VPN.
             source: (i % 2 == 0).then_some(std::net::Ipv4Addr::new(192, 168, 1, 10)),
+            // Адреса имён — как будто найдены через DoH.
+            hosts: &hosts,
         };
         let config = compile_probe(*core, &s, &probe).expect("конфиг пробы");
         let path = work.join(format!("{i}-probe.json"));

@@ -98,8 +98,12 @@ fn direct_domains(input: &CompileInput<'_>) -> Vec<String> {
 /// уходит от службы DNS Windows, а её запросы мимо туннеля служба блокирует
 /// (`wfp::DnsGuard`) — имя сервера резолвилось бы через сам туннель.
 fn server_outbound(s: &Server) -> Result<Value, CompileError> {
-    let mut out = outbound(s)?;
-    let local_dns = json!({ "domainStrategy": "UseIPv4" });
+    Ok(with_domain_strategy(outbound(s)?, "UseIPv4"))
+}
+
+/// Имя сервера (и сервера загрузки XHTTP) — встроенным DNS Xray, а не системным.
+fn with_domain_strategy(mut out: Value, strategy: &str) -> Value {
+    let local_dns = json!({ "domainStrategy": strategy });
     out["streamSettings"]["sockopt"] = local_dns.clone();
     // Сервер загрузки XHTTP — свой `streamSettings` со своим адресом.
     if let Some(download) = out
@@ -108,7 +112,7 @@ fn server_outbound(s: &Server) -> Result<Value, CompileError> {
     {
         download["sockopt"] = local_dns;
     }
-    Ok(out)
+    out
 }
 
 fn rules(input: &CompileInput<'_>) -> Vec<Value> {
@@ -349,7 +353,8 @@ pub(super) fn probe_config(
     server: &Server,
     inbound: &super::ProbeInbound<'_>,
 ) -> Result<Value, CompileError> {
-    Ok(json!({
+    let hosts = super::probe_hosts(server, inbound.hosts)?;
+    let mut config = json!({
         "log": { "loglevel": "warning" },
         "inbounds": [{
             "tag": "probe-in",
@@ -362,15 +367,26 @@ pub(super) fn probe_config(
                 "udp": false
             }
         }],
-        "outbounds": [probe_outbound(server, inbound)?]
-    }))
+        "outbounds": [probe_outbound(server, inbound, !hosts.is_empty())?]
+    });
+    // Имена сервера — из найденных через DoH адресов. Встроенный DNS без серверов
+    // спросил бы систему, но до него не доходит: все имена есть в `hosts`.
+    if !hosts.is_empty() {
+        config["dns"] = json!({ "hosts": hosts });
+    }
+    Ok(config)
 }
 
 fn probe_outbound(
     server: &Server,
     inbound: &super::ProbeInbound<'_>,
+    named: bool,
 ) -> Result<Value, CompileError> {
     let mut out = outbound(server)?;
+    // `ForceIP`: адрес только из встроенного DNS, без отката на системный.
+    if named {
+        out = with_domain_strategy(out, "ForceIP");
+    }
     if let Some(source) = inbound.source {
         out["sendThrough"] = source.to_string().into();
     }

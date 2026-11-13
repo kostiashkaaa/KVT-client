@@ -9,6 +9,8 @@ license.workspace = true
 [dependencies]
 base64.workspace = true
 percent-encoding.workspace = true
+# DoH для имён серверов при проверке (`dns::names`). Schannel, как у окна и службы.
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "native-tls-alpn", "http2"] }
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true

@@ -142,6 +142,12 @@ pub enum CompileError {
     Dns(String),
     #[error("{}", crate::trf!("настройки сервера повреждены: {}", "the server settings are damaged: {}", .0))]
     Server(#[from] crate::parser::ParseError),
+    /// Для тестового ядра не нашёлся адрес имени сервера (`ProbeInbound::hosts`).
+    #[error(
+        "{}",
+        crate::i18n::tr("адрес сервера не найден", "the server address wasn't found")
+    )]
+    Unresolved,
 }
 
 pub fn compile(core: CoreKind, input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
@@ -165,6 +171,40 @@ pub struct ProbeInbound<'a> {
     /// сервером уходит с него мимо TUN (Xray `sendThrough`, sing-box
     /// `inet4_bind_address`), иначе результат был бы «через туннель».
     pub source: Option<std::net::Ipv4Addr>,
+    /// Адреса имён сервера (`Server::endpoints`), найденные через DoH
+    /// (`dns::names`). Ядро берёт их отсюда и само DNS не спрашивает: иначе
+    /// провайдер видел бы по запросам каждый проверяемый сервер.
+    pub hosts: &'a [(String, Vec<std::net::IpAddr>)],
+}
+
+/// Имена сервера с адресами для DNS тестового ядра; IP из ссылки сюда не входят.
+/// Имени без адреса быть не может — ядро спросило бы системный DNS. Если есть IPv4,
+/// берутся только они: IPv6 без доступа в сеть сломал бы проверку.
+fn probe_hosts(
+    server: &Server,
+    hosts: &[(String, Vec<std::net::IpAddr>)],
+) -> Result<serde_json::Map<String, serde_json::Value>, CompileError> {
+    let mut map = serde_json::Map::new();
+    for name in server.endpoints() {
+        let literal = name.trim_start_matches('[').trim_end_matches(']');
+        if literal.parse::<std::net::IpAddr>().is_ok() {
+            continue;
+        }
+        let ips = hosts
+            .iter()
+            .find(|(h, _)| h.eq_ignore_ascii_case(&name))
+            .map(|(_, ips)| ips.as_slice())
+            .filter(|ips| !ips.is_empty())
+            .ok_or(CompileError::Unresolved)?;
+        let v4 = ips.iter().any(std::net::IpAddr::is_ipv4);
+        let list = ips
+            .iter()
+            .filter(|ip| ip.is_ipv4() == v4)
+            .map(|ip| serde_json::Value::from(ip.to_string()))
+            .collect();
+        map.insert(name, serde_json::Value::Array(list));
+    }
+    Ok(map)
 }
 
 /// Конфиг тестового ядра: один SOCKS-вход с паролем и один выход — проверяемый
@@ -401,5 +441,77 @@ mod tests {
         assert_eq!(normalize_cidr("1.2.3.4"), "1.2.3.4/32");
         assert_eq!(normalize_cidr("2001:db8::1"), "2001:db8::1/128");
         assert_eq!(normalize_cidr("10.0.0.0/8"), "10.0.0.0/8");
+    }
+
+    const NAMED: &str = "trojan://secret@Tr.Example.com:443?sni=tr.example.com#t";
+
+    fn probe(
+        core: CoreKind,
+        uri: &str,
+        hosts: &[(String, Vec<std::net::IpAddr>)],
+    ) -> Result<serde_json::Value, CompileError> {
+        let inbound = ProbeInbound {
+            port: 41_000,
+            user: "u",
+            password: "p",
+            source: None,
+            hosts,
+        };
+        compile_probe(core, &server(uri), &inbound)
+    }
+
+    /// Имя сервера тестовое ядро берёт из найденных через DoH адресов, а не из DNS.
+    #[test]
+    fn probe_core_gets_server_name_from_hosts() {
+        let hosts = vec![(
+            "tr.example.com".to_string(),
+            vec![
+                "2001:db8::1".parse().unwrap(),
+                "203.0.113.5".parse().unwrap(),
+            ],
+        )];
+        let x = probe(CoreKind::Xray, NAMED, &hosts).unwrap();
+        // Только IPv4, если он есть; имя — как в ссылке.
+        assert_eq!(
+            x["dns"]["hosts"]["Tr.Example.com"],
+            serde_json::json!(["203.0.113.5"])
+        );
+        assert_eq!(
+            x["outbounds"][0]["streamSettings"]["sockopt"]["domainStrategy"],
+            "ForceIP"
+        );
+        let s = probe(CoreKind::SingBox, NAMED, &hosts).unwrap();
+        let dns = &s["dns"]["servers"][0];
+        assert_eq!(dns["type"], "hosts");
+        assert_eq!(
+            dns["predefined"]["Tr.Example.com"],
+            serde_json::json!(["203.0.113.5"])
+        );
+        assert_eq!(s["route"]["default_domain_resolver"], dns["tag"]);
+    }
+
+    /// Без адреса имени конфиг не собирается: ядро спросило бы системный DNS.
+    #[test]
+    fn probe_without_address_is_refused() {
+        for core in [CoreKind::Xray, CoreKind::SingBox] {
+            assert!(matches!(
+                probe(core, NAMED, &[]),
+                Err(CompileError::Unresolved)
+            ));
+            let empty = vec![("tr.example.com".to_string(), Vec::new())];
+            assert!(matches!(
+                probe(core, NAMED, &empty),
+                Err(CompileError::Unresolved)
+            ));
+        }
+    }
+
+    /// Сервер по IP: резолвить нечего, DNS ядра не трогаем.
+    #[test]
+    fn probe_by_ip_needs_no_hosts() {
+        let x = probe(CoreKind::Xray, REALITY, &[]).unwrap();
+        assert!(x.get("dns").is_none());
+        let s = probe(CoreKind::SingBox, REALITY, &[]).unwrap();
+        assert_eq!(s["dns"]["servers"][0]["type"], "local");
     }
 }

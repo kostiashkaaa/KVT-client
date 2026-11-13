@@ -613,7 +613,7 @@ async fn probe(state: &AppState, key: &str, server: &kvt_core::Server) -> Option
         return Some(ProbeFact::Postponed);
     }
     // «Почему не работает?» пробует сервер, только когда VPN отключён.
-    let prober = CoreProber::new(None).ok()?;
+    let prober = CoreProber::new(state, None).ok()?;
     let observation = prober.probe(server.clone()).await;
     let verdict = classify(&observation);
     kvt_core::tester::log_probe(&sni, verdict, &observation);
@@ -673,7 +673,12 @@ async fn gather(state: &AppState) -> Facts {
     if !server.protocol.is_quic() {
         // При подключённом VPN пингует служба мимо туннеля: соединение окна принял
         // бы сам TUN за 0 мс, и мёртвый сервер выглядел бы рабочим.
-        f.server_tcp = crate::ping_servers(std::slice::from_ref(server))
+        let first = state.doh_first();
+        let doh = kvt_core::tester::Doh {
+            first: &first,
+            governor: &state.governor,
+        };
+        f.server_tcp = crate::ping_servers(&doh, std::slice::from_ref(server))
             .await
             .ok()
             .and_then(|mut results| results.pop());

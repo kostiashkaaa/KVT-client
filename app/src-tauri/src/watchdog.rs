@@ -127,7 +127,12 @@ pub(crate) async fn alternatives(state: &AppState, current: Option<&Entry>) -> V
             // VPN подключён (иначе замена не нужна): пинг из приложения ушёл бы в TUN
             // и «ответил» бы за любой сервер. Пингует служба мимо туннеля; если она не
             // смогла — замена только среди проверенных полной проверкой.
-            let results = match crate::ping_servers(&servers).await {
+            let first = state.doh_first();
+            let doh = kvt_core::tester::Doh {
+                first: &first,
+                governor: &state.governor,
+            };
+            let results = match crate::ping_servers(&doh, &servers).await {
                 Ok(results) => results,
                 Err(e) => {
                     tracing::warn!(error = %e, "пинг кандидатов не удался");

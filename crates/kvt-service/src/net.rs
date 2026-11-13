@@ -8,12 +8,14 @@
 //! одного пути зависеть нельзя.
 
 use kvt_core::captive;
+use kvt_core::governor::{NetGovernor, NetPolicy};
 use kvt_core::ipc::{Captive, PingTarget, Response, MAX_PING_TARGETS};
 use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
 use kvt_core::rulesync::Http;
+use kvt_core::tester::Doh;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 pub struct NetClient {
@@ -151,9 +153,15 @@ fn describe(e: reqwest::Error) -> String {
     }
 }
 
+/// NetGovernor службы: её запросы к резолверам DoH (имена серверов для пинга).
+static GOVERNOR: LazyLock<Mutex<NetGovernor>> =
+    LazyLock::new(|| Mutex::new(NetGovernor::new(NetPolicy::default())));
+
 /// TCP-пинг серверов напрямую через физический адаптер: окно при подключённом
-/// VPN пингует через TUN, и тот принимает соединение сам — за 0 мс.
-pub async fn ping(targets: Vec<Option<PingTarget>>) -> Response {
+/// VPN пингует через TUN, и тот принимает соединение сам — за 0 мс. Имена — через
+/// DoH (`doh` — первый резолвер) тоже мимо туннеля: если VPN не работает, пинг
+/// должен это показать, а не застрять на DNS.
+pub async fn ping(targets: Vec<Option<PingTarget>>, doh: &str) -> Response {
     if targets.len() > MAX_PING_TARGETS {
         return Response::Error {
             message: kvt_core::i18n::tr(
@@ -179,6 +187,10 @@ pub async fn ping(targets: Vec<Option<PingTarget>>) -> Response {
     Response::Ping {
         results: kvt_core::tester::ping_all(
             &targets,
+            &Doh {
+                first: doh,
+                governor: &GOVERNOR,
+            },
             Some(local),
             Origin::Service,
             Duration::from_secs(3),

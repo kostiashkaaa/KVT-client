@@ -9,6 +9,8 @@
 #[cfg(test)]
 mod emulator;
 
+pub use crate::dns::names::Doh;
+use crate::dns::names::{self, Lookup};
 use crate::governor::{Decision, NetGovernor};
 use crate::model::Server;
 use crate::netlog::{self, Origin, Purpose, Route};
@@ -16,7 +18,7 @@ use crate::probe::{classify, ProbeObservation, Verdict};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::future::Future;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -202,6 +204,7 @@ pub enum QuickResult {
 /// Быстрая проверка: время TCP-рукопожатия до каждого сервера.
 pub async fn quick_check(
     servers: &[Server],
+    doh: &Doh<'_>,
     timeout: Duration,
     parallel: usize,
 ) -> Vec<QuickResult> {
@@ -212,32 +215,45 @@ pub async fn quick_check(
             (!s.protocol.is_quic()).then(|| (s.address.clone(), s.port))
         })
         .collect();
-    ping_all(&targets, None, Origin::App, timeout, parallel).await
+    ping_all(&targets, doh, None, Origin::App, timeout, parallel).await
 }
 
-/// TCP-пинг списка адресов (`None` — не проверять). `local` — адрес источника:
-/// сокет, привязанный к адресу физического адаптера, идёт мимо TUN (так служба
-/// пингует, когда VPN подключён, — иначе соединение принял бы сам TUN за 0 мс).
+/// TCP-пинг списка серверов (`None` — не проверять). Имена — через DoH
+/// ([`names`]), не системным DNS. `local` — адрес источника: сокет, привязанный к
+/// адресу физического адаптера, идёт мимо TUN (так служба пингует, когда VPN
+/// подключён, — иначе соединение принял бы сам TUN за 0 мс).
 pub async fn ping_all(
     targets: &[Option<(String, u16)>],
+    doh: &Doh<'_>,
     local: Option<Ipv4Addr>,
     origin: Origin,
     timeout: Duration,
     parallel: usize,
 ) -> Vec<QuickResult> {
+    let hosts: Vec<String> = targets.iter().flatten().map(|(h, _)| h.clone()).collect();
+    let found = names::resolve(&hosts, doh, local, origin).await;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(parallel.max(1)));
     let mut set = JoinSet::new();
     for (i, t) in targets.iter().enumerate() {
         let Some((host, port)) = t.clone() else {
             continue;
         };
+        let lookup = found.get(&host).cloned().unwrap_or(Lookup::Failed);
         let sem = Arc::clone(&semaphore);
         set.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            (
-                i,
-                ping_logged(&host, port, local, origin, Purpose::ServerPing, timeout).await,
+            let target = format!("{host}:{port}");
+            let result = ping_logged(
+                &target,
+                lookup,
+                port,
+                local,
+                origin,
+                Purpose::ServerPing,
+                timeout,
             )
+            .await;
+            (i, result)
         });
     }
     let mut out = vec![QuickResult::NotApplicable; targets.len()];
@@ -247,78 +263,87 @@ pub async fn ping_all(
     out
 }
 
-// TODO(этап 6): резолвить имена серверов через выбранный DoH, а не системный DNS.
-pub async fn tcp_ping(host: &str, port: u16, timeout: Duration) -> QuickResult {
-    ping_logged(host, port, None, Origin::App, Purpose::ServerPing, timeout).await
-}
-
-/// TCP-пинг сервера с адреса `local` — мимо TUN, когда VPN подключён (иначе
-/// соединение принял бы сам TUN за 0 мс). `None` — как [`tcp_ping`].
-pub async fn tcp_ping_from(
-    host: &str,
-    port: u16,
-    local: Option<Ipv4Addr>,
-    timeout: Duration,
-) -> QuickResult {
-    ping_logged(host, port, local, Origin::App, Purpose::ServerPing, timeout).await
+/// TCP-пинг одного сервера из окна (VPN не подключён), имя — через DoH.
+pub async fn tcp_ping(host: &str, port: u16, doh: &Doh<'_>, timeout: Duration) -> QuickResult {
+    let target = [Some((host.to_owned(), port))];
+    ping_all(&target, doh, None, Origin::App, timeout, 1)
+        .await
+        .pop()
+        .unwrap_or(QuickResult::DnsFailed)
 }
 
 /// TCP-пинг не VPN-сервера (например, «есть ли интернет»): в журнале — с этой целью.
+/// Здесь системный DNS — то, что проверяется: работает ли сеть как есть.
 pub async fn tcp_ping_for(
     purpose: Purpose,
     host: &str,
     port: u16,
     timeout: Duration,
 ) -> QuickResult {
-    ping_logged(host, port, None, Origin::App, purpose, timeout).await
+    let lookup = match tokio::time::timeout(timeout, tokio::net::lookup_host((host, port))).await {
+        Ok(Ok(addrs)) => Lookup::Found(addrs.map(|a| a.ip()).collect()),
+        _ => Lookup::Failed,
+    };
+    let target = format!("{host}:{port}");
+    ping_logged(&target, lookup, port, None, Origin::App, purpose, timeout).await
 }
 
 async fn ping_logged(
-    host: &str,
+    target: &str,
+    lookup: Lookup,
     port: u16,
     local: Option<Ipv4Addr>,
     origin: Origin,
     purpose: Purpose,
     timeout: Duration,
 ) -> QuickResult {
-    let result = tcp_ping_inner(host, port, local, timeout).await;
-    let target = format!("{host}:{port}");
-    let event = |outcome| netlog::Event::new(origin, purpose, &target, Route::Direct, outcome);
+    let failure = match &lookup {
+        Lookup::NotFound => Some(crate::i18n::tr("адрес не найден", "address not found")),
+        Lookup::Failed => Some(crate::i18n::tr(
+            "не удалось узнать адрес",
+            "couldn't look up the address",
+        )),
+        Lookup::Found(_) => None,
+    };
+    let result = match lookup {
+        Lookup::Found(ips) => tcp_ping_inner(&ips, port, local, timeout).await,
+        _ => QuickResult::DnsFailed,
+    };
+    let event = |outcome| netlog::Event::new(origin, purpose, target, Route::Direct, outcome);
     netlog::record(match &result {
         QuickResult::Reachable { latency_ms } => {
             event(netlog::Outcome::Ok).ms(Duration::from_millis(*latency_ms))
         }
-        QuickResult::Unreachable => event(netlog::Outcome::Failed).detail("TCP не открылся"),
-        QuickResult::DnsFailed => event(netlog::Outcome::Failed).detail("адрес не найден"),
+        QuickResult::Unreachable => event(netlog::Outcome::Failed)
+            .detail(crate::i18n::tr("TCP не открылся", "TCP didn't open")),
+        QuickResult::DnsFailed => event(netlog::Outcome::Failed)
+            .detail(failure.unwrap_or(crate::i18n::tr("адрес не найден", "address not found"))),
         QuickResult::NotApplicable => return result,
     });
     result
 }
 
 async fn tcp_ping_inner(
-    host: &str,
+    ips: &[IpAddr],
     port: u16,
     local: Option<Ipv4Addr>,
     timeout: Duration,
 ) -> QuickResult {
-    let addrs = match tokio::time::timeout(timeout, tokio::net::lookup_host((host, port))).await {
-        Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
-        _ => return QuickResult::DnsFailed,
-    };
     // С адресом источника IPv4 годится только IPv4-адрес сервера.
-    let addr = match local {
-        Some(_) => addrs.iter().find(|a| a.is_ipv4()),
-        None => addrs.first(),
+    let ip = match local {
+        Some(_) => ips.iter().find(|a| a.is_ipv4()),
+        None => ips.first(),
     };
-    let Some(&addr) = addr else {
+    let Some(&ip) = ip else {
         return QuickResult::DnsFailed;
     };
+    let addr = SocketAddr::new(ip, port);
     let start = Instant::now();
     let connect = async {
         match local {
-            Some(ip) => {
+            Some(src) => {
                 let socket = tokio::net::TcpSocket::new_v4()?;
-                socket.bind(SocketAddr::from((ip, 0)))?;
+                socket.bind(SocketAddr::from((src, 0)))?;
                 socket.connect(addr).await
             }
             None => tokio::net::TcpStream::connect(addr).await,
@@ -622,13 +647,26 @@ mod tests {
         assert!(obs.download_completed && !obs.stalled);
     }
 
+    /// Тестам сеть не нужна: IP в адресе резолвер не спрашивает.
+    fn no_net_governor() -> Mutex<NetGovernor> {
+        Mutex::new(NetGovernor::new(NetPolicy::default()))
+    }
+
+    fn doh(governor: &Mutex<NetGovernor>) -> Doh<'_> {
+        Doh {
+            first: "cloudflare",
+            governor,
+        }
+    }
+
     #[tokio::test]
     async fn tcp_ping_local_listener() {
+        let governor = no_net_governor();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { while listener.accept().await.is_ok() {} });
         assert!(matches!(
-            tcp_ping("127.0.0.1", port, Duration::from_secs(2)).await,
+            tcp_ping("127.0.0.1", port, &doh(&governor), Duration::from_secs(2)).await,
             QuickResult::Reachable { .. }
         ));
     }
@@ -636,11 +674,13 @@ mod tests {
     /// Так пингует служба при подключённом VPN: сокет привязан к адресу источника.
     #[tokio::test]
     async fn ping_all_from_local_address() {
+        let governor = no_net_governor();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { while listener.accept().await.is_ok() {} });
         let out = ping_all(
             &[Some(("127.0.0.1".into(), port)), None],
+            &doh(&governor),
             Some(Ipv4Addr::LOCALHOST),
             Origin::Service,
             Duration::from_secs(2),
@@ -653,6 +693,7 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_ping_closed_port() {
+        let governor = no_net_governor();
         // Занимаем порт и сразу освобождаем — на нём точно никто не слушает.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -660,8 +701,18 @@ mod tests {
             .unwrap()
             .port();
         assert_eq!(
-            tcp_ping("127.0.0.1", port, Duration::from_secs(2)).await,
+            tcp_ping("127.0.0.1", port, &doh(&governor), Duration::from_secs(2)).await,
             QuickResult::Unreachable
+        );
+    }
+
+    /// Имя, которое и спрашивать нечего, — «адрес не найден» без сети.
+    #[tokio::test]
+    async fn tcp_ping_bad_name_is_dns_failed() {
+        let governor = no_net_governor();
+        assert_eq!(
+            tcp_ping("пример.рф", 443, &doh(&governor), Duration::from_secs(2)).await,
+            QuickResult::DnsFailed
         );
     }
 }
