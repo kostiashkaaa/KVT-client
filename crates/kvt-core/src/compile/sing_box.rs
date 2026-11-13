@@ -13,9 +13,10 @@ use serde_json::{json, Map, Value};
 const CORE: CoreKind = CoreKind::SingBox;
 const DNS_REMOTE: &str = "dns-remote";
 const DNS_LOCAL: &str = "dns-local";
+const DNS_HOSTS: &str = "dns-hosts";
 
 pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
-    let config = json!({
+    let mut config = json!({
         "log": { "level": "warn" },
         "dns": {
             "servers": [
@@ -49,6 +50,18 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
             "default_domain_resolver": DNS_LOCAL
         }
     });
+    // Имя сервера — адресами, которые служба нашла через DoH, а не локальным
+    // резолвером (`default_domain_resolver` остаётся для прямых соединений).
+    let hosts = super::tunnel_hosts(input.server, input.hosts);
+    if !hosts.is_empty() {
+        if let Some(servers) = config
+            .pointer_mut("/dns/servers")
+            .and_then(Value::as_array_mut)
+        {
+            servers.push(json!({ "type": "hosts", "tag": DNS_HOSTS, "predefined": hosts }));
+        }
+        config["outbounds"][0]["domain_resolver"] = DNS_HOSTS.into();
+    }
     Ok(Compiled {
         core: CORE,
         config,
@@ -380,6 +393,7 @@ mod tests {
             dns: &dns,
             rule_set_dir: "C:\\ProgramData\\KVT\\rules\\",
             ipv6: true,
+            hosts: &[],
         })
         .unwrap()
     }
@@ -535,6 +549,7 @@ mod tests {
                 dns: &dns,
                 rule_set_dir: "r",
                 ipv6: true,
+                hosts: &[],
             })
             .unwrap_err(),
             CompileError::Unsupported {

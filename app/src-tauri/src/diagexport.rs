@@ -49,6 +49,7 @@ fn config(state: &AppState) -> Value {
                     dns: &plan.dns,
                     rule_set_dir: "C:/ProgramData/KVT/rules",
                     ipv6,
+                    hosts: &[],
                 },
             ) {
                 Ok(c) => json!({

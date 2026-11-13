@@ -711,7 +711,7 @@ mod tests {
     async fn tcp_ping_bad_name_is_dns_failed() {
         let governor = no_net_governor();
         assert_eq!(
-            tcp_ping("пример.рф", 443, &doh(&governor), Duration::from_secs(2)).await,
+            tcp_ping("a..b", 443, &doh(&governor), Duration::from_secs(2)).await,
             QuickResult::DnsFailed
         );
     }

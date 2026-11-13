@@ -8,6 +8,7 @@
 //! одного пути зависеть нельзя.
 
 use kvt_core::captive;
+use kvt_core::dns::names::Lookup;
 use kvt_core::governor::{NetGovernor, NetPolicy};
 use kvt_core::ipc::{Captive, PingTarget, Response, MAX_PING_TARGETS};
 use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
@@ -201,9 +202,8 @@ pub async fn ping(targets: Vec<Option<PingTarget>>, doh: &str) -> Response {
 }
 
 /// IP, в которые последний раз разрешились имена серверов (ключ — имя в нижнем
-/// регистре). Нужны, когда системный DNS не отвечает: при переподключении с kill
-/// switch прежние фильтры закрывают DNS всем, кроме ядра и службы, а запрос имени
-/// за службу отправляет служба DNS-клиента Windows.
+/// регистре). Нужны, когда DoH не отвечает: тогда подключение берёт прежние адреса,
+/// а не спрашивает DNS провайдера.
 static RESOLVED: Mutex<Option<HashMap<String, Vec<IpAddr>>>> = Mutex::new(None);
 
 /// Последние известные IP имени (без запроса в сеть).
@@ -215,48 +215,87 @@ pub fn known_ips(host: &str) -> Vec<IpAddr> {
         .unwrap_or_default()
 }
 
-/// IP имени VPN-сервера через системный DNS (до 5 с). Не ответил — последние
-/// известные IP этого имени. Запрос пишется в журнал запросов.
-pub async fn resolve(host: &str, port: u16) -> Vec<IpAddr> {
-    let host = host.to_ascii_lowercase();
+/// Сколько подключение ждёт DoH, прежде чем взять прежние адреса.
+const CONNECT_DOH_BUDGET: Duration = Duration::from_secs(5);
+
+/// Адреса имён VPN-сервера (`Server::endpoints`; IP из ссылки не входят) для ядра,
+/// маскировщика журналов и исключений zapret. Через DoH (`doh` — первый резолвер)
+/// мимо туннеля, с адреса физического адаптера: прежний туннель при переподключении
+/// может быть мёртв, а kill switch службу пропускает. DoH не ответил — прежние
+/// адреса имени; их нет — системный DNS (до 5 с) с предупреждением в журнале: без
+/// адреса не подключиться, хотя этот запрос и видит провайдер.
+pub async fn server_ips(names: &[String], port: u16, doh: &str) -> Vec<(String, Vec<IpAddr>)> {
+    let names: Vec<String> = names
+        .iter()
+        .filter(|n| n.trim_matches(['[', ']']).parse::<IpAddr>().is_err())
+        .cloned()
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let doh = Doh {
+        first: doh,
+        governor: &GOVERNOR,
+    };
+    let local = crate::wfp::physical_ipv4();
+    let lookup = kvt_core::dns::names::resolve(&names, &doh, local, Origin::Service);
+    let found = tokio::time::timeout(CONNECT_DOH_BUDGET, lookup)
+        .await
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for name in names {
+        let ips = match found.get(&name) {
+            Some(Lookup::Found(ips)) => ips.clone(),
+            // DoH ответил «такого имени нет» — системный DNS не спрашиваем.
+            Some(Lookup::NotFound) => known_ips(&name),
+            _ => fallback(&name, port).await,
+        };
+        if ips.is_empty() {
+            continue;
+        }
+        if let Ok(mut r) = RESOLVED.lock() {
+            r.get_or_insert_with(HashMap::new)
+                .insert(name.to_ascii_lowercase(), ips.clone());
+        }
+        out.push((name, ips));
+    }
+    out
+}
+
+async fn fallback(host: &str, port: u16) -> Vec<IpAddr> {
+    let known = known_ips(host);
+    if !known.is_empty() {
+        tracing::info!("DoH не ответил — взяты прежние адреса сервера");
+        return known;
+    }
+    tracing::warn!("DoH не ответил — адрес сервера спрошен у системного DNS");
     let start = Instant::now();
-    let found: Option<Vec<IpAddr>> = tokio::time::timeout(
+    let mut found: Vec<IpAddr> = tokio::time::timeout(
         Duration::from_secs(5),
-        tokio::net::lookup_host((host.as_str(), port)),
+        tokio::net::lookup_host((host, port)),
     )
     .await
     .ok()
     .and_then(Result::ok)
     .map(|addrs| addrs.map(|a| a.ip()).collect())
-    .filter(|ips: &Vec<IpAddr>| !ips.is_empty());
-    record_lookup(&host, found.is_some(), start);
-    match found {
-        Some(mut ips) => {
-            ips.sort();
-            ips.dedup();
-            if let Ok(mut r) = RESOLVED.lock() {
-                r.get_or_insert_with(HashMap::new).insert(host, ips.clone());
-            }
-            ips
-        }
-        None => {
-            let known = known_ips(&host);
-            if !known.is_empty() {
-                tracing::info!("имя сервера не разрешилось — взяты прежние адреса");
-            }
-            known
-        }
-    }
+    .unwrap_or_default();
+    found.sort();
+    found.dedup();
+    record_lookup(host, !found.is_empty(), start);
+    found
 }
 
-/// Системный DNS-запрос имени VPN-сервера (для маскировки журналов и исключений
-/// zapret) — в журнал запросов, как и всё, что служба отправляет в сеть.
-pub fn record_lookup(host: &str, ok: bool, start: Instant) {
+/// Системный DNS-запрос имени VPN-сервера (запасной путь, когда DoH не ответил) —
+/// в журнал запросов, как и всё, что служба отправляет в сеть.
+fn record_lookup(host: &str, ok: bool, start: Instant) {
     let outcome = if ok { Outcome::Ok } else { Outcome::Failed };
     netlog::record(
         netlog::Event::new(Origin::Service, Purpose::Dns, host, Route::Direct, outcome)
             .ms(start.elapsed())
-            .detail(kvt_core::i18n::tr("адрес сервера", "server address")),
+            .detail(kvt_core::i18n::tr(
+                "адрес сервера через системный DNS: DoH не ответил",
+                "server address via system DNS: DoH didn't answer",
+            )),
     );
 }
 

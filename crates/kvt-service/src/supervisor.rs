@@ -316,15 +316,19 @@ impl Supervisor {
     }
 
     async fn start_inner(&mut self, plan: &ConnectPlan) -> Result<(), String> {
-        // Адрес сервера — маскировщику и (в гибриде) в исключения winws — до остановки
-        // прежнего ядра: пока его туннель жив, DNS отвечает. Потом при kill switch
-        // прежние фильтры закрывают DNS всем, кроме ядра и службы, а имя за службу
-        // спрашивает служба DNS-клиента Windows — запрос ждал бы 5 с и не дал IP.
+        // Адреса имён сервера — через DoH, не DNS провайдера: их получают ядро (само
+        // имя не резолвит), маскировщик журналов и (в гибриде) исключения winws.
         hide_server_addresses(&plan.server);
+        let endpoints = plan.server.endpoints();
+        let hosts =
+            crate::net::server_ips(&endpoints, plan.server.port, plan.dns.remote_id()).await;
+        kvt_core::redact::add_servers(
+            hosts
+                .iter()
+                .flat_map(|(_, ips)| ips.iter().map(std::net::IpAddr::to_string)),
+        );
         let servers = match &plan.zapret {
-            Some(_) => {
-                crate::zapret::server_addresses(&plan.server.endpoints(), plan.server.port).await
-            }
+            Some(_) => crate::zapret::server_addresses(&endpoints, &hosts),
             None => crate::zapret::ServerAddresses::default(),
         };
         self.stop_running().await;
@@ -416,6 +420,7 @@ impl Supervisor {
                 dns: &plan.dns,
                 rule_set_dir: &rules,
                 ipv6,
+                hosts: &hosts,
             },
         )
         .map_err(|e| e.to_string())?;
@@ -1138,29 +1143,20 @@ fn tail(text: &str, n: usize) -> String {
 }
 
 /// Адрес сервера — маскировщику журналов до запуска ядра: в строках ядра его не
-/// придётся угадывать. Сервер загрузки XHTTP (`downloadSettings`) скрывается так же.
+/// придётся угадывать. Сервер загрузки XHTTP (`downloadSettings`) скрывается так же;
+/// IP имён добавляются, когда их найдёт `net::server_ips`, а прежние — сразу.
 ///
-/// Адреса только добавляются: прежнее ядро ещё допишет строки о прежнем сервере, а
-/// поздний ответ DNS по нему не должен вытеснить новый. Прежние IP имени — сразу,
-/// свежие — в фоне: при переподключении с kill switch системный DNS может не
-/// отвечать, и ждать его нельзя.
+/// Адреса только добавляются: прежнее ядро ещё допишет строки о прежнем сервере.
 fn hide_server_addresses(server: &kvt_core::Server) {
     let endpoints = server.endpoints();
     kvt_core::redact::add_servers(&endpoints);
     kvt_core::redact::set_secrets(server.secrets());
-    for host in endpoints {
-        if host.parse::<std::net::IpAddr>().is_err() {
-            kvt_core::redact::add_servers(
-                crate::net::known_ips(&host)
-                    .iter()
-                    .map(std::net::IpAddr::to_string),
-            );
-            let port = server.port;
-            tokio::spawn(async move {
-                let ips = crate::net::resolve(&host, port).await;
-                kvt_core::redact::add_servers(ips.iter().map(std::net::IpAddr::to_string));
-            });
-        }
+    for host in &endpoints {
+        kvt_core::redact::add_servers(
+            crate::net::known_ips(host)
+                .iter()
+                .map(std::net::IpAddr::to_string),
+        );
     }
 }
 

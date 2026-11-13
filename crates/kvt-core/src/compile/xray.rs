@@ -4,6 +4,7 @@ use super::{
 };
 use crate::core_select::CoreKind;
 use crate::model::{Protocol, Security, Server, Transport, VlessFlow};
+use crate::routing::presets::PRIVATE_NETWORKS;
 use crate::routing::Matcher;
 use serde_json::{json, Map, Value};
 
@@ -25,7 +26,7 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
     if let Some(reserve) = &input.dns.reserve_doh {
         dns_servers.push(json!(format!("https://{reserve}/dns-query")));
     }
-    let config = json!({
+    let mut config = json!({
         // Журнал доступа («accepted …» на каждое соединение) выключен: в журнале ядра
         // остаётся 200 строк, и он вытеснял настоящие ошибки — в экспорте диагностики их
         // не было видно.
@@ -47,21 +48,42 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
                 // Трафик самого Xray к серверу идёт через физический интерфейс — без петли.
                 "autoOutboundsInterface": "auto"
             },
-            // routeOnly: домен из sniffing используется только для маршрутизации,
-            // соединение остаётся на исходный IP (без лишних DNS-запросов).
-            "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true }
+            // Имя из sniffing заменяет адрес назначения: серверу уходит имя сайта, а не
+            // IP, как у Happ и v2rayN. Иначе доменные правила провайдера (3x-ui:
+            // `geosite:google → warp`) срабатывали, только если сервер сам узнал имя, —
+            // и Gemini выходил с IP сервера, который Google считает российским
+            // (2026-11-14). Локальную сеть не трогаем: имя устройства (`nas.local`)
+            // нигде не резолвится, и правило «частные сети напрямую» его бы не узнало.
+            "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls", "quic"],
+                "routeOnly": false,
+                "ipsExcluded": PRIVATE_NETWORKS
+            }
         }],
         "outbounds": [
             server_outbound(input.server)?,
-            { "tag": TAG_DIRECT, "protocol": "freedom" },
+            // Прямой выход получает имя — адрес берёт встроенный DNS (ответ на запрос
+            // программы уже в его кэше), а не системный: тот ушёл бы обратно в TUN.
+            { "tag": TAG_DIRECT, "protocol": "freedom", "streamSettings": { "sockopt": { "domainStrategy": "UseIPv4" } } },
             { "tag": TAG_BLOCK, "protocol": "blackhole" },
             { "tag": TAG_DNS, "protocol": "dns" }
         ],
+        // IPOnDemand: правило по IP (`geoip-ru`, «Свои сайты», частные сети) для
+        // соединения с именем проверяется по адресу из встроенного DNS — в своём месте
+        // порядка правил. IPIfNonMatch не годится: последнее правило «всё остальное»
+        // совпадает всегда, и до проверки по IP дело бы не дошло.
         "routing": {
-            "domainStrategy": "AsIs",
+            "domainStrategy": "IPOnDemand",
             "rules": rules(input)
         }
     });
+    // Имя сервера — адресами, которые служба нашла через DoH: встроенный DNS ответит
+    // из `hosts` и локальный резолвер о нём не спросит.
+    let hosts = super::tunnel_hosts(input.server, input.hosts);
+    if !hosts.is_empty() {
+        config["dns"]["hosts"] = Value::Object(hosts);
+    }
     Ok(Compiled {
         core: CORE,
         config,
@@ -409,6 +431,7 @@ mod tests {
             dns: &dns,
             rule_set_dir: "r",
             ipv6: true,
+            hosts: &[],
         })
         .unwrap()
     }
@@ -481,6 +504,7 @@ mod tests {
             dns: &dns,
             rule_set_dir: "rules",
             ipv6: true,
+            hosts: &[],
         })
         .unwrap();
         let servers = c.config["dns"]["servers"].as_array().unwrap();
@@ -519,6 +543,29 @@ mod tests {
         assert!(!crate::compile::mux_applies(&reality));
         assert!(outbound(&reality).unwrap().get("mux").is_none());
         assert!(!reality.warnings().is_empty());
+    }
+
+    /// Серверу уходит имя сайта (как у Happ и v2rayN), а правила по IP работают:
+    /// адрес для них — из встроенного DNS, в своём месте порядка правил.
+    #[test]
+    fn server_gets_site_name_and_ip_rules_still_apply() {
+        let c = build(REALITY).config;
+        let sniffing = &c["inbounds"][0]["sniffing"];
+        assert_eq!(sniffing["routeOnly"], false);
+        // Локальная сеть — по IP: имя устройства нигде не резолвится.
+        let excluded = sniffing["ipsExcluded"].as_array().unwrap();
+        assert!(excluded.iter().any(|v| v == "192.168.0.0/16"));
+        assert_eq!(c["routing"]["domainStrategy"], "IPOnDemand");
+        let direct = c["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["tag"] == TAG_DIRECT)
+            .unwrap();
+        assert_eq!(
+            direct["streamSettings"]["sockopt"]["domainStrategy"],
+            "UseIPv4"
+        );
     }
 
     /// Имя сервера (и сервера загрузки XHTTP) — встроенным DNS через локальный
@@ -561,6 +608,7 @@ mod tests {
                 dns: &dns,
                 rule_set_dir: "r",
                 ipv6: true,
+                hosts: &[],
             }),
             Err(CompileError::Unsupported { .. })
         ));

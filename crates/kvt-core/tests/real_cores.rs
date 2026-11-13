@@ -126,6 +126,7 @@ fn generated_configs_pass_real_core_checks() {
                 rule_set_dir: &rules_str,
                 // Гибрид — заодно без IPv6 (как при отключённом IPv6 в Windows).
                 ipv6: !hybrid,
+                hosts: &hosts,
             };
             let compiled = compile(*core, &input).expect("компиляция");
             let path = work.join(format!("{i}-{hybrid}.json"));

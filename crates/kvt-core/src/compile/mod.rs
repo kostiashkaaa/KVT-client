@@ -47,6 +47,15 @@ impl Default for DnsPlan {
 }
 
 impl DnsPlan {
+    /// id резолвера DoH туннеля в каталоге — его первым спрашивают имена серверов
+    /// (`dns::names`). Незнакомый адрес — пустая строка, тогда порядок каталога.
+    pub fn remote_id(&self) -> &'static str {
+        crate::dns::RESOLVERS
+            .iter()
+            .find(|r| r.doh.is_some_and(|d| d.ip.to_string() == self.remote_doh))
+            .map_or("", |r| r.id)
+    }
+
     /// План из выбора пользователя: id резолверов из [`crate::dns::RESOLVERS`].
     pub fn from_ids(local: &str, remote: &str) -> Result<Self, CompileError> {
         let local = crate::dns::resolver(local).ok_or(CompileError::Dns(local.to_owned()))?;
@@ -100,6 +109,11 @@ pub struct CompileInput<'a> {
     /// не может задать ему IPv6-адрес и маршрут `::/0`: Xray и sing-box падают при
     /// старте с «Element not found». См. [`ipv6_enabled`].
     pub ipv6: bool,
+    /// Адреса имён сервера (`Server::endpoints`), которые служба нашла через DoH:
+    /// ядро берёт их отсюда, а не у локального резолвера без шифрования (его запрос
+    /// видел бы провайдер). Имени без адреса здесь может не быть — тогда его, как
+    /// раньше, резолвит локальный резолвер.
+    pub hosts: &'a [(String, Vec<std::net::IpAddr>)],
 }
 
 /// Адреса адаптера TUN: IPv4 всегда, IPv6 — если он включён в системе.
@@ -178,11 +192,29 @@ pub struct ProbeInbound<'a> {
 }
 
 /// Имена сервера с адресами для DNS тестового ядра; IP из ссылки сюда не входят.
-/// Имени без адреса быть не может — ядро спросило бы системный DNS. Если есть IPv4,
-/// берутся только они: IPv6 без доступа в сеть сломал бы проверку.
+/// Имени без адреса быть не может — ядро спросило бы системный DNS.
 fn probe_hosts(
     server: &Server,
     hosts: &[(String, Vec<std::net::IpAddr>)],
+) -> Result<serde_json::Map<String, serde_json::Value>, CompileError> {
+    hosts_map(server, hosts, true)
+}
+
+/// Имена сервера с адресами для DNS ядра в туннеле (см. [`CompileInput::hosts`]):
+/// имя без адреса пропускается — его резолвит локальный резолвер, как раньше.
+fn tunnel_hosts(
+    server: &Server,
+    hosts: &[(String, Vec<std::net::IpAddr>)],
+) -> serde_json::Map<String, serde_json::Value> {
+    hosts_map(server, hosts, false).unwrap_or_default()
+}
+
+/// Если есть IPv4, берутся только они: IPv6 без доступа в сеть сломал бы
+/// соединение. `strict` — имя без адреса означает ошибку.
+fn hosts_map(
+    server: &Server,
+    hosts: &[(String, Vec<std::net::IpAddr>)],
+    strict: bool,
 ) -> Result<serde_json::Map<String, serde_json::Value>, CompileError> {
     let mut map = serde_json::Map::new();
     for name in server.endpoints() {
@@ -190,12 +222,16 @@ fn probe_hosts(
         if literal.parse::<std::net::IpAddr>().is_ok() {
             continue;
         }
-        let ips = hosts
+        let found = hosts
             .iter()
             .find(|(h, _)| h.eq_ignore_ascii_case(&name))
             .map(|(_, ips)| ips.as_slice())
-            .filter(|ips| !ips.is_empty())
-            .ok_or(CompileError::Unresolved)?;
+            .filter(|ips| !ips.is_empty());
+        let ips = match found {
+            Some(ips) => ips,
+            None if strict => return Err(CompileError::Unresolved),
+            None => continue,
+        };
         let v4 = ips.iter().any(std::net::IpAddr::is_ipv4);
         let list = ips
             .iter()
@@ -326,6 +362,7 @@ mod tests {
             dns: &dns,
             rule_set_dir: "C:/ProgramData/KVT/rules",
             ipv6: true,
+            hosts: &[],
         };
         for core in [CoreKind::Xray, CoreKind::SingBox] {
             let out = compile(core, &input).unwrap();
@@ -354,6 +391,7 @@ mod tests {
                 dns: &dns,
                 rule_set_dir: "r",
                 ipv6,
+                hosts: &[],
             };
             let xray = compile(CoreKind::Xray, &input).unwrap().config;
             let sing = compile(CoreKind::SingBox, &input).unwrap().config;
@@ -389,6 +427,7 @@ mod tests {
             dns: &dns,
             rule_set_dir: "r",
             ipv6: true,
+            hosts: &[],
         };
         assert!(matches!(
             compile(CoreKind::Xray, &input),
@@ -429,6 +468,7 @@ mod tests {
             dns: &injected,
             rule_set_dir: "r",
             ipv6: true,
+            hosts: &[],
         };
         assert!(matches!(
             compile(CoreKind::Xray, &input),
@@ -504,6 +544,60 @@ mod tests {
                 Err(CompileError::Unresolved)
             ));
         }
+    }
+
+    /// В туннеле имя сервера — найденными службой через DoH адресами; без адреса —
+    /// как раньше, локальным резолвером.
+    #[test]
+    fn tunnel_core_gets_server_name_from_hosts() {
+        let s = server(NAMED);
+        let plan = hybrid_plan(&s);
+        let dns = DnsPlan::default();
+        let hosts = vec![(
+            "tr.example.com".to_string(),
+            vec!["203.0.113.5".parse().unwrap()],
+        )];
+        let mut input = CompileInput {
+            server: &s,
+            routing: &plan,
+            dns: &dns,
+            rule_set_dir: "C:/ProgramData/KVT/rules",
+            ipv6: true,
+            hosts: &hosts,
+        };
+        let x = compile(CoreKind::Xray, &input).unwrap().config;
+        assert_eq!(
+            x["dns"]["hosts"]["Tr.Example.com"],
+            serde_json::json!(["203.0.113.5"])
+        );
+        let sb = compile(CoreKind::SingBox, &input).unwrap().config;
+        let servers = sb["dns"]["servers"].as_array().unwrap();
+        let hosts_server = servers.iter().find(|v| v["type"] == "hosts").unwrap();
+        assert_eq!(
+            hosts_server["predefined"]["Tr.Example.com"],
+            serde_json::json!(["203.0.113.5"])
+        );
+        assert_eq!(sb["outbounds"][0]["domain_resolver"], hosts_server["tag"]);
+
+        input.hosts = &[];
+        let x = compile(CoreKind::Xray, &input).unwrap().config;
+        assert!(x["dns"].get("hosts").is_none());
+        let sb = compile(CoreKind::SingBox, &input).unwrap().config;
+        assert!(sb["outbounds"][0].get("domain_resolver").is_none());
+    }
+
+    #[test]
+    fn remote_resolver_id_from_plan() {
+        assert_eq!(
+            DnsPlan::from_ids("yandex", "quad9").unwrap().remote_id(),
+            "quad9"
+        );
+        assert_eq!(DnsPlan::default().remote_id(), "cloudflare");
+        let odd = DnsPlan {
+            remote_doh: "192.0.2.1".into(),
+            ..DnsPlan::default()
+        };
+        assert_eq!(odd.remote_id(), "");
     }
 
     /// Сервер по IP: резолвить нечего, DNS ядра не трогаем.

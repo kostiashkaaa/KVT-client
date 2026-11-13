@@ -681,12 +681,10 @@ pub struct ServerAddresses {
     pub ips: Vec<IpAddr>,
 }
 
-/// Адреса VPN-серверов: IP как есть, домены — как домены и их текущие IP (все имена
-/// разом, не по очереди). Звать до остановки прежнего ядра: пока его туннель жив,
-/// DNS отвечает и при kill switch; не ответил — берутся прежние IP (`net::resolve`).
-pub async fn server_addresses(servers: &[String], port: u16) -> ServerAddresses {
+/// Адреса VPN-серверов: IP как есть, домены — как домены и их адреса, которые служба
+/// уже нашла (`net::server_ips`).
+pub fn server_addresses(servers: &[String], resolved: &[(String, Vec<IpAddr>)]) -> ServerAddresses {
     let mut out = ServerAddresses::default();
-    let mut lookups = tokio::task::JoinSet::new();
     for s in servers {
         if let Ok(ip) = s.parse::<IpAddr>() {
             out.ips.push(ip);
@@ -694,13 +692,11 @@ pub async fn server_addresses(servers: &[String], port: u16) -> ServerAddresses 
         }
         let host = s.to_ascii_lowercase();
         if zapret::valid_domain(&host) {
-            out.domains.push(host.clone());
-            lookups.spawn(async move { crate::net::resolve(&host, port).await });
+            out.domains.push(host);
         }
     }
-    while let Some(found) = lookups.join_next().await {
-        out.ips.extend(found.unwrap_or_default());
-    }
+    out.ips
+        .extend(resolved.iter().flat_map(|(_, ips)| ips.iter().copied()));
     out.ips.sort();
     out.ips.dedup();
     out
@@ -940,21 +936,28 @@ mod tests {
         assert_eq!(with_separator(Path::new(r"C:\KVT\bin\")), r"C:\KVT\bin\");
     }
 
-    #[tokio::test]
-    async fn server_ips_and_domains_are_split() {
+    #[test]
+    fn server_ips_and_domains_are_split() {
+        let resolved = vec![(
+            "Example.com".to_string(),
+            vec!["203.0.113.20".parse().unwrap()],
+        )];
         let found = server_addresses(
             &[
                 "203.0.113.10".into(),
                 "bad name;".into(),
-                "localhost".into(),
+                "Example.com".into(),
             ],
-            443,
-        )
-        .await;
-        assert_eq!(found.domains, ["localhost"]);
-        assert!(found.ips.contains(&"203.0.113.10".parse().unwrap()));
-        // Разрешённое имя запомнено: если DNS потом не ответит, IP возьмутся отсюда.
-        assert!(!crate::net::known_ips("localhost").is_empty());
+            &resolved,
+        );
+        assert_eq!(found.domains, ["example.com"]);
+        assert_eq!(
+            found.ips,
+            [
+                "203.0.113.10".parse::<IpAddr>().unwrap(),
+                "203.0.113.20".parse().unwrap()
+            ]
+        );
     }
 
     /// Комплект для разработки (`scripts/fetch-zapret.ps1`): все стратегии и хэши.

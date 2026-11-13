@@ -89,8 +89,14 @@ fn literal(host: &str) -> Option<IpAddr> {
         .ok()
 }
 
+/// Имя для запроса: нижний регистр, без точки в конце, не латиница — в punycode
+/// (`пример.рф` → `xn--e1afmkfd.xn--p1ai`): парсер такие адреса принимает.
 fn normalize(host: &str) -> String {
-    host.trim_end_matches('.').to_ascii_lowercase()
+    let host = host.trim_end_matches('.');
+    match url::Host::parse(host) {
+        Ok(url::Host::Domain(d)) => d,
+        _ => host.to_ascii_lowercase(),
+    }
 }
 
 /// Адреса, по которым пинговать нечего: так резолверы с фильтрами отвечают на
@@ -196,9 +202,10 @@ where
     let mut out = HashMap::new();
     let mut wanted: Vec<(String, String)> = Vec::new();
     let mut remaining: Vec<String> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     let now = Instant::now();
     for host in hosts {
-        if out.contains_key(host) || wanted.iter().any(|(h, _)| h == host) {
+        if !seen.insert(host.as_str()) {
             continue;
         }
         if let Some(ip) = literal(host) {
@@ -215,7 +222,7 @@ where
             out.insert(host.clone(), Lookup::Found(ips));
             continue;
         }
-        if !remaining.contains(&name) {
+        if !wanted.iter().any(|(_, n)| *n == name) {
             remaining.push(name.clone());
         }
         wanted.push((host.clone(), name));
@@ -273,7 +280,9 @@ where
 type Round = (HashMap<String, Vec<IpAddr>>, Vec<String>, Option<String>);
 
 /// Все имена — одному резолверу, по `PARALLEL` сразу. Возвращает ответы, имена без
-/// ответа и первую ошибку (для журнала).
+/// ответа и первую ошибку (для журнала). Резолвер, не ответивший ни на одно из первых
+/// `PARALLEL` имён, дальше не ждём: молчащий резолвер держал бы каждое имя по 4 с, и
+/// подписка на тысячу серверов проверялась бы минутами.
 async fn ask_all<Q, F>(names: &[String], endpoint: Endpoint, query: &Q) -> Round
 where
     Q: Fn(Endpoint, String) -> F + Clone + Send + Sync + 'static,
@@ -292,6 +301,7 @@ where
     let mut unanswered: HashSet<String> = names.iter().cloned().collect();
     let mut found = HashMap::new();
     let mut error = None;
+    let mut failures = 0;
     while let Some(joined) = set.join_next().await {
         let Ok((name, result)) = joined else { continue };
         match result {
@@ -301,6 +311,11 @@ where
             }
             Err(e) => {
                 error.get_or_insert(e);
+                failures += 1;
+                if found.is_empty() && failures >= PARALLEL {
+                    set.abort_all();
+                    break;
+                }
             }
         }
     }
@@ -427,6 +442,8 @@ mod tests {
     const SERVER: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
 
     /// Поддельный резолвер: кто и сколько раз спрошен, отвечают только `alive`.
+    type FakeAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Vec<IpAddr>, String>> + Send>>;
+
     #[derive(Clone)]
     struct Fake {
         alive: &'static [&'static str],
@@ -441,22 +458,21 @@ mod tests {
             }
         }
 
-        fn query(
-            &self,
-        ) -> impl Fn(Endpoint, String) -> std::future::Ready<Result<Vec<IpAddr>, String>>
-               + Clone
-               + Send
-               + Sync
-               + 'static {
+        /// Мёртвый резолвер отвечает ошибкой не сразу, как настоящий по таймауту.
+        fn query(&self) -> impl Fn(Endpoint, String) -> FakeAnswer + Clone + Send + Sync + 'static {
             let me = self.clone();
             move |endpoint: Endpoint, name: String| {
                 lock(&me.asked).push((endpoint.host, name.clone()));
-                std::future::ready(if !me.alive.contains(&endpoint.host) {
-                    Err("нет ответа".into())
-                } else if name.starts_with("nx.") {
-                    Ok(Vec::new())
-                } else {
-                    Ok(vec![SERVER])
+                let alive = me.alive.contains(&endpoint.host);
+                Box::pin(async move {
+                    if !alive {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        Err("нет ответа".into())
+                    } else if name.starts_with("nx.") {
+                        Ok(Vec::new())
+                    } else {
+                        Ok(vec![SERVER])
+                    }
                 })
             }
         }
@@ -503,7 +519,7 @@ mod tests {
             &Mutex::default(),
             &governor(),
             &fake,
-            &["203.0.113.9", "[2001:db8::1]", "", "пример.рф", "a..b"],
+            &["203.0.113.9", "[2001:db8::1]", "", "a..b"],
         )
         .await;
         assert_eq!(
@@ -515,9 +531,37 @@ mod tests {
             Lookup::Found(vec!["2001:db8::1".parse().unwrap()])
         );
         assert_eq!(r[""], Lookup::NotFound);
-        assert_eq!(r["пример.рф"], Lookup::NotFound);
         assert_eq!(r["a..b"], Lookup::NotFound);
         assert!(fake.hosts_asked().is_empty());
+    }
+
+    /// Имя не латиницей спрашивается в punycode, как его понимает DNS.
+    #[tokio::test]
+    async fn non_latin_name_is_asked_in_punycode() {
+        let fake = Fake::new(&["dns.google"]);
+        let r = run(&Mutex::default(), &governor(), &fake, &["Пример.РФ"]).await;
+        assert_eq!(r["Пример.РФ"], Lookup::Found(vec![SERVER]));
+        assert_eq!(lock(&fake.asked)[0].1, "xn--e1afmkfd.xn--p1ai");
+    }
+
+    /// Молчащий резолвер не держит опрос: после первых `PARALLEL` отказов остальные
+    /// имена сразу идут к следующему.
+    #[tokio::test]
+    async fn silent_resolver_is_given_up_early() {
+        let names: Vec<String> = (0..200).map(|i| format!("s{i}.example.com")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let fake = Fake::new(&["cloudflare-dns.com"]);
+        let r = run(&Mutex::default(), &governor(), &fake, &names).await;
+        assert!(r.values().all(|l| *l == Lookup::Found(vec![SERVER])));
+        let to_google = fake
+            .hosts_asked()
+            .iter()
+            .filter(|h| **h == "dns.google")
+            .count();
+        assert!(
+            to_google < 3 * PARALLEL,
+            "к молчащему ушло {to_google} запросов"
+        );
     }
 
     #[tokio::test]
