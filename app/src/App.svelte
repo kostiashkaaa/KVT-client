@@ -265,6 +265,8 @@
         return t("Сеть просит войти (как Wi-Fi в гостинице или кафе), а VPN не даёт открыть страницу входа. Отключите VPN, войдите в сеть и подключитесь снова.", "The network asks you to sign in (like hotel or café Wi-Fi), and the VPN keeps the sign-in page from opening. Disconnect the VPN, sign in to the network and connect again.");
       case "server_removed":
         return t(`Сервер «${e.server}» больше не в подписках — VPN отключён. Выберите другой сервер и подключитесь.`, `Server “${e.server}” is no longer in your subscriptions — the VPN is disconnected. Pick another server and connect.`);
+      case "server_replaced":
+        return t(`Сервера «${e.from}» больше нет в подписке — KVT переключился на «${e.to}».`, `Server “${e.from}” is no longer in the subscription — KVT switched to “${e.to}”.`);
       case "switched":
         return t(`Через «${e.from}» перестали идти данные — KVT переключился на «${e.to}».`, `Data stopped going through “${e.from}” — KVT switched to “${e.to}”.`);
       case "no_network":
@@ -280,7 +282,7 @@
     onWatchdog((e) => {
       const text = watchdogText(e);
       // Замена сервера и пропавшая сеть — сведения, исчезают сами; остальное ждёт «Понятно».
-      const info = e.kind === "switched" || e.kind === "no_network";
+      const info = e.kind === "switched" || e.kind === "server_replaced" || e.kind === "no_network";
       pushNotice({
         key: "watchdog",
         text,

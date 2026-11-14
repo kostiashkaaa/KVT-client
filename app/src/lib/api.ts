@@ -1165,7 +1165,9 @@ export type WatchdogEvent =
   /** Сеть просит войти (отель, кафе): другой сервер не поможет. */
   | { kind: "captive_portal" }
   /** Сервер, к которому были подключены, исчез из подписок — VPN отключён. */
-  | { kind: "server_removed"; server: string };
+  | { kind: "server_removed"; server: string }
+  /** Провайдер убрал сервер, к которому были подключены, — KVT подключился к замене. */
+  | { kind: "server_replaced"; from: string; to: string };
 
 export function onWatchdog(
   handler: (event: WatchdogEvent) => void,

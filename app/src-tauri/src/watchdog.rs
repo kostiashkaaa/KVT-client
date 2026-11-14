@@ -50,6 +50,11 @@ pub enum Event {
     ServerRemoved {
         server: String,
     },
+    /// Провайдер убрал сервер, к которому были подключены, — KVT подключился к замене.
+    ServerReplaced {
+        from: String,
+        to: String,
+    },
 }
 
 /// Просит ли сеть войти. Проверяет служба: ей kill switch не мешает.
@@ -259,7 +264,7 @@ async fn handle_incident(app: &AppHandle, epoch: u64) {
 /// Пользователь вмешался, пока проверялся кандидат: подключаться не нужно, но
 /// выбранным не должен остаться неудачный кандидат. Меняем выбор, только если
 /// пользователь сам не выбрал другой сервер.
-fn revert_failed(app: &AppHandle, failed: Option<&str>, original: Option<&str>) {
+pub(crate) fn revert_failed(app: &AppHandle, failed: Option<&str>, original: Option<&str>) {
     let (Some(failed), Some(original)) = (failed, original) else {
         return;
     };

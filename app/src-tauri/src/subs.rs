@@ -62,19 +62,48 @@ pub fn rebuild(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-/// Сервер, к которому подключены, пропал из подписок (подписку удалили или
-/// провайдер убрал сервер). KVT отключается и говорит об этом, а не
-/// переподключается молча к первому серверу другой подписки.
-async fn guard_selected(app: &AppHandle, before: Option<catalog::Entry>) {
+/// Кто убрал сервер из списка.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Gone {
+    /// Пользователь: удалил подписку или ключ, скрыл фильтром.
+    ByUser,
+    /// Провайдер: обновление подписки.
+    ByProvider,
+}
+
+/// Выбранный сервер пропал из списка.
+///
+/// Провайдер часто меняет у сервера адрес или порт (ключ из них) или добавляет к
+/// точке второй вариант — тогда выбор переходит на тот же сервер в новой подписке, а
+/// если VPN подключён, KVT переподключается к нему. Если провайдер убрал сервер
+/// совсем, а автопереключение включено, KVT подключается к рабочей замене, как при
+/// сбое. Иначе — и всегда, если сервер убрал сам пользователь, — KVT отключается и
+/// говорит об этом, а не переподключается молча к серверу другой подписки.
+async fn guard_selected(app: &AppHandle, before: Option<catalog::Entry>, gone: Gone) {
     let Some(entry) = before else { return };
     let state = app.state::<AppState>();
     if state.entry(&entry.key).is_some() {
         return;
     }
-    if !matches!(
+    let connected = matches!(
         query_status().await,
         Ok(Some(ServiceStatus::Connected { .. }))
-    ) {
+    );
+    if gone == Gone::ByProvider {
+        let next = {
+            let entries = state.servers.lock().map(|s| s.clone()).unwrap_or_default();
+            catalog::successor(&entries, &entry).cloned()
+        };
+        if let Some(next) = next {
+            follow(app, &entry, &next, connected).await;
+            return;
+        }
+    }
+    if !connected {
+        return;
+    }
+    let auto = state.choice.lock().map(|c| c.auto_switch).unwrap_or(false);
+    if gone == Gone::ByProvider && auto && replace(app, &entry).await {
         return;
     }
     tracing::info!("выбранный сервер исчез из подписок — VPN отключён");
@@ -87,6 +116,68 @@ async fn guard_selected(app: &AppHandle, before: Option<catalog::Entry>) {
             server: display_name(&entry.server),
         },
     );
+}
+
+/// Выбор — на тот же сервер с новым ключом. Подключены, и параметры сменились —
+/// переподключаемся (kill switch служба держит); если сменился только ключ, ядро
+/// трогать незачем.
+async fn follow(app: &AppHandle, old: &catalog::Entry, next: &catalog::Entry, connected: bool) {
+    let state = app.state::<AppState>();
+    let epoch = state.epoch();
+    tracing::info!("у выбранного сервера провайдер сменил адрес, порт или вариант — выбран он же");
+    // Пользователь мог за время обновления выбрать другой сервер — его выбор не трогаем.
+    let moved = crate::update_choice(app, |c| {
+        if c.server.as_deref() == Some(old.key.as_str()) {
+            c.server = Some(next.key.clone());
+        }
+    });
+    if !matches!(moved, Ok(c) if c.server.as_deref() == Some(next.key.as_str())) {
+        return;
+    }
+    let _ = app.emit(watchdog::CHOICE_EVENT, ());
+    if !connected || old.server == next.server {
+        return;
+    }
+    if let Err(e) = crate::connect_auto(app, epoch, true).await {
+        tracing::warn!(error = %e, "переподключение к обновлённому серверу не удалось");
+    }
+    crate::tray::refresh(app).await;
+}
+
+/// Провайдер убрал сервер, через который подключены: подключаемся к рабочей замене,
+/// как автопереключение при сбое (сначала из той же подписки). `false` — замены нет
+/// или пользователь вмешался; выбор тогда возвращается на прежний ключ.
+async fn replace(app: &AppHandle, old: &catalog::Entry) -> bool {
+    let state = app.state::<AppState>();
+    let epoch = state.epoch();
+    let from = display_name(&old.server);
+    // Последний кандидат, через которого данные не пошли (он записан в выбор).
+    let mut failed: Option<String> = None;
+    for key in watchdog::alternatives(&state, Some(old)).await {
+        if state.epoch() != epoch {
+            watchdog::revert_failed(app, failed.as_deref(), Some(&old.key));
+            return true;
+        }
+        if watchdog::switch_to(app, &key, epoch).await.is_ok() {
+            if state.epoch() == epoch {
+                let to = watchdog::server_name(&state, &key);
+                tracing::info!("выбранный сервер исчез из подписки — подключена замена");
+                let _ = app.emit(
+                    watchdog::EVENT,
+                    watchdog::Event::ServerReplaced { from, to },
+                );
+            }
+            return true;
+        }
+        failed = Some(key);
+    }
+    if state.epoch() != epoch {
+        watchdog::revert_failed(app, failed.as_deref(), Some(&old.key));
+        return true;
+    }
+    let _ = crate::update_choice(app, |c| c.server = Some(old.key.clone()));
+    let _ = app.emit(watchdog::CHOICE_EVENT, ());
+    false
 }
 
 /// Что добавилось: интерфейс сразу выбирает первый сервер новой подписки.
@@ -688,7 +779,7 @@ pub async fn set_subscription_options(
     };
     rebuild(&state)?;
     crate::tray::invalidate(&app);
-    guard_selected(&app, before).await;
+    guard_selected(&app, before, Gone::ByUser).await;
     notify(&app);
     result
 }
@@ -702,7 +793,7 @@ pub async fn remove_subscription(
     let before = state.selected();
     with_store(&state, |s| s.remove(&id))?;
     rebuild(&state)?;
-    guard_selected(&app, before).await;
+    guard_selected(&app, before, Gone::ByUser).await;
     notify(&app);
     Ok(())
 }
@@ -753,7 +844,7 @@ pub async fn remove_server(
         Ok(())
     })??;
     rebuild(&state)?;
-    guard_selected(&app, before).await;
+    guard_selected(&app, before, Gone::ByUser).await;
     notify(&app);
     Ok(())
 }
@@ -1119,7 +1210,7 @@ pub async fn refresh_subscription(
     let before = state.selected();
     let result = refresh_one(&state, &id, Refresh::Now).await;
     rebuild(&state)?;
-    guard_selected(&app, before).await;
+    guard_selected(&app, before, Gone::ByProvider).await;
     notify(&app);
     result
 }
@@ -1186,7 +1277,7 @@ pub(crate) async fn refresh_all(app: &AppHandle) -> Result<usize, String> {
         }
     }
     rebuild(&state)?;
-    guard_selected(app, before).await;
+    guard_selected(app, before, Gone::ByProvider).await;
     notify(app);
     Ok(failed)
 }
@@ -1213,7 +1304,7 @@ pub fn spawn_updater(app: AppHandle) {
                     }
                 }
                 let _ = rebuild(&state);
-                guard_selected(&app, before).await;
+                guard_selected(&app, before, Gone::ByProvider).await;
                 notify(&app);
             }
             tokio::time::sleep(Duration::from_secs(10 * 60)).await;

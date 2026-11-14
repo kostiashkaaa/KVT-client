@@ -158,6 +158,16 @@ fn watchdog_notice(event: &Value) -> Option<Notice> {
             .to_owned(),
             None,
         ),
+        "server_replaced" => (
+            tr("Сервер заменён", "Server switched"),
+            trf!(
+                "Сервера «{}» больше нет в подписке — KVT переключился на «{}».",
+                "Server “{}” is no longer in the subscription — KVT switched to “{}”.",
+                s("from"),
+                s("to")
+            ),
+            None,
+        ),
         "server_removed" => (
             tr("VPN отключён", "VPN disconnected"),
             trf!(

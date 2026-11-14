@@ -110,6 +110,38 @@ fn legacy_key(sub: &str, s: &Server) -> String {
     hex(&h.finalize()[..8])
 }
 
+/// Тот же сервер в обновлённой подписке, когда его ключ сменился: провайдер поменял
+/// адрес, порт, протокол или транспорт (ключ из них), или у точки появился второй
+/// вариант (к ключу добавилось различие параметров). Ищется в той же подписке: по
+/// названию, а без такого названия — единственный с тем же адресом, портом и видом.
+/// `None` — сервер действительно убран.
+pub(crate) fn successor<'a>(entries: &'a [Entry], old: &Entry) -> Option<&'a Entry> {
+    let base = base_key(&old.sub, &old.server);
+    let same_point = |e: &Entry| base_key(&e.sub, &e.server) == base;
+    let same_kind = |e: &Entry| {
+        e.server.protocol.kind() == old.server.protocol.kind()
+            && transport_kind(&e.server.transport) == transport_kind(&old.server.transport)
+    };
+    let in_sub = || entries.iter().filter(|e| e.sub == old.sub);
+    let named: Vec<&Entry> = in_sub()
+        .filter(|e| e.server.name == old.server.name)
+        .collect();
+    match named.as_slice() {
+        [] => {
+            let mut points = in_sub().filter(|e| same_point(e));
+            let first = points.next()?;
+            points.next().is_none().then_some(first)
+        }
+        [one] => Some(one),
+        many => many
+            .iter()
+            .find(|e| same_point(e))
+            .or_else(|| many.iter().find(|e| same_kind(e)))
+            .or(many.first())
+            .copied(),
+    }
+}
+
 /// Название подписки: своё, иначе от провайдера, иначе хост ссылки (токен — в пути,
 /// хост не секрет).
 pub(crate) fn title(s: &Subscription) -> String {
@@ -341,6 +373,66 @@ mod tests {
         assert_eq!(entries[0].server.name, "A");
         assert_eq!(groups[0].servers.len(), 1);
         assert_eq!(content(&store.subscriptions[0]).1, 1);
+    }
+
+    /// Подписка до и после обновления провайдером: выбранный — первый сервер «до».
+    fn refreshed(before: &str, after: &str) -> (Entry, Vec<Entry>) {
+        let mut store = Store::load(std::env::temp_dir().join("kvt-catalog-successor-none.json"));
+        store.subscriptions.clear();
+        let id = store.add(None, before.into(), Default::default(), 0);
+        let old = build(&store).1.remove(0);
+        store.update(&id, after.into(), Default::default(), 1);
+        (old, build(&store).1)
+    }
+
+    /// Провайдер сменил порт (или адрес) — ключ другой, но сервер тот же по названию.
+    #[test]
+    fn successor_after_port_change_is_found_by_name() {
+        let b = A
+            .replace("203.0.113.10", "203.0.113.11")
+            .replace("#A", "#B");
+        let moved = A.replace(":443", ":8443");
+        let (old, now) = refreshed(&format!("{A}\n{b}"), &format!("{b}\n{moved}"));
+        assert!(now.iter().all(|e| e.key != old.key));
+        let next = successor(&now, &old).unwrap();
+        assert_eq!(next.server.name, "A");
+        assert_eq!(next.server.port, 8443);
+    }
+
+    /// У точки появился второй вариант: к ключу добавилось различие, сервер тот же.
+    #[test]
+    fn successor_after_new_variant_is_found() {
+        let variant = A.replace("sni=a.com", "sni=b.com").replace("#A", "#A2");
+        let (old, now) = refreshed(A, &format!("{A}\n{variant}"));
+        assert!(now.iter().all(|e| e.key != old.key));
+        let next = successor(&now, &old).unwrap();
+        assert_eq!(next.server, old.server);
+        // Без названия — по точке: единственный с тем же адресом, портом и видом.
+        let renamed = A.replace("#A", "#A%20new");
+        let (old, now) = refreshed(&format!("{A}\n{variant}"), &renamed);
+        assert_eq!(successor(&now, &old).unwrap().server.name, "A new");
+    }
+
+    /// Сервер убран или переехал под другим названием — замены «того же» нет.
+    #[test]
+    fn removed_server_has_no_successor() {
+        let b = A
+            .replace("203.0.113.10", "203.0.113.11")
+            .replace("#A", "#B");
+        let (old, now) = refreshed(&format!("{A}\n{b}"), &b);
+        assert_eq!(successor(&now, &old), None);
+        let moved = A.replace(":443", ":8443").replace("#A", "#C");
+        let (old, now) = refreshed(A, &moved);
+        assert_eq!(successor(&now, &old), None);
+    }
+
+    /// Несколько серверов с тем же названием — сначала та же точка, потом тот же вид.
+    #[test]
+    fn successor_among_same_names_prefers_same_kind() {
+        let ws = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@203.0.113.20:443?type=ws&security=tls&sni=a.com#A";
+        let moved = A.replace(":443", ":8443");
+        let (old, now) = refreshed(A, &format!("{ws}\n{moved}"));
+        assert_eq!(successor(&now, &old).unwrap().server.port, 8443);
     }
 
     #[test]
