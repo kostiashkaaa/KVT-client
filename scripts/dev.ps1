@@ -9,6 +9,15 @@ param([switch]$Service)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
+# Cargo не удаляет старые варианты сборок, и target разрастается на десятки ГБ.
+function Clear-Target {
+    try {
+        & (Join-Path $PSScriptRoot 'clean-target.ps1') -Quiet
+    } catch {
+        Write-Host "Не удалось почистить target: $_" -ForegroundColor Yellow
+    }
+}
+
 # Ядра, zapret и прокси Telegram лежат рядом с exe в target\debug; после cargo clean
 # их нет, и «Подключить» падает с «не удалось запустить …\cores\xray.exe».
 function Install-Bundles {
@@ -40,6 +49,7 @@ if ($Service) {
     }
 
     $Host.UI.RawUI.WindowTitle = 'KVT: служба (разработка)'
+    Clear-Target
     Install-Bundles
     # Установленная служба занимает тот же pipe и не примет kvt.exe из target\debug.
     $installed = Get-Service KVTService -ErrorAction SilentlyContinue
@@ -66,6 +76,7 @@ Get-Process kvt -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "Закрываю запущенный KVT: $($_.Path)"
     Stop-Process -Id $_.Id -ErrorAction SilentlyContinue
 }
+Clear-Target
 Install-Bundles
 $env:KVT_DEV_DOCK = 'right'
 Set-Location (Join-Path $root 'app')

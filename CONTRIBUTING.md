@@ -35,6 +35,7 @@ Windows 10 или 11, Rust (stable, MSVC), Node.js 20+, Visual Studio Build Tool
 | Скриншоты для README (вид `?demo`: VPN подключён, аккуратные серверы) | при запущенном `npm run dev`: `cd app && npm run screenshots` → `assets/screenshots/`, нужен Microsoft Edge |
 | Тесты Rust | `cargo test --workspace` |
 | Линтеры | `cargo clippy --workspace --all-targets -- -D warnings`, `cd app && npm run check` |
+| Убрать устаревшие сборки из `target` (`dev.ps1` делает это сам) | `scripts\clean-target.ps1` |
 | Форматирование | `cargo fmt --all` |
 
 ### Служба и подключение
