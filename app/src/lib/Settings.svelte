@@ -9,6 +9,7 @@
     openLink,
     zapretInfo,
     type About,
+    type LinkTarget,
     autostartState,
     setAutostart,
     type AutostartState,
@@ -81,7 +82,7 @@
     }
   }
 
-  async function open(target: "source" | "releases" | "latest" | "licenses") {
+  async function open(target: LinkTarget) {
     linkError = null;
     try {
       await openLink(target);
@@ -482,6 +483,7 @@
     <button class="btn" onclick={onrestartonboarding}>{t("Подсказки первого запуска", "First-run tips")}</button>
     <button class="btn" onclick={() => void open("releases")}>{t("Страница загрузки", "Download page")}</button>
     <button class="btn" onclick={() => void open("source")}>{t("Исходники", "Source code")}</button>
+    <button class="btn" onclick={() => void open("channel")}>{t("Новости в Telegram", "News on Telegram")}</button>
     {#if about?.licenses}
       <button class="btn" onclick={() => void open("licenses")}>{t("Тексты лицензий", "License texts")}</button>
     {/if}

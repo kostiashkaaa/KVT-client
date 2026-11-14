@@ -17,6 +17,8 @@ use std::path::PathBuf;
 
 /// Исходники и страница загрузки (новые версии — вручную, 5.7).
 pub const SOURCE_URL: &str = "https://github.com/kostiashkaaa/KVT-client";
+/// Канал с новостями: открывается только по нажатию кнопки в «О программе».
+const CHANNEL_URL: &str = "https://t.me/kvt_client";
 const SERVICE_NAME: &str = "KVTService";
 
 #[derive(Serialize)]
@@ -50,11 +52,12 @@ pub fn about_info() -> About {
     }
 }
 
-/// Что окно может открыть: исходники, страница загрузки, папка лицензий.
+/// Что окно может открыть: исходники, страница загрузки, канал, папка лицензий.
 #[tauri::command]
 pub fn open_link(target: String) -> Result<(), String> {
     let what = match target.as_str() {
         "source" => SOURCE_URL.to_owned(),
+        "channel" => CHANNEL_URL.to_owned(),
         "releases" => format!("{SOURCE_URL}/releases"),
         "latest" => format!("{SOURCE_URL}/releases/latest"),
         "licenses" => exe_dir()

@@ -2110,10 +2110,11 @@ export async function aboutInfo(): Promise<About> {
   return invoke<About>("about_info");
 }
 
-/** Открывает исходники, страницу загрузки или папку лицензий — только их. */
-export async function openLink(
-  target: "source" | "releases" | "latest" | "licenses",
-): Promise<void> {
+/** Что окно может открыть: список зашит в Rust (`about.rs`), адрес окно не задаёт. */
+export type LinkTarget = "source" | "releases" | "latest" | "channel" | "licenses";
+
+/** Открывает исходники, страницу загрузки, канал или папку лицензий — только их. */
+export async function openLink(target: LinkTarget): Promise<void> {
   if (inTauri) await invoke("open_link", { target });
 }
 

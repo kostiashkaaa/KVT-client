@@ -11,6 +11,7 @@ YouTube и Discord работают даже без VPN-подписки.
 [![Загрузки](https://img.shields.io/github/downloads/kostiashkaaa/KVT-client/total?label=%D0%B7%D0%B0%D0%B3%D1%80%D1%83%D0%B7%D0%BA%D0%B8)](https://github.com/kostiashkaaa/KVT-client/releases)
 [![Лицензия: GPL-3.0](https://img.shields.io/badge/%D0%BB%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-GPL--3.0-blue)](LICENSE)
 ![Windows 10 и 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
+[![Telegram: новости](https://img.shields.io/badge/Telegram-%D0%BD%D0%BE%D0%B2%D0%BE%D1%81%D1%82%D0%B8-26A5E4?logo=telegram&logoColor=white)](https://t.me/kvt_client)
 
 **Русский** · [English](README.en.md)
 

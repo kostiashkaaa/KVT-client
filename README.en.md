@@ -11,6 +11,7 @@ YouTube and Discord work even without a VPN subscription.
 [![Downloads](https://img.shields.io/github/downloads/kostiashkaaa/KVT-client/total)](https://github.com/kostiashkaaa/KVT-client/releases)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
+[![Telegram: news](https://img.shields.io/badge/Telegram-news-26A5E4?logo=telegram&logoColor=white)](https://t.me/kvt_client)
 
 [Русский](README.md) · **English**
 
