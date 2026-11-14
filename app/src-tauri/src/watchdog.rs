@@ -17,7 +17,7 @@ use kvt_core::probe::Verdict;
 use kvt_core::tester::{Outcome, QuickResult};
 use kvt_core::Server;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -290,9 +290,27 @@ async fn restore(app: &AppHandle, key: &str, epoch: u64) -> Result<(), String> {
     result
 }
 
+/// Автоматика собирается сменить сервер: `true` — лимит `MAX_INCIDENTS` за
+/// `INCIDENT_WINDOW` не исчерпан, смена записана.
+pub(crate) fn take_incident(state: &AppState) -> bool {
+    let Ok(mut incidents) = state.incidents.lock() else {
+        return false;
+    };
+    while incidents
+        .front()
+        .is_some_and(|t| t.elapsed() > INCIDENT_WINDOW)
+    {
+        incidents.pop_front();
+    }
+    if incidents.len() >= MAX_INCIDENTS {
+        return false;
+    }
+    incidents.push_back(Instant::now());
+    true
+}
+
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut incidents: VecDeque<Instant> = VecDeque::new();
         let mut gave_up = false;
         let mut portal_reported = false;
         // `epoch` последнего сбоя, который уже обрабатывали. Сбой проверки после
@@ -357,20 +375,18 @@ pub fn spawn(app: AppHandle) {
             if !enabled {
                 continue;
             }
-            while incidents
-                .front()
-                .is_some_and(|t| t.elapsed() > INCIDENT_WINDOW)
-            {
-                incidents.pop_front();
-            }
-            if incidents.len() >= MAX_INCIDENTS {
+            // Сервер уже меняет замена после обновления подписки — сбой посмотрим на
+            // следующей проверке, уже с новым сервером.
+            let Ok(_switching) = state.switching.try_lock() else {
+                continue;
+            };
+            if !take_incident(&state) {
                 if !gave_up {
                     gave_up = true;
                     let _ = app.emit(EVENT, Event::GaveUp);
                 }
                 continue;
             }
-            incidents.push_back(Instant::now());
             handled_epoch = Some(epoch);
             handle_incident(&app, epoch).await;
         }

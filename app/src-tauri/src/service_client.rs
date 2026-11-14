@@ -183,9 +183,12 @@ fn deadline(request: &Request) -> Option<Duration> {
         | Request::ZapretStrategies
         | Request::ZapretInfo => Some(Duration::from_secs(15)),
         // tasklist, проверка страницы входа (до 10 с), пинг десятков серверов.
-        Request::ZapretConflicts | Request::CaptiveCheck | Request::Ping { .. } => {
-            Some(Duration::from_secs(60))
-        }
+        // Адреса для проверки ждут блокировку, пока идёт переподключение.
+        Request::ZapretConflicts
+        | Request::CaptiveCheck
+        | Request::Ping { .. }
+        | Request::ProbeOpen { .. }
+        | Request::ProbeClose => Some(Duration::from_secs(60)),
         Request::Connect(_)
         | Request::StartZapret(_)
         | Request::Disconnect

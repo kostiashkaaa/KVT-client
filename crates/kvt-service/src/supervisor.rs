@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 
@@ -236,7 +236,13 @@ pub struct Supervisor {
     /// Ядро завершилось с ошибкой, после которой положено переподключиться:
     /// `exited` положил её в `issues`, `handle_issue` переподключит.
     retry_after_exit: bool,
+    /// До какого момента открыт выход тестовому ядру (`open_probe`): окно могло
+    /// закрыться, не сказав `ProbeClose`.
+    probe_until: Option<Instant>,
 }
+
+/// Сколько живут адреса, открытые тестовому ядру: проверка укладывается в 5 минут.
+const PROBE_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// Отметка «kill switch включён» в каталоге `run` (см. `mark_kill_switch`).
 const KILL_SWITCH_MARKER: &str = "kill-switch.on";
@@ -258,6 +264,7 @@ impl Supervisor {
             reconnected: false,
             ipv6_failed: false,
             retry_after_exit: false,
+            probe_until: None,
         }
     }
 
@@ -460,7 +467,7 @@ impl Supervisor {
                 return Err(e);
             }
         };
-        if let Err(e) = self.enable_dns_guard(luid) {
+        if let Err(e) = self.enable_dns_guard(luid, !ipv6) {
             // Как и с kill switch: не оставляем соединение, у которого DNS уходит мимо.
             self.stop_running().await;
             tracing::error!(error = %e, "DNS мимо туннеля не закрыт");
@@ -606,10 +613,14 @@ impl Supervisor {
         ])
     }
 
-    fn enable_dns_guard(&mut self, luid: u64) -> Result<(), String> {
+    /// `block_ipv6` — TUN поднят без IPv6: IPv6 мимо туннеля тоже закрывается.
+    fn enable_dns_guard(&mut self, luid: u64, block_ipv6: bool) -> Result<(), String> {
         let apps = self.trusted_apps()?;
         let apps: Vec<&Path> = apps.iter().map(PathBuf::as_path).collect();
-        let guard = DnsGuard::enable(&apps, luid).map_err(|e| e.to_string())?;
+        let guard = DnsGuard::enable(&apps, luid, block_ipv6).map_err(|e| e.to_string())?;
+        if block_ipv6 {
+            tracing::info!("TUN без IPv6: IPv6 мимо туннеля закрыт");
+        }
         if let Some(running) = self.running.as_mut() {
             running.dns_guard = Some(guard);
         }
@@ -810,6 +821,62 @@ impl Supervisor {
 
     pub fn kill_switch_active(&self) -> bool {
         self.kill_switch.is_some()
+    }
+
+    /// Полная проверка серверов из окна при kill switch: тестовому ядру (оно работает
+    /// от пользователя) открывается выход мимо туннеля к `ips`. Адреса локальной сети
+    /// и loopback kill switch и так пропускает, служебные (0.0.0.0, multicast) не
+    /// нужны. Без kill switch открывать нечего.
+    pub fn open_probe(&mut self, ips: &[std::net::IpAddr]) -> Result<(), String> {
+        let Some(ks) = self.kill_switch.as_mut() else {
+            return Ok(());
+        };
+        let ips: Vec<std::net::IpAddr> = ips
+            .iter()
+            .copied()
+            .filter(|ip| !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast())
+            .collect();
+        if ks.probe_len() + ips.len() > kvt_core::ipc::MAX_PROBE_ADDRS {
+            return Err(kvt_core::i18n::tr(
+                "Слишком много адресов для проверки серверов за раз",
+                "Too many addresses to check servers at once",
+            )
+            .into());
+        }
+        let cores = [
+            CoreSpec::new(CoreKind::Xray, &self.paths).exe,
+            CoreSpec::new(CoreKind::SingBox, &self.paths).exe,
+        ];
+        let cores: Vec<&Path> = cores.iter().map(PathBuf::as_path).collect();
+        ks.open_probe(&cores, &ips).map_err(|e| e.to_string())?;
+        self.probe_until = Some(Instant::now() + PROBE_TTL);
+        tracing::info!(
+            addresses = ks.probe_len(),
+            "тестовому ядру открыты адреса серверов"
+        );
+        Ok(())
+    }
+
+    /// Закрывает адреса, открытые тестовому ядру.
+    pub fn close_probe(&mut self) {
+        self.probe_until = None;
+        if let Some(ks) = self.kill_switch.as_mut() {
+            if ks.probe_len() > 0 {
+                ks.close_probe();
+                tracing::info!("адреса тестового ядра закрыты");
+            }
+        }
+    }
+
+    /// Закрывает адреса тестового ядра, если окно не закрыло их само вовремя.
+    pub fn expire_probe(&mut self) {
+        if self
+            .probe_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            tracing::warn!("проверка серверов не закрыла адреса — закрыты по времени");
+            self.close_probe();
+        }
     }
 
     /// Если ядро или zapret завершились сами — причина (последние строки лога).

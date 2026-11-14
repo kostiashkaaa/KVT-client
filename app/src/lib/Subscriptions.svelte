@@ -621,7 +621,7 @@
                   <Flag code={k.flag} />
                   <div class="key-text">
                     <span class="key-name"><ServerName name={k.title} /></span>
-                    <span class="caption">{protocolTitle(k.protocol)} · {k.address}:{k.port}</span>
+                    <span class="caption">{protocolTitle(k.protocol)}{k.transport !== "tcp" ? ` · ${k.transport.toUpperCase()}` : ""}</span>
                   </div>
                   <div class="actions">
                     {#if confirmKey === k.key}

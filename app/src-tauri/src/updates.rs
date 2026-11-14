@@ -88,7 +88,9 @@ fn parse_latest(body: &[u8]) -> Result<String, String> {
 /// Предел ответа о последней версии.
 const MAX_ANSWER_BYTES: usize = 1024 * 1024;
 
-async fn fetch_latest() -> Result<String, String> {
+async fn fetch_latest(governor: &Mutex<kvt_core::governor::NetGovernor>) -> Result<String, String> {
+    let host = netlog::host_of(API);
+    crate::fetch::acquire_for(governor, &host, Purpose::Update, Duration::from_secs(30)).await?;
     let client = reqwest::Client::builder()
         .https_only(true)
         .timeout(Duration::from_secs(20))
@@ -166,7 +168,8 @@ fn now_ms() -> u64 {
 }
 
 async fn check(app: &AppHandle) -> UpdateStatus {
-    let result = fetch_latest().await;
+    let governor = std::sync::Arc::clone(&app.state::<AppState>().governor);
+    let result = fetch_latest(&governor).await;
     let status = UpdateStatus {
         current: CURRENT,
         available: result.as_ref().is_ok_and(|v| newer(v, CURRENT)),

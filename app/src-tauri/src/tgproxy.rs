@@ -258,7 +258,8 @@ fn refresh_domains(app: &AppHandle) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = fetch_domains().await;
+        let governor = std::sync::Arc::clone(&app.state::<AppState>().governor);
+        let result = fetch_domains(&governor).await;
         let now = SystemTime::now();
         let mut guard = DOMAINS.lock().unwrap_or_else(|e| e.into_inner());
         match result {
@@ -279,7 +280,11 @@ fn refresh_domains(app: &AppHandle) {
     });
 }
 
-async fn fetch_domains() -> Result<Vec<String>, String> {
+async fn fetch_domains(
+    governor: &Mutex<kvt_core::governor::NetGovernor>,
+) -> Result<Vec<String>, String> {
+    let host = netlog::host_of(tgproxy::DOMAINS_URL);
+    crate::fetch::acquire_for(governor, &host, Purpose::Zapret, Duration::from_secs(30)).await?;
     let client = reqwest::Client::builder()
         .https_only(true)
         .timeout(Duration::from_secs(20))

@@ -7,9 +7,10 @@
 //! и заморозку после первых килобайт.
 //!
 //! Если VPN подключён, тестовое ядро уходит с адреса физического адаптера
-//! (`netinfo::physical_ipv4`) — мимо TUN, как без VPN. Kill switch его пропускает:
-//! фильтр разрешает исполняемый файл ядра, а тестовое ядро — тот же файл из каталога
-//! программы. TCP-пинг перед ним делает служба (`ping_servers`): окно kill switch
+//! (`netinfo::physical_ipv4`) — мимо TUN, как без VPN. Kill switch пропускает ядра
+//! только от учётной записи службы, поэтому перед запуском окно просит службу открыть
+//! тестовому ядру адреса этого сервера (`ProbeOpen`), а после проверки — закрыть
+//! (`ProbeClose`). TCP-пинг перед ним делает служба (`ping_servers`): окно kill switch
 //! мимо туннеля не пускает.
 
 use crate::{query_status, AppState};
@@ -17,7 +18,7 @@ use kvt_core::compile::{compile_probe, ProbeInbound};
 use kvt_core::core_select::{select_core, CoreKind};
 use kvt_core::dns::names::Lookup;
 use kvt_core::governor::NetGovernor;
-use kvt_core::ipc::ServiceStatus;
+use kvt_core::ipc::{Request, Response, ServiceStatus};
 use kvt_core::netlog::Origin;
 use kvt_core::probe::ProbeObservation;
 use kvt_core::tester::{self, tcp_ping, Outcome, Prober, QuickResult};
@@ -258,6 +259,9 @@ impl Prober for CoreProber {
             return obs;
         };
         obs.tcp_connected = true;
+        if self.source.is_some() {
+            open_probe(&hosts).await;
+        }
         match self.run_core(&server, &hosts).await {
             Err(()) => obs.core_error = true,
             Ok(m) => {
@@ -295,6 +299,31 @@ impl CoreProber {
             doh: state.doh_first(),
             governor: Arc::clone(&state.governor),
         })
+    }
+}
+
+/// Просит службу открыть тестовому ядру адреса сервера мимо kill switch. Ошибку
+/// только пишем в журнал: без kill switch открывать нечего, а с ним ядро просто не
+/// достучится, и сервер покажется недоступным.
+async fn open_probe(hosts: &[(String, Vec<IpAddr>)]) {
+    let ips = hosts
+        .iter()
+        .flat_map(|(_, ips)| ips.iter().copied())
+        .collect();
+    match crate::service_client::call(Request::ProbeOpen { ips }).await {
+        Ok(Response::Ok) => {}
+        Ok(Response::Error { message }) => {
+            tracing::warn!(%message, "служба не открыла адреса тестовому ядру");
+        }
+        Ok(_) => tracing::warn!("служба не открыла адреса тестовому ядру: неожиданный ответ"),
+        Err(e) => tracing::warn!(error = %e, "служба не открыла адреса тестовому ядру"),
+    }
+}
+
+/// Закрывает всё, что открыл `open_probe` (служба закроет и сама через 10 минут).
+async fn close_probe() {
+    if let Err(e) = crate::service_client::call(Request::ProbeClose).await {
+        tracing::warn!(error = %e, "служба не закрыла адреса тестового ядра");
     }
 }
 
@@ -375,6 +404,9 @@ pub async fn full_check(
         Ok::<_, String>(())
     }
     .await;
+    if source.is_some() {
+        close_probe().await;
+    }
     state.checking.store(false, Ordering::SeqCst);
     result
 }

@@ -134,7 +134,7 @@ pub fn acquire(governor: &Mutex<NetGovernor>, host: &str) -> Result<(), String> 
         .lock()
         .map_err(crate::errors::state)?
         .try_acquire(host, now);
-    settle(host, decision, now)
+    settle(host, Purpose::Subscription, decision, now)
 }
 
 /// Как `acquire`, но паузу до `max_wait` выжидает, а не отказывает: несколько подписок
@@ -143,6 +143,17 @@ pub fn acquire(governor: &Mutex<NetGovernor>, host: &str) -> Result<(), String> 
 pub async fn acquire_patiently(
     governor: &Mutex<NetGovernor>,
     host: &str,
+    max_wait: Duration,
+) -> Result<(), String> {
+    acquire_for(governor, host, Purpose::Subscription, max_wait).await
+}
+
+/// `acquire_patiently` для других запросов окна (обновления, списки): в журнале —
+/// со своей целью.
+pub async fn acquire_for(
+    governor: &Mutex<NetGovernor>,
+    host: &str,
+    purpose: Purpose,
     max_wait: Duration,
 ) -> Result<(), String> {
     // Часы tokio: в тестах время виртуальное и проходит без настоящего ожидания.
@@ -158,24 +169,23 @@ pub async fn acquire_patiently(
             Decision::RetryAt(at) if at <= deadline => {
                 tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await;
             }
-            other => return settle(host, other, now),
+            other => return settle(host, purpose, other, now),
         }
     }
 }
 
-fn settle(host: &str, decision: Decision, now: Instant) -> Result<(), String> {
-    netlog::record_hold(
-        Origin::App,
-        Purpose::Subscription,
-        host,
-        Route::Direct,
-        &decision,
-    );
+fn settle(host: &str, purpose: Purpose, decision: Decision, now: Instant) -> Result<(), String> {
+    netlog::record_hold(Origin::App, purpose, host, Route::Direct, &decision);
     match decision {
         Decision::Allowed => Ok(()),
-        Decision::RetryAt(at) => Err(kvt_core::trf!(
+        Decision::RetryAt(at) if purpose == Purpose::Subscription => Err(kvt_core::trf!(
             "Слишком частые запросы к серверу подписки — повторите через {} с",
             "Too many requests to the subscription server — try again in {} s",
+            at.saturating_duration_since(now).as_secs().max(1)
+        )),
+        Decision::RetryAt(at) => Err(kvt_core::trf!(
+            "Слишком частые запросы к этому серверу — повторите через {} с",
+            "Too many requests to this server — try again in {} s",
             at.saturating_duration_since(now).as_secs().max(1)
         )),
         Decision::Frozen { until } => Err(kvt_core::trf!(

@@ -198,6 +198,63 @@ pub fn is_elevated() -> bool {
     ok != 0 && elevation.TokenIsElevated != 0
 }
 
+/// SID учётной записи этого процесса строкой («S-1-5-18» у службы).
+fn own_sid_string() -> io::Result<String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{TokenUser, TOKEN_USER};
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: псевдо-handle текущего процесса закрывать не нужно; token проверяется ниже.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // TOKEN_USER и SID за ним; буфер выровнен по 8 байт.
+    let mut buf = vec![0u64; 64];
+    let mut len = 0u32;
+    // SAFETY: буфер на 512 байт, его размер передаётся; SID пользователя меньше.
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            buf.as_mut_ptr().cast(),
+            (buf.len() * 8) as u32,
+            &mut len,
+        )
+    };
+    // SAFETY: закрываем открытый выше token один раз.
+    unsafe { CloseHandle(token) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: функция заполнила в начале буфера TOKEN_USER, Sid указывает внутрь буфера.
+    let sid = unsafe { (*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut text: *mut u16 = std::ptr::null_mut();
+    // SAFETY: sid валиден, пока жив buf; строку выделяет система, освобождаем ниже.
+    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: строка завершена нулём.
+    let len = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
+    // SAFETY: len символов строки прочитаны выше.
+    let result = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
+    // SAFETY: строка выделена ConvertSidToStringSidW через LocalAlloc, освобождается один раз.
+    unsafe { LocalFree(text.cast()) };
+    Ok(result)
+}
+
+/// Дескриптор безопасности (self-relative, байтами) для условия WFP
+/// `ALE_USER_ID`: соединение подходит, только если процесс работает от той же
+/// учётной записи, что и служба (SYSTEM). `CC` — право `FWP_ACTRL_MATCH_FILTER`;
+/// владелец и группа нужны `AccessCheck`, которым WFP сверяет токен процесса.
+pub fn own_user_sd() -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::Security::GetSecurityDescriptorLength;
+    let sd = parse_sddl(&format!("O:SYG:SYD:(A;;CC;;;{})", own_sid_string()?))?;
+    // SAFETY: дескриптор разобран системой и жив, пока жив `sd`.
+    let len = unsafe { GetSecurityDescriptorLength(sd.0) } as usize;
+    // SAFETY: Convert… выдаёт self-relative дескриптор длиной `len` байт.
+    Ok(unsafe { std::slice::from_raw_parts(sd.0.cast::<u8>(), len) }.to_vec())
+}
+
 /// Каталоги KVT в `ProgramData`: владелец — администраторы, доступ только у SYSTEM
 /// и администраторов, вложенное наследует то же.
 const PRIVATE_DIR_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";

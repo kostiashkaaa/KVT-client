@@ -13,9 +13,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 /// Сколько адресов можно пингнуть одной командой `Ping`.
 pub const MAX_PING_TARGETS: usize = 1024;
+/// Сколько адресов серверов может быть открыто тестовому ядру сразу (`ProbeOpen`).
+pub const MAX_PROBE_ADDRS: usize = 2048;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 /// Ответ на `Connect` / `StartZapret`, прерванные командой `Disconnect`. Окно не
 /// показывает его как ошибку: пользователь сам нажал «Отключить».
@@ -73,6 +75,14 @@ pub enum Request {
         targets: Vec<Option<PingTarget>>,
         doh: String,
     },
+    /// Полная проверка серверов при включённом kill switch: тестовому ядру, которое
+    /// окно запускает без прав администратора, открыть выход мимо туннеля — только к
+    /// этим адресам (добавляются к уже открытым). Без kill switch ничего не делает.
+    ProbeOpen {
+        ips: Vec<std::net::IpAddr>,
+    },
+    /// Проверка закончена: закрыть все адреса, открытые `ProbeOpen`.
+    ProbeClose,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

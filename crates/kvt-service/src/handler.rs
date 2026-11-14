@@ -248,8 +248,17 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
     };
     match request {
         Request::Status => {
+            state.supervisor.expire_probe();
             state.refresh(false).await;
             state.status_response()
+        }
+        Request::ProbeOpen { ips } => match state.supervisor.open_probe(&ips) {
+            Ok(()) => Response::Ok,
+            Err(message) => Response::Error { message },
+        },
+        Request::ProbeClose => {
+            state.supervisor.close_probe();
+            Response::Ok
         }
         Request::Connect(plan) => connect(state, &plan).await,
         Request::StartZapret(plan) => start_zapret(state, &plan).await,

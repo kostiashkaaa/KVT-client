@@ -9,12 +9,12 @@
 
 use kvt_core::captive;
 use kvt_core::dns::names::Lookup;
-use kvt_core::governor::{NetGovernor, NetPolicy};
+use kvt_core::governor::{Decision, NetGovernor, NetPolicy};
 use kvt_core::ipc::{Captive, PingTarget, Response, MAX_PING_TARGETS};
 use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
 use kvt_core::rulesync::Http;
 use kvt_core::tester::Doh;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -26,7 +26,16 @@ pub struct NetClient {
     direct: Option<reqwest::Client>,
     /// Зачем служба ходит в сеть — для журнала запросов.
     purpose: Purpose,
+    /// VPN подключён: обычный клиент идёт по маршрутизации через туннель, и SNI
+    /// провайдеру не виден — NetGovernor ему не нужен.
+    tunneled: bool,
+    /// Хосты, на которые NetGovernor уже разрешил соединение мимо туннеля. Дальше
+    /// запросы идут по тому же соединению из пула, новых TLS-рукопожатий нет.
+    admitted: Mutex<HashSet<String>>,
 }
+
+/// Сколько ждать лимит NetGovernor перед загрузкой мимо туннеля.
+const ADMIT_WAIT: Duration = Duration::from_secs(90);
 
 fn build(local: Option<Ipv4Addr>) -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
@@ -46,13 +55,30 @@ impl NetClient {
             client: build(None)?,
             direct: None,
             purpose,
+            tunneled: false,
+            admitted: Mutex::default(),
         })
     }
 
     /// VPN подключён: сначала напрямую мимо TUN, при неудаче — через туннель.
     pub fn with_tunnel_fallback(mut self) -> Self {
         self.direct = crate::wfp::physical_ipv4().and_then(|ip| build(Some(ip)).ok());
+        self.tunneled = true;
         self
+    }
+
+    /// Разрешение NetGovernor на первое соединение с хостом `url` мимо туннеля
+    /// (CLAUDE.md: лимиты на SNI против блокировок ТСПУ).
+    async fn admit(&self, url: &str) -> Result<(), String> {
+        let host = netlog::host_of(url);
+        if self.admitted.lock().is_ok_and(|h| h.contains(&host)) {
+            return Ok(());
+        }
+        governed(&host, self.purpose, ADMIT_WAIT).await?;
+        if let Ok(mut admitted) = self.admitted.lock() {
+            admitted.insert(host);
+        }
+        Ok(())
     }
 
     fn record(&self, url: &str, route: Route, start: Instant, result: &Result<Vec<u8>, String>) {
@@ -79,22 +105,55 @@ impl NetClient {
 impl Http for NetClient {
     async fn get(&self, url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
         if let Some(direct) = &self.direct {
-            let start = Instant::now();
-            let result = get_with(direct, url, max_bytes).await;
-            self.record(url, Route::Direct, start, &result);
-            if result.is_ok() {
-                return result;
+            // NetGovernor не пустил напрямую — сразу через туннель.
+            if self.admit(url).await.is_ok() {
+                let start = Instant::now();
+                let result = get_with(direct, url, max_bytes).await;
+                self.record(url, Route::Direct, start, &result);
+                if result.is_ok() {
+                    return result;
+                }
+                tracing::info!(host = %netlog::host_of(url), "напрямую не вышло — повтор через туннель");
             }
-            tracing::info!(host = %netlog::host_of(url), "напрямую не вышло — повтор через туннель");
             let start = Instant::now();
             let result = get_with(&self.client, url, max_bytes).await;
             self.record(url, Route::Tunnel, start, &result);
             return result;
         }
+        if !self.tunneled {
+            self.admit(url).await?;
+        }
         let start = Instant::now();
         let result = get_with(&self.client, url, max_bytes).await;
         self.record(url, Route::Direct, start, &result);
         result
+    }
+}
+
+/// Ждёт разрешения NetGovernor службы на новое TLS-соединение с `host`: лимит —
+/// не дольше `max_wait`, заморозку не ждёт. Отказ виден в «Журнале».
+async fn governed(host: &str, purpose: Purpose, max_wait: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + max_wait;
+    loop {
+        let now = Instant::now();
+        let decision = GOVERNOR
+            .lock()
+            .map(|mut g| g.try_acquire(host, now))
+            .unwrap_or(Decision::Allowed);
+        match decision {
+            Decision::Allowed => return Ok(()),
+            Decision::RetryAt(at) if at <= deadline => {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await;
+            }
+            other => {
+                netlog::record_hold(Origin::Service, purpose, host, Route::Direct, &other);
+                return Err(kvt_core::i18n::tr(
+                    "Слишком частые запросы к серверу загрузки — повторите позже",
+                    "Too many requests to the download server — try again later",
+                )
+                .into());
+            }
+        }
     }
 }
 
@@ -154,7 +213,8 @@ fn describe(e: reqwest::Error) -> String {
     }
 }
 
-/// NetGovernor службы: её запросы к резолверам DoH (имена серверов для пинга).
+/// NetGovernor службы: запросы к резолверам DoH (имена серверов) и загрузки мимо
+/// туннеля (`NetClient`).
 static GOVERNOR: LazyLock<Mutex<NetGovernor>> =
     LazyLock::new(|| Mutex::new(NetGovernor::new(NetPolicy::default())));
 
@@ -172,6 +232,21 @@ pub async fn ping(targets: Vec<Option<PingTarget>>, doh: &str) -> Response {
             .into(),
         };
     }
+    // Пинг идёт от SYSTEM мимо туннеля и kill switch — это не должно стать сканером
+    // портов в руках чужой программы, внедрённой в окно: по одной команде за раз,
+    // не больше `PING_PER_WINDOW` адресов в минуту, без служебных портов и адресов.
+    let _one_at_a_time = PING_LOCK.lock().await;
+    if !ping_budget(targets.len(), Instant::now()) {
+        return Response::Error {
+            message: kvt_core::i18n::tr(
+                "Слишком много проверок подряд — повторите через минуту",
+                "Too many checks in a row — try again in a minute",
+            )
+            .into(),
+        };
+    }
+    let targets: Vec<Option<PingTarget>> =
+        targets.into_iter().map(|t| t.filter(pingable)).collect();
     let Some(local) = crate::wfp::physical_ipv4() else {
         return Response::Error {
             message: kvt_core::i18n::tr(
@@ -198,6 +273,53 @@ pub async fn ping(targets: Vec<Option<PingTarget>>, doh: &str) -> Response {
             8,
         )
         .await,
+    }
+}
+
+/// Пинг серверов — по одной команде за раз (`ping`).
+static PING_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Сколько адресов служба пингует за `PING_WINDOW`: на «Проверить» всех серверов
+/// хватает, на перебор портов — нет.
+const PING_PER_WINDOW: usize = 2 * MAX_PING_TARGETS;
+const PING_WINDOW: Duration = Duration::from_secs(60);
+/// Когда и сколько адресов пинговали за последнее окно.
+static PING_SPENT: Mutex<VecDeque<(Instant, usize)>> = Mutex::new(VecDeque::new());
+
+/// Можно ли пингнуть ещё `count` адресов; если да — они записаны.
+fn ping_budget(count: usize, now: Instant) -> bool {
+    let Ok(mut spent) = PING_SPENT.lock() else {
+        return false;
+    };
+    while spent
+        .front()
+        .is_some_and(|(at, _)| now.duration_since(*at) > PING_WINDOW)
+    {
+        spent.pop_front();
+    }
+    let used: usize = spent.iter().map(|(_, n)| n).sum();
+    if used + count > PING_PER_WINDOW {
+        return false;
+    }
+    spent.push_back((now, count));
+    true
+}
+
+/// Порты RPC, NetBIOS и SMB: VPN-серверов на них не бывает.
+const NOT_SERVER_PORTS: [u16; 6] = [0, 135, 137, 138, 139, 445];
+
+/// Похоже на VPN-сервер: не служебный порт и не служебный адрес (loopback,
+/// 0.0.0.0, multicast, broadcast). Имя проверяется после DoH самим подключением.
+fn pingable(t: &PingTarget) -> bool {
+    if NOT_SERVER_PORTS.contains(&t.port) {
+        return false;
+    }
+    let host = t.host.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            !(ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast())
+        }
+        Ok(IpAddr::V6(ip)) => !(ip.is_loopback() || ip.is_unspecified() || ip.is_multicast()),
+        Err(_) => !host.eq_ignore_ascii_case("localhost"),
     }
 }
 
@@ -449,6 +571,34 @@ pub async fn captive_check() -> Captive {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ping_skips_service_ports_and_addresses() {
+        let t = |host: &str, port| PingTarget {
+            host: host.into(),
+            port,
+        };
+        assert!(pingable(&t("vpn.example.com", 443)));
+        assert!(pingable(&t("203.0.113.5", 8443)));
+        assert!(pingable(&t("[2001:db8::1]", 443)));
+        assert!(!pingable(&t("vpn.example.com", 445)));
+        assert!(!pingable(&t("203.0.113.5", 0)));
+        assert!(!pingable(&t("127.0.0.1", 443)));
+        assert!(!pingable(&t("[::1]", 443)));
+        assert!(!pingable(&t("0.0.0.0", 443)));
+        assert!(!pingable(&t("255.255.255.255", 443)));
+        assert!(!pingable(&t("224.0.0.1", 443)));
+        assert!(!pingable(&t("LOCALHOST", 443)));
+    }
+
+    #[test]
+    fn ping_budget_limits_targets_per_minute() {
+        let start = Instant::now();
+        assert!(ping_budget(PING_PER_WINDOW, start));
+        assert!(!ping_budget(1, start + Duration::from_secs(30)));
+        assert!(ping_budget(1, start + PING_WINDOW + Duration::from_secs(1)));
+    }
+
     use super::*;
 
     /// Ходит в интернет: `cargo test -p kvt-service -- --ignored https_probe`.

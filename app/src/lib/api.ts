@@ -12,12 +12,9 @@ export interface ServerSummary {
   name: string;
   /** Страна по первому флагу в названии (`ru`), как в других клиентах. */
   flag: string | null;
-  address: string;
-  port: number;
   protocol: string;
   transport: string;
   security: string;
-  sni: string | null;
   core: "xray" | "sing-box";
   /** Тот же сервер, что у ключа выше в списке: провайдер повторил его под другим
    *  названием. Автопереключение такой повтор не перебирает. */
@@ -393,12 +390,9 @@ function previewServer(name: string, i: number, group: string): ServerSummary {
       ? name.slice(first![1]!.length).replace(/^[\s|·,:\uFE0F]+/u, "")
       : name,
     flag,
-    address: "preview.example",
-    port: 443,
     protocol: "vless",
     transport: i % 4 === 2 ? "xhttp" : "tcp",
     security: "reality",
-    sni: "www.microsoft.com",
     core: "xray",
     // В превью пятый сервер группы повторяет первый — видно пометку «тот же сервер».
     sameAs: i === 4 ? `${group}-0` : null,
@@ -690,8 +684,7 @@ export interface ManualKey {
   title: string;
   flag: string | null;
   protocol: string;
-  address: string;
-  port: number;
+  transport: string;
 }
 
 /** Превью: у первой подписки — пропущенные строки, у второй — неудачное обновление. */
@@ -774,8 +767,7 @@ export async function listSubscriptions(): Promise<SubscriptionItem[]> {
             title: s.name,
             flag: s.flag,
             protocol: s.protocol,
-            address: s.address,
-            port: s.port,
+            transport: s.transport,
           })),
       };
     });

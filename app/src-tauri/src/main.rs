@@ -96,6 +96,12 @@ pub(crate) struct AppState {
     tunnel: Mutex<Option<bool>>,
     /// Будит автопереключение раньше срока (выход из сна, сбой проверки туннеля).
     watchdog_wake: tokio::sync::Notify,
+    /// Сервер меняет автоматика (автопереключение или замена сервера, который убрал
+    /// провайдер): одновременно — только одна, иначе выбор «скачет» между переборами.
+    switching: tokio::sync::Mutex<()>,
+    /// Когда автоматика меняла сервер: лимит `watchdog::MAX_INCIDENTS` за полчаса
+    /// общий для автопереключения и замены (`watchdog::take_incident`).
+    incidents: Mutex<std::collections::VecDeque<Instant>>,
     /// Проверка туннеля сразу после подключения не прошла: `epoch` того подключения.
     /// Автопереключению не нужно подтверждать сбой ещё раз (см. `tunnel::spawn_verify`).
     verify_failed: Mutex<Option<u64>>,
@@ -263,6 +269,8 @@ impl Default for AppState {
             notices: Mutex::default(),
             tunnel: Mutex::default(),
             watchdog_wake: tokio::sync::Notify::new(),
+            switching: tokio::sync::Mutex::new(()),
+            incidents: Mutex::default(),
             verify_failed: Mutex::default(),
             last_diagnosis: Mutex::default(),
             diag_files: Mutex::default(),
@@ -365,12 +373,10 @@ pub(crate) struct ServerSummary {
     name: String,
     /// Страна по первому флагу в названии (`nl`).
     flag: Option<String>,
-    address: String,
-    port: u16,
+    // Адреса, порта и SNI нет: окну они не нужны, а это данные сервера (CLAUDE.md).
     protocol: &'static str,
     transport: &'static str,
     security: &'static str,
-    sni: Option<String>,
     core: CoreKind,
     /// Тот же сервер, что у ключа выше в списке (другое только название).
     same_as: Option<String>,
@@ -394,12 +400,9 @@ impl ServerSummary {
             key: key.to_owned(),
             name: f.name,
             flag: f.flag,
-            address: s.address.clone(),
-            port: s.port,
             protocol: s.protocol.kind(),
             transport,
             security,
-            sni: s.visible_sni().map(str::to_owned),
             core: select_core(s).core,
             same_as: None,
         }

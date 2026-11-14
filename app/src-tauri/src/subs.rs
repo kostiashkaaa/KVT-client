@@ -85,6 +85,16 @@ async fn guard_selected(app: &AppHandle, before: Option<catalog::Entry>, gone: G
     if state.entry(&entry.key).is_some() {
         return;
     }
+    // Автопереключение могло как раз перебирать серверы: ждём его и смотрим заново —
+    // если выбор уже другой, этот сервер больше не наш.
+    let _switching = state.switching.lock().await;
+    let still_selected = state
+        .choice
+        .lock()
+        .is_ok_and(|c| c.server.as_deref() == Some(entry.key.as_str()));
+    if !still_selected || state.entry(&entry.key).is_some() {
+        return;
+    }
     let connected = matches!(
         query_status().await,
         Ok(Some(ServiceStatus::Connected { .. }))
@@ -103,7 +113,12 @@ async fn guard_selected(app: &AppHandle, before: Option<catalog::Entry>, gone: G
         return;
     }
     let auto = state.choice.lock().map(|c| c.auto_switch).unwrap_or(false);
-    if gone == Gone::ByProvider && auto && replace(app, &entry).await {
+    // Замена — такая же смена сервера, как автопереключение: лимит общий.
+    if gone == Gone::ByProvider
+        && auto
+        && watchdog::take_incident(&state)
+        && replace(app, &entry).await
+    {
         return;
     }
     tracing::info!("выбранный сервер исчез из подписок — VPN отключён");
@@ -621,8 +636,8 @@ pub struct ManualKey {
     /// Страна из флага — для картинки флага.
     flag: Option<String>,
     protocol: &'static str,
-    address: String,
-    port: u16,
+    /// Транспорт (`tcp`, `xhttp`…): адрес сервера в окно не уходит.
+    transport: &'static str,
 }
 
 #[tauri::command]
@@ -672,8 +687,7 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
                                 title: f.name,
                                 flag: f.flag,
                                 protocol: e.server.protocol.kind(),
-                                address: e.server.address.clone(),
-                                port: e.server.port,
+                                transport: catalog::transport_kind(&e.server.transport),
                             }
                         })
                         .collect()
