@@ -75,7 +75,7 @@
     flex-direction: column;
     width: 220px;
     padding: var(--space-3) var(--space-2);
-    background: var(--sidebar);
+    background: var(--rail);
   }
 
   /* Центр знака совпадает с центром иконок разделов. */

@@ -28,6 +28,11 @@
   --surface-hover: light-dark(#f5f5f5, #323232);
   --surface-pressed: light-dark(#efefef, #282828);
   --sidebar: light-dark(#ebebeb, #1c1c1c);
+  /* Подложка окна и боковой панели. Отдельно от --bg и --sidebar: --bg служит ещё
+     и «колодцем» внутри карточек (переключатели, списки результатов) и должен остаться
+     плотным, когда подложка под Mica становится прозрачной. */
+  --window: var(--bg);
+  --rail: var(--sidebar);
   --stroke: light-dark(#e0e0e0, #3a3a3a);
   --stroke-strong: light-dark(#c8c8c8, #4a4a4a);
   --text: light-dark(#1b1b1b, #ffffff);
@@ -64,6 +69,17 @@
   color-scheme: dark;
 }
 
+/* Mica (Windows 11): окно прозрачное, под ним материал системы, а подложка окна и
+   панели ему не мешает. Флаг ставит Rust (mica.rs) только там, где материал есть;
+   карточки (--surface) остаются плотными. Скрытая тема «Пикми» рисует свой фон, при
+   высокой контрастности материала нет — там цвета системные. */
+@media not (forced-colors: active) {
+  :root[data-mica]:not([data-theme="pickme"]) {
+    --window: transparent;
+    --rail: transparent;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -75,7 +91,7 @@ body {
 }
 
 body {
-  background: var(--bg);
+  background: var(--window);
   color: var(--text);
   font: 14px/20px var(--font);
   -webkit-font-smoothing: antialiased;

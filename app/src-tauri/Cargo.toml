@@ -51,6 +51,8 @@ tokio = { workspace = true, features = ["test-util"] }
 workspace = true
 
 [target.'cfg(windows)'.dependencies]
+# Номер сборки Windows: Mica есть с Windows 11 (сборка 22000). Крейт уже в дереве у Tauri.
+windows-version = "0.1"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Globalization",

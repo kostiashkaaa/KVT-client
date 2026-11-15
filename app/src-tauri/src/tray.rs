@@ -177,7 +177,9 @@ pub fn show_main_window(app: &AppHandle) {
         return;
     }
     if let Some(config) = app.config().app.windows.first() {
-        match WebviewWindowBuilder::from_config(app, config).and_then(|b| b.build()) {
+        match WebviewWindowBuilder::from_config(app, config)
+            .and_then(|b| crate::mica::prepare(b).build())
+        {
             #[cfg(debug_assertions)]
             Ok(window) => dev_dock_right(&window),
             #[cfg(not(debug_assertions))]

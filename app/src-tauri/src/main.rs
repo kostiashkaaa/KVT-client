@@ -18,6 +18,7 @@ mod fetch;
 mod health;
 mod journal;
 mod lang;
+mod mica;
 mod migrate;
 mod netinfo;
 mod netprofile;
