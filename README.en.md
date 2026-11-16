@@ -220,7 +220,9 @@ If you find a vulnerability, please report it privately as described in
 ## Contributing
 
 KVT is written in Rust (Tauri 2) and Svelte 5. Build and run instructions are in
-[CONTRIBUTING.md](CONTRIBUTING.md) (in Russian).
+[CONTRIBUTING.md](CONTRIBUTING.md) (in Russian), the design and the decisions behind it —
+in [ARCHITECTURE.md](ARCHITECTURE.md) (in Russian, with an English summary). Issues
+and pull requests in English are welcome.
 
 ## License
 

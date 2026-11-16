@@ -4,6 +4,13 @@
 проверить изменения. Ошибки и предложения — в
 [Issues](https://github.com/kostiashkaaa/KVT-client/issues).
 
+Как устроен KVT и почему так — в [ARCHITECTURE.md](ARCHITECTURE.md).
+
+*English:* issues and pull requests in English are welcome. Code comments and commit
+messages are in Russian by project convention, but you don't need to write in Russian —
+we'll translate. Start with [ARCHITECTURE.md](ARCHITECTURE.md) (it has an English
+summary); build and test commands are in the table below.
+
 ## Устройство
 
 ```
@@ -35,6 +42,7 @@ Windows 10 или 11, Rust (stable, MSVC), Node.js 20+, Visual Studio Build Tool
 | Скриншоты для README (вид `?demo`: VPN подключён, аккуратные серверы) | при запущенном `npm run dev`: `cd app && npm run screenshots` → `assets/screenshots/`, нужен Microsoft Edge |
 | Тесты Rust | `cargo test --workspace` |
 | Линтеры | `cargo clippy --workspace --all-targets -- -D warnings`, `cd app && npm run check` |
+| Тесты интерфейса | `cd app && npm test` (Vitest); `npm run smoke` — все разделы превью в браузере без ошибок в консоли (Edge на Windows, Chrome на Linux) |
 | Убрать устаревшие сборки из `target` (`dev.ps1` делает это сам) | `scripts\clean-target.ps1` |
 | Форматирование | `cargo fmt --all` |
 
@@ -93,8 +101,9 @@ Windows 10 или 11, Rust (stable, MSVC), Node.js 20+, Visual Studio Build Tool
 
 ## Правила для изменений
 
-- `cargo fmt`, `cargo clippy -D warnings` и `npm run check` — без замечаний; CI проверяет
-  то же самое.
+- `cargo fmt`, `cargo clippy -D warnings`, `npm run check`, `npm test` и `npm run smoke`
+  — без замечаний; CI проверяет то же самое.
+- Один коммит — одна тема; большие изменения — серией коммитов.
 - Новая логика — с тестами; разбор недоверенных данных (подписки, ответы серверов) — с
   тестами на плохой ввод.
 - Тексты интерфейса — на двух языках парой на месте (`t("…", "…")`, `tr`/`trf!`), коротко

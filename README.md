@@ -215,7 +215,8 @@ KVT проверит сеть, DNS и сервер и подскажет, что
 ## Участие в разработке
 
 KVT написан на Rust (Tauri 2) и Svelte 5. Как собрать и запустить его из исходников,
-описано в [CONTRIBUTING.md](CONTRIBUTING.md).
+описано в [CONTRIBUTING.md](CONTRIBUTING.md), как он устроен и какие решения в нём
+приняты — в [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Лицензия
 
