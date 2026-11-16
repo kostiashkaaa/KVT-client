@@ -162,24 +162,47 @@ impl Drop for DbCopy {
     }
 }
 
-fn open_copy(db: &Path) -> Result<DbCopy, String> {
+/// Почему данные клиента не прочитались. Показывается заметкой у клиента в окне
+/// переноса (`Display`).
+#[derive(Debug, thiserror::Error)]
+enum ReadError {
+    /// Файловая операция или запрос SQLite; текст — от системы.
+    #[error("{0}")]
+    Io(String),
+    #[error("{}", kvt_core::i18n::tr("нет имени базы", "the database has no name"))]
+    NoName,
+    #[error("{}", kvt_core::trf!("не удалось прочитать базу: {}", "couldn't read the database: {}", .0))]
+    DbRead(String),
+    #[error("{}", kvt_core::trf!("не удалось открыть базу: {}", "couldn't open the database: {}", .0))]
+    DbOpen(String),
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("guiNConfig.json не читается", "guiNConfig.json can't be read")
+    )]
+    LegacyConfig,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("в базе Hiddify нет профилей", "the Hiddify database has no profiles",)
+    )]
+    NoHiddifyProfiles,
+}
+
+impl ReadError {
+    fn io(e: impl std::fmt::Display) -> Self {
+        Self::Io(e.to_string())
+    }
+}
+
+fn open_copy(db: &Path) -> Result<DbCopy, ReadError> {
     let dir = std::env::temp_dir().join(format!(
         "kvt-migrate-{}-{}",
         std::process::id(),
         kvt_core::netlog::now_ms()
     ));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let name = db.file_name().ok_or(kvt_core::i18n::tr(
-        "нет имени базы",
-        "the database has no name",
-    ))?;
+    std::fs::create_dir_all(&dir).map_err(ReadError::io)?;
+    let name = db.file_name().ok_or(ReadError::NoName)?;
     let copy = dir.join(name);
-    std::fs::copy(db, &copy).map_err(|e| {
-        kvt_core::trf!(
-            "не удалось прочитать базу: {e}",
-            "couldn't read the database: {e}"
-        )
-    })?;
+    std::fs::copy(db, &copy).map_err(|e| ReadError::DbRead(e.to_string()))?;
     for suffix in ["-wal", "-shm"] {
         let mut side = db.as_os_str().to_owned();
         side.push(suffix);
@@ -190,23 +213,18 @@ fn open_copy(db: &Path) -> Result<DbCopy, String> {
             let _ = std::fs::copy(&side, PathBuf::from(target));
         }
     }
-    let conn =
-        Connection::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|e| {
-            kvt_core::trf!(
-                "не удалось открыть базу: {e}",
-                "couldn't open the database: {e}"
-            )
-        })?;
+    let conn = Connection::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e| ReadError::DbOpen(e.to_string()))?;
     Ok(DbCopy { dir, conn })
 }
 
 /// Строки таблицы как JSON-объекты «столбец → значение» (схемы у версий разные).
-fn rows(conn: &Connection, sql: &str) -> Result<Vec<Map<String, Value>>, String> {
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+fn rows(conn: &Connection, sql: &str) -> Result<Vec<Map<String, Value>>, ReadError> {
+    let mut stmt = conn.prepare(sql).map_err(ReadError::io)?;
     let names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
     let mut out = Vec::new();
-    let mut rs = stmt.query([]).map_err(|e| e.to_string())?;
-    while let Some(row) = rs.next().map_err(|e| e.to_string())? {
+    let mut rs = stmt.query([]).map_err(ReadError::io)?;
+    while let Some(row) = rs.next().map_err(ReadError::io)? {
         if out.len() >= MAX_PROFILES {
             break;
         }
@@ -279,7 +297,7 @@ fn collect(client: Client, dir: &Path) -> Collected {
 }
 
 /// v2rayN: подписки (`SubItem`) и ключи, добавленные вручную (`ProfileItem` без подписки).
-fn v2rayn(c: &mut Collected, dir: &Path) -> Result<(), String> {
+fn v2rayn(c: &mut Collected, dir: &Path) -> Result<(), ReadError> {
     let db_path = dir.join("guiConfigs").join("guiNDB.db");
     if !db_path.is_file() {
         return v2rayn_legacy(c, dir);
@@ -308,12 +326,9 @@ fn v2rayn(c: &mut Collected, dir: &Path) -> Result<(), String> {
 }
 
 /// Старые версии v2rayN: всё в `guiNConfig.json`, ключи с маленькой буквы.
-fn v2rayn_legacy(c: &mut Collected, dir: &Path) -> Result<(), String> {
-    let cfg =
-        read_json(&dir.join("guiConfigs").join("guiNConfig.json")).ok_or(kvt_core::i18n::tr(
-            "guiNConfig.json не читается",
-            "guiNConfig.json can't be read",
-        ))?;
+fn v2rayn_legacy(c: &mut Collected, dir: &Path) -> Result<(), ReadError> {
+    let cfg = read_json(&dir.join("guiConfigs").join("guiNConfig.json"))
+        .ok_or(ReadError::LegacyConfig)?;
     let pascal = |v: &Value| -> Map<String, Value> {
         v.as_object()
             .map(|o| {
@@ -361,7 +376,7 @@ fn v2rayn_legacy(c: &mut Collected, dir: &Path) -> Result<(), String> {
 }
 
 /// Throne (новые версии): таблицы `groups` и `profiles` в `config\throne.db`.
-fn throne(c: &mut Collected, dir: &Path) -> Result<(), String> {
+fn throne(c: &mut Collected, dir: &Path) -> Result<(), ReadError> {
     let db = open_copy(&dir.join("config").join("throne.db"))?;
     let mut sub_groups = HashSet::new();
     if table_exists(&db.conn, "groups") {
@@ -393,11 +408,11 @@ fn throne(c: &mut Collected, dir: &Path) -> Result<(), String> {
 }
 
 /// NekoRay и старый Throne: `config\groups\*.json` и `config\profiles\*.json`.
-fn nekoray(c: &mut Collected, dir: &Path) -> Result<(), String> {
+fn nekoray(c: &mut Collected, dir: &Path) -> Result<(), ReadError> {
     let config = dir.join("config");
     let mut sub_groups = HashSet::new();
     for entry in std::fs::read_dir(config.join("groups"))
-        .map_err(|e| e.to_string())?
+        .map_err(ReadError::io)?
         .flatten()
     {
         let Some(g) = read_json(&entry.path()) else {
@@ -433,14 +448,10 @@ fn nekoray(c: &mut Collected, dir: &Path) -> Result<(), String> {
 }
 
 /// Hiddify: профили в `db.sqlite`; у локальных профилей конфиг — `configs\<id>.json`.
-fn hiddify(c: &mut Collected, dir: &Path) -> Result<(), String> {
+fn hiddify(c: &mut Collected, dir: &Path) -> Result<(), ReadError> {
     let db = open_copy(&dir.join("db.sqlite"))?;
     if !table_exists(&db.conn, "profile_entries") {
-        return Err(kvt_core::i18n::tr(
-            "в базе Hiddify нет профилей",
-            "the Hiddify database has no profiles",
-        )
-        .into());
+        return Err(ReadError::NoHiddifyProfiles);
     }
     for row in rows(&db.conn, "SELECT id, type, name, url FROM profile_entries")? {
         let url = s(&row, "url");

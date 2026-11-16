@@ -31,12 +31,23 @@ pub enum AutostartState {
     Other,
 }
 
-fn command_line() -> Result<String, String> {
+/// Путь к своему kvt.exe не узнать; текст — от `errors::io` (что и почему).
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct NoExe(String);
+
+impl From<NoExe> for String {
+    fn from(e: NoExe) -> Self {
+        e.0
+    }
+}
+
+fn command_line() -> Result<String, NoExe> {
     let exe = std::env::current_exe().map_err(|e| {
-        crate::errors::io(
+        NoExe(crate::errors::io(
             kvt_core::i18n::tr("Не удалось найти kvt.exe", "Couldn't find kvt.exe"),
             &e,
-        )
+        ))
     })?;
     Ok(format!("\"{}\" {TRAY_FLAG}", exe.display()))
 }

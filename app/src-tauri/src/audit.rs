@@ -35,23 +35,81 @@ fn own() -> OwnDirs {
     audit::own_dirs(&[exe_dir, data.display().to_string()])
 }
 
-fn facts() -> Result<audit::Facts, String> {
+/// Почему исправление с правами пользователя не применилось. Окну — строкой
+/// через `From`.
+#[derive(Debug, thiserror::Error)]
+enum FixError {
+    /// Системная программа не запустилась.
+    #[error("{0}: {1}")]
+    Run(String, String),
+    #[error("{}", kvt_core::trf!("{} завершился с кодом {}", "{} exited with code {}", .0, .1))]
+    Exit(String, i32),
+    #[error("{}", kvt_core::trf!(
+        "Не удалось запустить PowerShell: {}",
+        "Couldn't start PowerShell: {}",
+        .0
+    ))]
+    PowerShell(String),
+    /// Ответ скрипта сбора фактов не разобран (`audit::parse_facts`).
+    #[error("{0}")]
+    Facts(String),
+    #[error(
+        "{}",
+        kvt_core::i18n::tr(
+            "Запись автозагрузки не найдена — возможно, её уже убрали",
+            "The autostart entry wasn't found — it may have been removed already",
+        )
+    )]
+    AutostartNotFound,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("Эту запись нельзя отключить", "This entry can't be disabled")
+    )]
+    CantDisable,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("Это исправление выполняет служба", "This fix is done by the service")
+    )]
+    ServiceOnly,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("Программа уже закрыта", "The app is already closed")
+    )]
+    AlreadyClosed,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr(
+            "Этот процесс не похож на VPN-клиент — KVT его не закрывает",
+            "This process doesn't look like a VPN client — KVT won't close it",
+        )
+    )]
+    NotVpn,
+    #[error("{}", kvt_core::trf!(
+        "Не удалось закрыть {} — закройте программу вручную (она может быть запущена от администратора)",
+        "Couldn't close {} — close it manually (it may be running as administrator)",
+        .0
+    ))]
+    CloseFailed(String),
+}
+
+impl From<FixError> for String {
+    fn from(e: FixError) -> Self {
+        e.to_string()
+    }
+}
+
+fn facts() -> Result<audit::Facts, FixError> {
     let out = Command::new("powershell.exe")
         .args(audit::powershell_args())
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .output()
-        .map_err(|e| {
-            kvt_core::trf!(
-                "Не удалось запустить PowerShell: {e}",
-                "Couldn't start PowerShell: {e}"
-            )
-        })?;
-    audit::parse_facts(&String::from_utf8_lossy(&out.stdout))
+        .map_err(|e| FixError::PowerShell(e.to_string()))?;
+    audit::parse_facts(&String::from_utf8_lossy(&out.stdout)).map_err(FixError::Facts)
 }
 
-fn run(program: &str, args: &[&str]) -> Result<(), String> {
+fn run(program: &str, args: &[&str]) -> Result<(), FixError> {
     let status = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -59,14 +117,13 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .status()
-        .map_err(|e| format!("{program}: {e}"))?;
+        .map_err(|e| FixError::Run(program.to_owned(), e.to_string()))?;
     if status.success() {
         Ok(())
     } else {
-        Err(kvt_core::trf!(
-            "{program} завершился с кодом {}",
-            "{program} exited with code {}",
-            status.code().unwrap_or(-1)
+        Err(FixError::Exit(
+            program.to_owned(),
+            status.code().unwrap_or(-1),
         ))
     }
 }
@@ -108,12 +165,13 @@ pub async fn pc_audit_fix(fix: Fix) -> Result<(), String> {
             .await
             .map_err(|_| {
                 kvt_core::i18n::tr("Исправление прервалось", "The fix was interrupted").to_string()
-            })?,
+            })?
+            .map_err(String::from),
     }
 }
 
 /// Исправления с правами пользователя.
-fn fix_here(fix: &Fix) -> Result<(), String> {
+fn fix_here(fix: &Fix) -> Result<(), FixError> {
     match fix {
         Fix::DisableSystemProxy => {
             run(
@@ -143,14 +201,8 @@ fn fix_here(fix: &Fix) -> Result<(), String> {
             let facts = facts()?;
             let entry = audit::zapret_autostart_by_id(&facts, id, &own())
                 .filter(|a| !a.location.machine_wide())
-                .ok_or(kvt_core::i18n::tr(
-                    "Запись автозагрузки не найдена — возможно, её уже убрали",
-                    "The autostart entry wasn't found — it may have been removed already",
-                ))?;
-            let key = entry.location.approved_key().ok_or(kvt_core::i18n::tr(
-                "Эту запись нельзя отключить",
-                "This entry can't be disabled",
-            ))?;
+                .ok_or(FixError::AutostartNotFound)?;
+            let key = entry.location.approved_key().ok_or(FixError::CantDisable)?;
             run(
                 "reg.exe",
                 &[
@@ -166,11 +218,7 @@ fn fix_here(fix: &Fix) -> Result<(), String> {
                 ],
             )
         }
-        Fix::StopZapret | Fix::Service(_) => Err(kvt_core::i18n::tr(
-            "Это исправление выполняет служба",
-            "This fix is done by the service",
-        )
-        .into()),
+        Fix::StopZapret | Fix::Service(_) => Err(FixError::ServiceOnly),
     }
 }
 
@@ -191,17 +239,10 @@ fn image_name(pid: u32) -> Option<String> {
 
 /// Закрывает другой VPN-клиент: сначала просьбой закрыться, потом принудительно.
 /// Закрывается только процесс из списка VPN-клиентов — PID проверяется заново.
-fn close_process(pid: u32) -> Result<(), String> {
-    let name = image_name(pid).ok_or(kvt_core::i18n::tr(
-        "Программа уже закрыта",
-        "The app is already closed",
-    ))?;
+fn close_process(pid: u32) -> Result<(), FixError> {
+    let name = image_name(pid).ok_or(FixError::AlreadyClosed)?;
     if !audit::is_vpn_process_name(&name) {
-        return Err(kvt_core::i18n::tr(
-            "Этот процесс не похож на VPN-клиент — KVT его не закрывает",
-            "This process doesn't look like a VPN client — KVT won't close it",
-        )
-        .into());
+        return Err(FixError::NotVpn);
     }
     let pid_arg = pid.to_string();
     let _ = run("taskkill.exe", &["/PID", &pid_arg]);
@@ -217,10 +258,7 @@ fn close_process(pid: u32) -> Result<(), String> {
     if image_name(pid).is_none() {
         Ok(())
     } else {
-        Err(kvt_core::trf!(
-            "Не удалось закрыть {name} — закройте программу вручную (она может быть запущена от администратора)",
-            "Couldn't close {name} — close it manually (it may be running as administrator)"
-        ))
+        Err(FixError::CloseFailed(name))
     }
 }
 

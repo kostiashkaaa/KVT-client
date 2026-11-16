@@ -283,15 +283,42 @@ struct ProbeEvent {
     outcome: Outcome,
 }
 
+/// Почему тестовые ядра не готовы к проверке. Окну — строкой через `From`.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ProberError {
+    /// Каталог для рабочих файлов или путь к программе; текст — от системы.
+    #[error("{0}")]
+    Io(String),
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("не найден каталог программы", "the app folder wasn't found")
+    )]
+    NoAppFolder,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr(
+            "Не найдены ядра Xray и sing-box. Для разработки: scripts\\fetch-cores.ps1",
+            "The Xray and sing-box cores weren't found. For development: scripts\\fetch-cores.ps1",
+        )
+    )]
+    NoCores,
+}
+
+impl From<ProberError> for String {
+    fn from(e: ProberError) -> Self {
+        e.to_string()
+    }
+}
+
 impl CoreProber {
     /// Тестовые ядра из каталога программы, рабочие файлы — во временном каталоге.
     /// `source` — адрес физического адаптера, если VPN подключён.
     pub(crate) fn new(
         state: &AppState,
         source: Option<std::net::Ipv4Addr>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, ProberError> {
         let work = std::env::temp_dir().join("kvt-probe");
-        std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&work).map_err(|e| ProberError::Io(e.to_string()))?;
         Ok(Self {
             cores: cores_dir()?,
             work,
@@ -327,21 +354,14 @@ async fn close_probe() {
     }
 }
 
-fn cores_dir() -> Result<PathBuf, String> {
+fn cores_dir() -> Result<PathBuf, ProberError> {
     let dir = std::env::current_exe()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| ProberError::Io(e.to_string()))?
         .parent()
         .map(|p| p.join("cores"))
-        .ok_or(kvt_core::i18n::tr(
-            "не найден каталог программы",
-            "the app folder wasn't found",
-        ))?;
+        .ok_or(ProberError::NoAppFolder)?;
     if !dir.join("xray.exe").exists() || !dir.join("sing-box.exe").exists() {
-        return Err(kvt_core::i18n::tr(
-            "Не найдены ядра Xray и sing-box. Для разработки: scripts\\fetch-cores.ps1",
-            "The Xray and sing-box cores weren't found. For development: scripts\\fetch-cores.ps1",
-        )
-        .into());
+        return Err(ProberError::NoCores);
     }
     Ok(dir)
 }
