@@ -46,23 +46,22 @@ pub async fn zapret_autoselect(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<PickResult, String> {
-    autoselect(&app, &state).await
+    Ok(autoselect(&app, &state).await?)
 }
 
-pub(super) async fn autoselect(app: &AppHandle, state: &AppState) -> Result<PickResult, String> {
-    let before = query_status().await?;
+pub(super) async fn autoselect(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<PickResult, ZapretError> {
+    let before = status().await?;
     if matches!(before, Some(ServiceStatus::Connected { .. })) {
-        return Err(tr(
-            "Отключите VPN: подбор проверяет сайты напрямую, через zapret.",
-            "Disconnect the VPN: picking checks sites directly, through zapret.",
-        )
-        .into());
+        return Err(ZapretError::VpnConnected);
     }
     if before.is_none() {
-        return Err(tr("Служба KVT не запущена.", "The KVT service isn't running.").into());
+        return Err(ZapretError::NoService);
     }
     if state.zapret_picking.swap(true, Ordering::SeqCst) {
-        return Err(tr("Подбор уже идёт", "Picking is already running").into());
+        return Err(ZapretError::AlreadyPicking);
     }
     state.zapret_cancel.store(false, Ordering::SeqCst);
     let result = pick(app, state, before).await;
@@ -79,23 +78,19 @@ pub(super) async fn pick(
     app: &AppHandle,
     state: &AppState,
     before: Option<ServiceStatus>,
-) -> Result<PickResult, String> {
+) -> Result<PickResult, ZapretError> {
     // Подбор идёт минутами и сам переключает службу. Если за это время пользователь
     // подключился, отключился или сменил режим, подбор не трогает его выбор.
     let epoch = state.epoch();
     let acted = || state.epoch() != epoch;
-    let strategies = zapret_strategies().await?;
+    let strategies = strategies().await?;
     if strategies.is_empty() {
-        return Err(tr(
-            "Нет стратегий zapret. Нажмите «Переустановить» во вкладке Zapret.",
-            "No zapret strategies. Press “Reinstall” on the Zapret tab.",
-        )
-        .into());
+        return Err(ZapretError::NoStrategies);
     }
     let choice = state
         .choice
         .lock()
-        .map_err(crate::errors::state)?
+        .map_err(|_| ZapretError::State)?
         .zapret
         .clone();
     let network = network_key(state);
@@ -165,11 +160,7 @@ pub(super) async fn pick(
     if acted() {
         // Служба уже работает так, как решил пользователь, — не останавливаем её.
         crate::tray::refresh(app).await;
-        return Err(tr(
-            "Подбор прерван: подключение изменили во время проверки.",
-            "Picking interrupted: the connection changed during the check.",
-        )
-        .into());
+        return Err(ZapretError::Interrupted);
     }
 
     if let Some((strategy, _)) = &best {
@@ -178,7 +169,8 @@ pub(super) async fn pick(
                 c.zapret.by_network.insert(key.clone(), strategy.id.clone());
             }
             c.zapret.strategy = Some(strategy.id.clone());
-        })?;
+        })
+        .map_err(ZapretError::Settings)?;
         let _ = app.emit(watchdog::CHOICE_EVENT, ());
     }
 
@@ -189,7 +181,7 @@ pub(super) async fn pick(
         let plan = state
             .choice
             .lock()
-            .map_err(crate::errors::state)?
+            .map_err(|_| ZapretError::State)?
             .zapret
             .plan(network.as_deref());
         let _ = call(Request::StartZapret(Box::new(plan))).await;

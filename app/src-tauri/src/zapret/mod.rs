@@ -26,6 +26,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 mod autoselect;
 mod check;
 mod diagnose;
+mod error;
 mod watch;
 
 // Команды окна (`generate_handler!` в main.rs) и то, что зовут трей и профили сетей,
@@ -33,6 +34,7 @@ mod watch;
 pub use autoselect::*;
 pub use check::*;
 pub use diagnose::*;
+pub use error::ZapretError;
 pub use watch::*;
 
 /// Стратегия по умолчанию — основная у Flowseal.
@@ -166,49 +168,70 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-async fn call(request: Request) -> Result<Response, String> {
-    match service_client::call(request).await? {
-        Response::Error { message } => Err(message),
+async fn call(request: Request) -> Result<Response, ZapretError> {
+    match service_client::call(request)
+        .await
+        .map_err(ZapretError::Service)?
+    {
+        Response::Error { message } => Err(ZapretError::Service(message)),
         other => Ok(other),
+    }
+}
+
+/// Статус службы; не ответила — `ZapretError::Service`.
+async fn status() -> Result<Option<ServiceStatus>, ZapretError> {
+    query_status().await.map_err(ZapretError::Service)
+}
+
+async fn strategies() -> Result<Vec<Strategy>, ZapretError> {
+    match call(Request::ZapretStrategies).await? {
+        Response::Strategies { strategies } => Ok(strategies),
+        _ => Err(ZapretError::Unexpected),
+    }
+}
+
+async fn conflicts(request: Request) -> Result<Vec<Conflict>, ZapretError> {
+    match call(request).await? {
+        Response::Conflicts { conflicts } => Ok(conflicts),
+        _ => Err(ZapretError::Unexpected),
+    }
+}
+
+async fn info() -> Result<ZapretInfo, ZapretError> {
+    match call(Request::ZapretInfo).await? {
+        Response::ZapretInfo(info) => Ok(*info),
+        _ => Err(ZapretError::Unexpected),
     }
 }
 
 #[tauri::command]
 pub async fn zapret_strategies() -> Result<Vec<Strategy>, String> {
-    match call(Request::ZapretStrategies).await? {
-        Response::Strategies { strategies } => Ok(strategies),
-        _ => Err(crate::errors::unexpected().into()),
-    }
+    Ok(strategies().await?)
 }
 
 #[tauri::command]
 pub async fn zapret_conflicts() -> Result<Vec<Conflict>, String> {
-    match call(Request::ZapretConflicts).await? {
-        Response::Conflicts { conflicts } => Ok(conflicts),
-        _ => Err(crate::errors::unexpected().into()),
-    }
+    Ok(conflicts(Request::ZapretConflicts).await?)
 }
 
 /// Остановить чужие обходы — только по кнопке пользователя.
 #[tauri::command]
 pub async fn zapret_stop_conflicts() -> Result<Vec<Conflict>, String> {
-    match call(Request::StopConflicts).await? {
-        Response::Conflicts { conflicts } => Ok(conflicts),
-        _ => Err(crate::errors::unexpected().into()),
-    }
+    Ok(conflicts(Request::StopConflicts).await?)
 }
 
 #[tauri::command]
 pub async fn zapret_info() -> Result<ZapretInfo, String> {
-    match call(Request::ZapretInfo).await? {
-        Response::ZapretInfo(info) => Ok(*info),
-        _ => Err(crate::errors::unexpected().into()),
-    }
+    Ok(info().await?)
 }
 
 /// Последний релиз Flowseal (один запрос к API GitHub, ответ живёт 6 часов).
 #[tauri::command]
 pub async fn zapret_latest(force: bool, state: State<'_, AppState>) -> Result<Release, String> {
+    Ok(latest(force, &state).await?)
+}
+
+async fn latest(force: bool, state: &AppState) -> Result<Release, ZapretError> {
     if !force {
         if let Some((at, release)) = state.zapret_release.lock().ok().and_then(|r| r.clone()) {
             if at.elapsed() < RELEASE_CACHE {
@@ -221,7 +244,7 @@ pub async fn zapret_latest(force: bool, state: State<'_, AppState>) -> Result<Re
         .timeout(Duration::from_secs(20))
         .user_agent(concat!("KVT/", env!("CARGO_PKG_VERSION")))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ZapretError::Release(e.without_url().to_string()))?;
     let start = Instant::now();
     let body = async {
         client
@@ -257,8 +280,8 @@ pub async fn zapret_latest(force: bool, state: State<'_, AppState>) -> Result<Re
             ),
         );
     }
-    let body = body?;
-    let release = kvt_core::zapret::parse_release(&body)?;
+    let body = body.map_err(ZapretError::Release)?;
+    let release = kvt_core::zapret::parse_release(&body).map_err(ZapretError::Release)?;
     if let Ok(mut cache) = state.zapret_release.lock() {
         *cache = Some((Instant::now(), release.clone()));
     }
@@ -266,19 +289,15 @@ pub async fn zapret_latest(force: bool, state: State<'_, AppState>) -> Result<Re
 }
 
 /// Обновление и переустановка останавливают zapret — после них подключаемся как было.
-async fn maintain(app: &AppHandle, request: Request) -> Result<MaintenanceReport, String> {
+async fn maintain(app: &AppHandle, request: Request) -> Result<MaintenanceReport, ZapretError> {
     let state = app.state::<AppState>();
     if state.zapret_picking.load(Ordering::SeqCst) {
-        return Err(tr(
-            "Идёт подбор стратегии — дождитесь его окончания",
-            "A strategy is being picked — wait until it finishes",
-        )
-        .into());
+        return Err(ZapretError::Picking);
     }
-    let before = query_status().await?;
+    let before = status().await?;
     let report = match call(request).await? {
         Response::Maintenance(report) => *report,
-        _ => return Err(crate::errors::unexpected().into()),
+        _ => return Err(ZapretError::Unexpected),
     };
     // Обновлять было нечего — служба ничего не останавливала, VPN не рвём.
     if report.changed
@@ -295,12 +314,12 @@ async fn maintain(app: &AppHandle, request: Request) -> Result<MaintenanceReport
 
 #[tauri::command]
 pub async fn zapret_update(app: AppHandle) -> Result<MaintenanceReport, String> {
-    maintain(&app, Request::ZapretUpdate).await
+    Ok(maintain(&app, Request::ZapretUpdate).await?)
 }
 
 #[tauri::command]
 pub async fn zapret_repair(app: AppHandle) -> Result<MaintenanceReport, String> {
-    maintain(&app, Request::ZapretRepair).await
+    Ok(maintain(&app, Request::ZapretRepair).await?)
 }
 
 #[cfg(test)]

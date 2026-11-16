@@ -200,7 +200,7 @@ pub async fn zapret_check(
     state: State<'_, AppState>,
 ) -> Result<CheckRecord, String> {
     if state.zapret_picking.load(Ordering::SeqCst) {
-        return Err(tr("Идёт подбор стратегии", "A strategy is being picked").into());
+        return Err(ZapretError::Picking.into());
     }
     Ok(check_now(&app).await)
 }

@@ -437,24 +437,30 @@ pub async fn zapret_diagnose(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ZapretDiagnosis, String> {
+    Ok(diagnose(&app, &state).await?)
+}
+
+async fn diagnose(app: &AppHandle, state: &AppState) -> Result<ZapretDiagnosis, ZapretError> {
     let service = query_status().await.ok().flatten();
     let mut facts = ZapretFacts {
         service: service.clone(),
         ..Default::default()
     };
     if service.is_some() {
-        facts.info = zapret_info().await.ok();
-        facts.conflicts = zapret_conflicts().await.unwrap_or_default();
-        facts.running = running_strategy(&state).await;
+        facts.info = info().await.ok();
+        facts.conflicts = conflicts(Request::ZapretConflicts)
+            .await
+            .unwrap_or_default();
+        facts.running = running_strategy(state).await;
         let choice = state
             .choice
             .lock()
-            .map_err(crate::errors::state)?
+            .map_err(|_| ZapretError::State)?
             .zapret
             .clone();
         facts.timestamps_allowed = choice.tcp_timestamps;
         if let Some(running) = &facts.running {
-            facts.needs_timestamps = zapret_strategies()
+            facts.needs_timestamps = strategies()
                 .await
                 .unwrap_or_default()
                 .iter()
@@ -464,12 +470,12 @@ pub async fn zapret_diagnose(
             (interferers(), system_proxy(), tcp_timestamps_enabled())
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| ZapretError::State)?;
         facts.interferers = interferers;
         facts.proxy = proxy;
         facts.timestamps_enabled = timestamps;
         if facts.running.is_some() && facts.conflicts.is_empty() {
-            facts.check = Some(check_now(&app).await.check);
+            facts.check = Some(check_now(app).await.check);
         }
     }
     Ok(conclude(&facts))
