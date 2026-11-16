@@ -1,0 +1,23 @@
+name: Предложение / Idea
+description: Чего не хватает в KVT / What KVT is missing
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Прежде чем предлагать, загляните в раздел «Чего не делаем» в
+        [ARCHITECTURE.md](https://github.com/kostiashkaaa/KVT-client/blob/main/ARCHITECTURE.md):
+        там решения, к которым без новой причины не возвращаемся.
+
+        Please check “What we don't do” in ARCHITECTURE.md first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую задачу решает / What problem it solves
+      description: Что вы хотите сделать и что мешает сейчас. / What you want to do and what gets in the way now.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Как это могло бы выглядеть / How it could look

@@ -1,0 +1,55 @@
+name: Ошибка / Bug
+description: KVT работает не так, как должен / KVT doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Не вставляйте ключи, ссылки подписок и адреса серверов** — экспорт диагностики
+        из раздела «Проверка» уже без них. Уязвимость — не сюда, а через
+        [Security Advisories](https://github.com/kostiashkaaa/KVT-client/security/advisories/new).
+
+        **Don't paste keys, subscription links or server addresses** — the diagnostics
+        export from the “Check” section has them removed. Report vulnerabilities via
+        [Security Advisories](https://github.com/kostiashkaaa/KVT-client/security/advisories/new), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось / What happened
+      description: Что делали, что ждали и что получили. / What you did, expected and got.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия KVT / KVT version
+      description: «Настройки → О программе» / “Settings → About”
+      placeholder: 0.9.7
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Режим / Mode
+      options:
+        - VPN
+        - Гибрид / Hybrid
+        - Zapret
+        - Не подключался / Not connected
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows
+      placeholder: Windows 11 24H2
+  - type: textarea
+    id: why
+    attributes:
+      label: «Почему не работает?» / “Why isn't it working?”
+      description: Что показала проверка в разделе «Проверка», если запускали. / What the check showed, if you ran it.
+  - type: textarea
+    id: diag
+    attributes:
+      label: Диагностика / Diagnostics
+      description: Приложите архив «Сохранить диагностику» из раздела «Проверка» (перетащите файл сюда). / Attach the “Save diagnostics” archive from the “Check” section.
