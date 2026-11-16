@@ -3,6 +3,8 @@
 //! доступном лишь SYSTEM и администраторам), а процесс ядра помещается в
 //! Job Object и не переживает службу.
 
+use crate::dirs::secure_dir;
+pub use crate::dirs::Paths;
 use crate::net::NetClient;
 use crate::wfp::{self, DnsGuard, KillSwitch};
 use crate::win::Job;
@@ -33,14 +35,37 @@ const MAX_LINE: usize = 1024;
 /// Адрес, по маршруту к которому видно, куда сейчас идёт интернет: в старый TUN,
 /// в новый или в физический адаптер.
 const ROUTE_PROBE: std::net::Ipv4Addr = std::net::Ipv4Addr::new(8, 8, 8, 8);
-/// Сколько отпечатков принятых конфигов помнить (см. [`CHECKED`]).
+/// Сколько отпечатков принятых конфигов помнить (см. [`CheckedConfigs`]).
 const CHECKED_MAX: usize = 32;
 
 /// Отпечатки конфигов, которые ядро уже приняло (`run -test` / `check`). Повторное
 /// подключение к тому же серверу не запускает ядро лишний раз: Xray при проверке
 /// читает geoip.dat на 18 МБ. Сбрасывается, когда обновились списки, — конфиг
-/// ссылается на них, и новая версия может не подойти.
-static CHECKED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+/// ссылается на них, и новая версия может не подойти. Общий у `Supervisor` и фонового
+/// обновления списков (`spawn_rules_sync`).
+#[derive(Clone, Default)]
+struct CheckedConfigs(Arc<Mutex<VecDeque<u64>>>);
+
+impl CheckedConfigs {
+    fn contains(&self, fingerprint: u64) -> bool {
+        self.0.lock().is_ok_and(|c| c.contains(&fingerprint))
+    }
+
+    fn remember(&self, fingerprint: u64) {
+        if let Ok(mut c) = self.0.lock() {
+            if c.len() >= CHECKED_MAX {
+                c.pop_front();
+            }
+            c.push_back(fingerprint);
+        }
+    }
+
+    fn forget(&self) {
+        if let Ok(mut c) = self.0.lock() {
+            c.clear();
+        }
+    }
+}
 
 fn config_fingerprint(core: CoreKind, config: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -50,104 +75,10 @@ fn config_fingerprint(core: CoreKind, config: &[u8]) -> u64 {
     h.finish()
 }
 
-fn already_checked(fingerprint: u64) -> bool {
-    CHECKED.lock().is_ok_and(|c| c.contains(&fingerprint))
-}
-
-fn remember_checked(fingerprint: u64) {
-    if let Ok(mut c) = CHECKED.lock() {
-        if c.len() >= CHECKED_MAX {
-            c.remove(0);
-        }
-        c.push(fingerprint);
-    }
-}
-
-fn forget_checked() {
-    if let Ok(mut c) = CHECKED.lock() {
-        c.clear();
-    }
-}
-
 /// Интернет идёт через TUN KVT: адаптер есть, и маршрут к [`ROUTE_PROBE`] ведёт в него.
 fn route_through_tun() -> bool {
     let tun = wfp::interface_index(TUN_INTERFACE);
     tun.is_some() && wfp::best_interface(ROUTE_PROBE) == tun
-}
-
-#[derive(Debug, Clone)]
-pub struct Paths {
-    /// xray.exe, sing-box.exe, wintun.dll — рядом со службой.
-    pub cores: PathBuf,
-    /// Списки маршрутизации.
-    pub rules: PathBuf,
-    /// Временные конфиги.
-    pub run: PathBuf,
-    /// Комплект zapret Flowseal (bin, lists, strategies) — рядом со службой.
-    pub zapret: PathBuf,
-    /// Рабочие списки winws, включая свои `*-user.txt`.
-    pub zapret_lists: PathBuf,
-    /// Комплект, обновлённый из релиза Flowseal (кнопка «Обновить»).
-    pub zapret_update: PathBuf,
-}
-
-/// `C:\ProgramData\KVT`: списки, обновления zapret, журналы.
-pub fn data_dir() -> PathBuf {
-    std::env::var_os("ProgramData")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-        .join("KVT")
-}
-
-impl Paths {
-    pub fn standard() -> std::io::Result<Self> {
-        let exe = std::env::current_exe()?;
-        let exe_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-        let data = data_dir();
-        Ok(Self {
-            cores: exe_dir.join("cores"),
-            zapret: exe_dir.join("zapret"),
-            rules: data.join("rules"),
-            run: data.join("run"),
-            zapret_lists: data.join("zapret"),
-            zapret_update: data.join("zapret-bundle"),
-        })
-    }
-}
-
-/// Каталог только для SYSTEM и администраторов, владелец — администраторы
-/// (`win::private_dir`). Внутри `ProgramData\KVT` сначала проверяются родители:
-/// пока родитель чужой, в нём можно подложить что угодно.
-pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
-    // Права ставятся раз за запуск службы: в закрытом каталоге пользователь ничего
-    // не подменит, а заново — сотни миллисекунд на каждое подключение. Пропал
-    // каталог или на его месте ссылка — готовим снова.
-    static SECURED: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
-    let still_dir = std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir());
-    if still_dir
-        && SECURED
-            .lock()
-            .is_ok_and(|s| s.as_ref().is_some_and(|s| s.contains(dir)))
-    {
-        return Ok(());
-    }
-    let data = data_dir();
-    if let Some(parent) = dir.parent().filter(|p| p.starts_with(&data)) {
-        secure_dir(parent)?;
-    }
-    crate::win::private_dir(dir).map_err(|e| {
-        kvt_core::trf!(
-            "не удалось подготовить каталог {}: {e}",
-            "couldn't prepare the folder {}: {e}",
-            dir.display()
-        )
-    })?;
-    if let Ok(mut secured) = SECURED.lock() {
-        secured
-            .get_or_insert_with(Default::default)
-            .insert(dir.to_path_buf());
-    }
-    Ok(())
 }
 
 pub type Log = Arc<Mutex<VecDeque<String>>>;
@@ -230,6 +161,8 @@ pub struct Supervisor {
     last_plan: Option<ConnectPlan>,
     /// По ошибке ядра уже переподключались (делается один раз на подключение).
     reconnected: bool,
+    /// Конфиги, которые ядро уже приняло: повторно не проверяются.
+    checked: CheckedConfigs,
     /// Ядро не смогло настроить IPv6 у адаптера: до перезапуска службы TUN
     /// собирается только с IPv4, чтобы следующие подключения не ждали 15 попыток.
     ipv6_failed: bool,
@@ -263,6 +196,7 @@ impl Supervisor {
             last_plan: None,
             reconnected: false,
             ipv6_failed: false,
+            checked: CheckedConfigs::default(),
             retry_after_exit: false,
             probe_until: None,
         }
@@ -371,7 +305,7 @@ impl Supervisor {
                 tracing::warn!(file, err, "список не обновлён");
             }
             if !report.updated.is_empty() {
-                forget_checked();
+                self.checked.forget();
             }
             if let Some(missing) = files
                 .iter()
@@ -489,7 +423,12 @@ impl Supervisor {
         }
         tracing::info!(core = ?plan.core, kill_switch = plan.kill_switch, "подключено");
         if !background.is_empty() {
-            spawn_rules_sync(self.paths.rules.clone(), background, force);
+            spawn_rules_sync(
+                self.paths.rules.clone(),
+                background,
+                force,
+                self.checked.clone(),
+            );
         }
         Ok(())
     }
@@ -704,7 +643,7 @@ impl Supervisor {
         fingerprint: u64,
     ) -> Result<(Child, Job), String> {
         let start = std::time::Instant::now();
-        if !already_checked(fingerprint) {
+        if !self.checked.contains(fingerprint) {
             let check = Command::new(&spec.exe)
                 .args(spec.check_args(config))
                 .envs(spec.env.clone())
@@ -728,7 +667,7 @@ impl Supervisor {
                     "The VPN core rejected this server's settings — the key may have unsupported parameters. Pick another server or save diagnostics. ({detail})"
                 ));
             }
-            remember_checked(fingerprint);
+            self.checked.remember(fingerprint);
         }
         let checked = start.elapsed();
         let mut cmd = Command::new(&spec.exe);
@@ -1238,7 +1177,12 @@ fn unix_now() -> u64 {
 /// через туннель. Ядро уже работает на прежних версиях; новые применятся при
 /// следующем подключении. `force` — повтор того, что не скачалось перед
 /// подключением; иначе качается только то, чему подошёл срок (раз в сутки).
-fn spawn_rules_sync(dir: PathBuf, files: Vec<rulesync::RuleFile>, force: bool) {
+fn spawn_rules_sync(
+    dir: PathBuf,
+    files: Vec<rulesync::RuleFile>,
+    force: bool,
+    checked: CheckedConfigs,
+) {
     tokio::spawn(async move {
         // Даём TUN и маршрутам подняться.
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -1254,7 +1198,7 @@ fn spawn_rules_sync(dir: PathBuf, files: Vec<rulesync::RuleFile>, force: bool) {
             tracing::info!(file, "список обновлён после подключения");
         }
         if !report.updated.is_empty() {
-            forget_checked();
+            checked.forget();
         }
     });
 }
@@ -1407,15 +1351,20 @@ mod tests {
         let a = config_fingerprint(CoreKind::Xray, b"{\"a\":1}");
         let b = config_fingerprint(CoreKind::SingBox, b"{\"a\":1}");
         assert_ne!(a, b, "отпечаток зависит от ядра");
-        assert!(!already_checked(a));
-        remember_checked(a);
-        assert!(already_checked(a) && !already_checked(b));
+        let checked = CheckedConfigs::default();
+        assert!(!checked.contains(a));
+        checked.remember(a);
+        assert!(checked.contains(a) && !checked.contains(b));
         for i in 0..CHECKED_MAX as u64 {
-            remember_checked(i);
+            checked.remember(i);
         }
-        assert!(!already_checked(a), "старые отпечатки вытесняются");
-        remember_checked(b);
-        forget_checked();
-        assert!(!already_checked(b));
+        assert!(!checked.contains(a), "старые отпечатки вытесняются");
+        checked.remember(b);
+        let shared = checked.clone();
+        shared.forget();
+        assert!(
+            !checked.contains(b),
+            "фоновое обновление списков сбрасывает общий кэш"
+        );
     }
 }

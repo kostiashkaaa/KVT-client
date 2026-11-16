@@ -15,6 +15,8 @@
 #[cfg(windows)]
 mod audit;
 #[cfg(windows)]
+mod dirs;
+#[cfg(windows)]
 mod handler;
 #[cfg(windows)]
 mod logging;
@@ -241,7 +243,7 @@ mod service {
             }
             Err(e) => eprintln!("Каталоги службы не найдены: {e}"),
         }
-        let _ = std::fs::remove_file(crate::supervisor::data_dir().join("manifest.json"));
+        let _ = std::fs::remove_file(crate::dirs::data_dir().join("manifest.json"));
         println!("Служба {SERVICE_NAME} удалена.");
         Ok(())
     }

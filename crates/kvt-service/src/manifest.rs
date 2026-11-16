@@ -20,7 +20,7 @@ const FILE: &str = "manifest.json";
 pub const CLIENT: &str = "kvt.exe";
 
 fn path() -> PathBuf {
-    crate::supervisor::data_dir().join(FILE)
+    crate::dirs::data_dir().join(FILE)
 }
 
 /// Служба установлена в Program Files (а не запущена из каталога сборки).
@@ -39,7 +39,7 @@ pub fn write(exe_dir: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
     let bytes = std::fs::read(exe_dir.join(CLIENT))?;
-    crate::supervisor::secure_dir(&crate::supervisor::data_dir()).map_err(anyhow::Error::msg)?;
+    crate::dirs::secure_dir(&crate::dirs::data_dir()).map_err(anyhow::Error::msg)?;
     let body = json!({ "client": CLIENT, "sha256": sha256_hex(&bytes) });
     std::fs::write(path(), serde_json::to_vec_pretty(&body)?)?;
     Ok(())

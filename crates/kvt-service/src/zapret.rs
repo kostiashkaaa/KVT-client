@@ -14,8 +14,9 @@
 //! Flowseal стратегии и списки — это данные, они проходят белый список. Исполняемые
 //! файлы принимаются, только если их хэш KVT уже знает; иначе остаются прежние.
 
+use crate::dirs::{secure_dir, Paths};
 use crate::net::NetClient;
-use crate::supervisor::{secure_dir, spawn_supervised, Log, Paths};
+use crate::supervisor::{spawn_supervised, Log};
 use crate::win::Job;
 use kvt_core::ipc::{Conflict, DriverState, MaintenanceReport, ZapretInfo, ZapretPlan};
 use kvt_core::rulesync::{sha256_hex, Http};

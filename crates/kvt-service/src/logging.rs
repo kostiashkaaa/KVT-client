@@ -28,8 +28,8 @@ pub fn init_console() {
 
 /// Файл журнала и, при запуске `--console`, ещё и вывод в терминал.
 pub fn init_service(console: bool) {
-    let dir = crate::supervisor::data_dir().join("logs");
-    let file = match crate::supervisor::secure_dir(&dir)
+    let dir = crate::dirs::data_dir().join("logs");
+    let file = match crate::dirs::secure_dir(&dir)
         .and_then(|()| LogFile::open(dir.join("service.log")).map_err(|e| e.to_string()))
     {
         Ok(f) => Some(f),
