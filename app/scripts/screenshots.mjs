@@ -1,5 +1,5 @@
 // Скриншоты для README из превью интерфейса в режиме `?demo` (VPN подключён,
-// аккуратные серверы, без плашки о новой версии — см. `demo` в src/lib/api.ts).
+// аккуратные серверы, без плашки о новой версии — см. `demo` в src/lib/api/preview.ts).
 //
 // Запуск: в одном терминале `npm run dev`, в другом
 //   node scripts/screenshots.mjs [адрес превью]   (по умолчанию http://localhost:5173)
@@ -43,7 +43,7 @@ async function shoot(browser, lang) {
     colorScheme: "dark",
     locale: lang === "en" ? "en-US" : "ru-RU",
   });
-  // Язык превью (`previewLang` в api.ts) — до загрузки страницы.
+  // Язык превью (`previewLang` в src/lib/api/app.ts) — до загрузки страницы.
   await context.addInitScript((value) => {
     localStorage.setItem("kvt.lang", value);
   }, lang);
