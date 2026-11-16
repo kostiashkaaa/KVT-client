@@ -4,6 +4,8 @@
 //! - только локальные клиенты;
 //! - клиент должен быть `kvt.exe` из каталога службы (Program Files в установке,
 //!   target\debug при разработке) — чужая программа управлять VPN не сможет;
+//! - пока VPN работает, управлять им может только включивший его пользователь
+//!   Windows или администратор (`access.rs`);
 //! - у установленной службы SHA-256 клиента сверяется с манифестом установки; нет
 //!   манифеста — отказ, а окну ответ «переустановите KVT» вместо оборванной связи;
 //! - кадры с ограничением длины, неизвестные команды отвергаются.
@@ -11,6 +13,7 @@
 //! TODO(этап 6): дополнительно проверять Authenticode-подпись клиента, когда будет
 //! сертификат.
 
+use crate::access::{self, Owner};
 use crate::handler::{self, State};
 use crate::supervisor::Shared;
 use crate::win;
@@ -45,6 +48,7 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
     }));
     let cancel: Cancel = Arc::new(watch::channel(0).0);
     let reconnecting = Arc::new(AtomicBool::new(false));
+    let owner = Arc::new(Owner::default());
     // Первый экземпляр: имя уже занято — значит, работает другая служба KVT.
     let mut server = win::create_pipe(PIPE_NAME, true).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -75,15 +79,15 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
         let client = server;
         server = recreate_pipe(&mut shutdown).await?;
 
-        match win::pipe_client_image(&client) {
-            Ok(image)
+        match win::pipe_client(&client) {
+            Ok((image, _))
                 if is_trusted_client(&image, &allowed_dir)
                     && manifest.as_ref().is_some_and(|m| !m.check(&image)) =>
             {
                 tracing::warn!(image = %image.display(), "клиент не совпал с манифестом установки");
                 tokio::spawn(refuse(client));
             }
-            Ok(image) if is_trusted_client(&image, &allowed_dir) => {
+            Ok((image, user)) if is_trusted_client(&image, &allowed_dir) => {
                 tracing::debug!(image = %image.display(), "клиент принят");
                 let ctx = Context {
                     state: Arc::clone(&state),
@@ -91,6 +95,8 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
                     snapshot: Arc::clone(&snapshot),
                     cancel: Arc::clone(&cancel),
                     reconnecting: Arc::clone(&reconnecting),
+                    owner: Arc::clone(&owner),
+                    user,
                 };
                 tokio::spawn(async move {
                     if let Err(e) = handle_client(client, ctx).await {
@@ -98,7 +104,7 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
                     }
                 });
             }
-            Ok(image) => tracing::warn!(image = %image.display(), "отклонён чужой клиент"),
+            Ok((image, _)) => tracing::warn!(image = %image.display(), "отклонён чужой клиент"),
             Err(e) => tracing::warn!(error = %e, "не удалось определить клиента"),
         }
     }
@@ -193,7 +199,7 @@ fn set_snapshot(snapshot: &Snapshot, response: Response) {
 /// Счётчик команд «Отключить»: запуск следит, не выросло ли число с его прихода.
 type Cancel = Arc<watch::Sender<u64>>;
 
-/// Всё, что делят между собой клиенты pipe.
+/// Всё, что делят между собой клиенты pipe, и пользователь Windows этого клиента.
 #[derive(Clone)]
 struct Context {
     state: Arc<Mutex<State>>,
@@ -203,6 +209,8 @@ struct Context {
     cancel: Cancel,
     /// Переподключение по ошибке ядра уже запущено (`spawn_reconnect`).
     reconnecting: Arc<AtomicBool>,
+    owner: Arc<Owner>,
+    user: win::User,
 }
 
 impl Context {
@@ -224,6 +232,14 @@ impl Context {
                 session: None,
             },
         );
+    }
+
+    /// Последний известный статус; не разобран — считаем, что идёт запуск.
+    fn last_status(&self) -> ServiceStatus {
+        match self.snapshot.lock().as_deref() {
+            Ok(Response::Status { status, .. }) => status.clone(),
+            _ => ServiceStatus::Connecting,
+        }
     }
 
     /// VPN работает по последнему известному статусу.
@@ -251,6 +267,10 @@ async fn handle_client(mut pipe: NamedPipeServer, ctx: Context) -> anyhow::Resul
         pipe.read_exact(&mut body).await?;
 
         let response = match ipc::decode::<Request>(&body) {
+            Ok(request) if !ctx.owner.admit(&ctx.user, &ctx.last_status(), &request) => {
+                tracing::warn!("команда другого пользователя Windows отклонена: VPN включил не он");
+                access::refusal()
+            }
             Ok(request) => match handler::stateless(&ctx.shared, request).await {
                 Ok(response) => response,
                 Err(Request::Status) => status(&ctx).await,

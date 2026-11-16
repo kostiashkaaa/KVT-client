@@ -12,6 +12,10 @@ pub fn ui_lang() -> kvt_core::i18n::Lang {
     kvt_core::i18n::Lang::from_langid(langid)
 }
 
+mod token;
+use token::own_sid_string;
+pub use token::{is_elevated, User};
+
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsRawHandle, RawHandle};
@@ -22,9 +26,7 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
-use windows_sys::Win32::Security::{
-    GetTokenInformation, TokenElevation, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY,
-};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -32,8 +34,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, TerminateProcess,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 
 /// Права на pipe службы: SYSTEM и администраторы — полный доступ, пользователи,
@@ -102,14 +104,16 @@ pub fn create_pipe(name: &str, first: bool) -> io::Result<NamedPipeServer> {
     }
 }
 
-/// Полный путь к исполняемому файлу процесса на другом конце pipe.
-pub fn pipe_client_image(pipe: &NamedPipeServer) -> io::Result<PathBuf> {
+/// Исполняемый файл и пользователь процесса на другом конце pipe. Оба читаются
+/// через один handle процесса: пока клиент держит pipe, номер не сменит владельца.
+pub fn pipe_client(pipe: &NamedPipeServer) -> io::Result<(PathBuf, User)> {
     let mut pid = 0u32;
     // SAFETY: handle принадлежит живому pipe, pid — валидный указатель.
     if unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle() as HANDLE, &mut pid) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    process_image(pid)
+    let process = Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    Ok((process.image()?, token::process_user(&process)?))
 }
 
 /// Открытый handle процесса; закрывается в Drop.
@@ -172,74 +176,6 @@ pub fn boot_time() -> Option<std::time::SystemTime> {
     // SAFETY: функция без аргументов, только читает счётчик.
     let uptime = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() };
     std::time::SystemTime::now().checked_sub(std::time::Duration::from_millis(uptime))
-}
-
-/// Запущен ли процесс с правами администратора (повышенный токен или SYSTEM).
-pub fn is_elevated() -> bool {
-    let mut token: HANDLE = std::ptr::null_mut();
-    // SAFETY: псевдо-handle текущего процесса закрывать не нужно; token проверяется ниже.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return false;
-    }
-    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
-    let mut len = 0u32;
-    // SAFETY: буфер — структура TOKEN_ELEVATION точного размера.
-    let ok = unsafe {
-        GetTokenInformation(
-            token,
-            TokenElevation,
-            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
-            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-            &mut len,
-        )
-    };
-    // SAFETY: закрываем открытый выше token один раз.
-    unsafe { CloseHandle(token) };
-    ok != 0 && elevation.TokenIsElevated != 0
-}
-
-/// SID учётной записи этого процесса строкой («S-1-5-18» у службы).
-fn own_sid_string() -> io::Result<String> {
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::{TokenUser, TOKEN_USER};
-    let mut token: HANDLE = std::ptr::null_mut();
-    // SAFETY: псевдо-handle текущего процесса закрывать не нужно; token проверяется ниже.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // TOKEN_USER и SID за ним; буфер выровнен по 8 байт.
-    let mut buf = vec![0u64; 64];
-    let mut len = 0u32;
-    // SAFETY: буфер на 512 байт, его размер передаётся; SID пользователя меньше.
-    let ok = unsafe {
-        GetTokenInformation(
-            token,
-            TokenUser,
-            buf.as_mut_ptr().cast(),
-            (buf.len() * 8) as u32,
-            &mut len,
-        )
-    };
-    // SAFETY: закрываем открытый выше token один раз.
-    unsafe { CloseHandle(token) };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: функция заполнила в начале буфера TOKEN_USER, Sid указывает внутрь буфера.
-    let sid = unsafe { (*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-    let mut text: *mut u16 = std::ptr::null_mut();
-    // SAFETY: sid валиден, пока жив buf; строку выделяет система, освобождаем ниже.
-    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: строка завершена нулём.
-    let len = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
-    // SAFETY: len символов строки прочитаны выше.
-    let result = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
-    // SAFETY: строка выделена ConvertSidToStringSidW через LocalAlloc, освобождается один раз.
-    unsafe { LocalFree(text.cast()) };
-    Ok(result)
 }
 
 /// Дескриптор безопасности (self-relative, байтами) для условия WFP
@@ -734,7 +670,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipe_reports_client_image() {
+    async fn pipe_reports_client_image_and_user() {
         let name = format!(r"\\.\pipe\kvt-test-{}", std::process::id());
         let server = create_pipe(&name, true).unwrap();
         // Как окно (`service_client`): чтение и запись данных, без права создать экземпляр.
@@ -744,8 +680,14 @@ mod tests {
             .open(&name)
             .unwrap();
         server.connect().await.unwrap();
-        let image = pipe_client_image(&server).unwrap();
+        let (image, user) = pipe_client(&server).unwrap();
         assert_eq!(image, std::env::current_exe().unwrap());
+        // Клиент — этот же процесс: тот же пользователь.
+        assert_eq!(user.sid, own_sid_string().unwrap());
+        assert!(user.sid.starts_with("S-1-5-"), "{}", user.sid);
+        if is_elevated() {
+            assert!(user.admin);
+        }
     }
 
     /// Обычный пользователь не может создать второй экземпляр pipe службы и

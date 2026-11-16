@@ -13,6 +13,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 #[cfg(windows)]
+mod access;
+#[cfg(windows)]
 mod audit;
 #[cfg(windows)]
 mod dirs;
