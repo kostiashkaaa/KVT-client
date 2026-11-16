@@ -62,33 +62,61 @@ fn enabled(app: &AppHandle) -> bool {
 }
 
 /// Номер версии из ответа `releases/latest` (тег `v0.9.1`).
-fn parse_latest(body: &[u8]) -> Result<String, String> {
+/// Почему не удалось узнать последнюю версию. В «О программе» — текстом.
+#[derive(Debug, thiserror::Error)]
+enum UpdateError {
+    /// Лимит `NetGovernor` к GitHub.
+    #[error(transparent)]
+    Throttled(#[from] crate::fetch::FetchError),
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("GitHub не ответил вовремя", "GitHub didn't respond in time")
+    )]
+    Timeout,
+    #[error("{}", kvt_core::i18n::tr("нет связи с GitHub", "can't reach GitHub"))]
+    Connect,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("запрос к GitHub не прошёл", "the GitHub request failed")
+    )]
+    Request,
+    #[error("{}", kvt_core::trf!("GitHub ответил ошибкой {}", "GitHub returned error {}", .0))]
+    Status(u16),
+    #[error(
+        "{}",
+        kvt_core::i18n::tr(
+            "GitHub прислал слишком большой ответ",
+            "GitHub sent too large an answer",
+        )
+    )]
+    TooLarge,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("GitHub ответил непонятно", "GitHub sent an unexpected answer")
+    )]
+    Unexpected,
+}
+
+fn parse_latest(body: &[u8]) -> Result<String, UpdateError> {
     #[derive(serde::Deserialize)]
     struct Raw {
         tag_name: String,
     }
-    let raw: Raw = serde_json::from_slice(body).map_err(|_| {
-        kvt_core::i18n::tr(
-            "GitHub ответил непонятно",
-            "GitHub sent an unexpected answer",
-        )
-    })?;
+    let raw: Raw = serde_json::from_slice(body).map_err(|_| UpdateError::Unexpected)?;
     let version = raw.tag_name.trim_start_matches('v');
     if valid_version(version) {
         Ok(version.to_owned())
     } else {
-        Err(kvt_core::i18n::tr(
-            "GitHub ответил непонятно",
-            "GitHub sent an unexpected answer",
-        )
-        .into())
+        Err(UpdateError::Unexpected)
     }
 }
 
 /// Предел ответа о последней версии.
 const MAX_ANSWER_BYTES: usize = 1024 * 1024;
 
-async fn fetch_latest(governor: &Mutex<kvt_core::governor::NetGovernor>) -> Result<String, String> {
+async fn fetch_latest(
+    governor: &Mutex<kvt_core::governor::NetGovernor>,
+) -> Result<String, UpdateError> {
     let host = netlog::host_of(API);
     crate::fetch::acquire_for(governor, &host, Purpose::Update, Duration::from_secs(30)).await?;
     let client = reqwest::Client::builder()
@@ -106,22 +134,14 @@ async fn fetch_latest(governor: &Mutex<kvt_core::governor::NetGovernor>) -> Resu
             .await
             .map_err(describe)?;
         if !resp.status().is_success() {
-            return Err(kvt_core::trf!(
-                "GitHub ответил ошибкой {}",
-                "GitHub returned error {}",
-                resp.status().as_u16()
-            ));
+            return Err(UpdateError::Status(resp.status().as_u16()));
         }
         // Ответ о последнем релизе — десятки КБ; больше предела — не он.
         let mut resp = resp;
         let mut body = Vec::new();
         while let Some(chunk) = resp.chunk().await.map_err(describe)? {
             if body.len() + chunk.len() > MAX_ANSWER_BYTES {
-                return Err(kvt_core::i18n::tr(
-                    "GitHub прислал слишком большой ответ",
-                    "GitHub sent too large an answer",
-                )
-                .into());
+                return Err(UpdateError::TooLarge);
             }
             body.extend_from_slice(&chunk);
         }
@@ -141,23 +161,22 @@ async fn fetch_latest(governor: &Mutex<kvt_core::governor::NetGovernor>) -> Resu
             },
         )
         .ms(start.elapsed())
-        .detail(body.as_ref().err().map_or(
-            kvt_core::i18n::tr("версия KVT", "KVT version"),
-            String::as_str,
-        )),
+        .detail(match &body {
+            Err(e) => e.to_string(),
+            Ok(_) => kvt_core::i18n::tr("версия KVT", "KVT version").to_owned(),
+        }),
     );
     parse_latest(&body?)
 }
 
 /// Ошибка запроса — по-русски, без адреса (он и так известен).
-fn describe(e: reqwest::Error) -> String {
-    use kvt_core::i18n::tr;
+fn describe(e: reqwest::Error) -> UpdateError {
     if e.is_timeout() {
-        tr("GitHub не ответил вовремя", "GitHub didn't respond in time").into()
+        UpdateError::Timeout
     } else if e.is_connect() {
-        tr("нет связи с GitHub", "can't reach GitHub").into()
+        UpdateError::Connect
     } else {
-        tr("запрос к GitHub не прошёл", "the GitHub request failed").into()
+        UpdateError::Request
     }
 }
 
@@ -175,7 +194,7 @@ async fn check(app: &AppHandle) -> UpdateStatus {
         available: result.as_ref().is_ok_and(|v| newer(v, CURRENT)),
         latest: result.as_ref().ok().cloned(),
         checked_at: Some(now_ms()),
-        error: result.err(),
+        error: result.err().map(|e| e.to_string()),
     };
     let fresh = with_cache(|c| {
         c.status = status.clone();

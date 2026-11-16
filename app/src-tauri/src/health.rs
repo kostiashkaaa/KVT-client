@@ -26,7 +26,16 @@ pub fn client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
-pub async fn check(client: &reqwest::Client) -> Result<Trace, String> {
+/// Проверка туннеля не прошла: сеть (текст от `errors::net`) или код ответа.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum HealthError {
+    #[error("{0}")]
+    Net(String),
+    #[error("HTTP {0}")]
+    Status(u16),
+}
+
+pub async fn check(client: &reqwest::Client) -> Result<Trace, HealthError> {
     use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
     let start = Instant::now();
     let result = check_inner(client, start).await;
@@ -44,22 +53,25 @@ pub async fn check(client: &reqwest::Client) -> Result<Trace, String> {
     )
     .ms(start.elapsed());
     if let Err(e) = &result {
-        event = event.detail(e);
+        event = event.detail(e.to_string());
     }
     netlog::record(event);
     result
 }
 
-async fn check_inner(client: &reqwest::Client, start: Instant) -> Result<Trace, String> {
+async fn check_inner(client: &reqwest::Client, start: Instant) -> Result<Trace, HealthError> {
     let response = client
         .get(HEALTH_URL)
         .send()
         .await
-        .map_err(|e| crate::errors::net(&e))?;
+        .map_err(|e| HealthError::Net(crate::errors::net(&e)))?;
     if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status().as_u16()));
+        return Err(HealthError::Status(response.status().as_u16()));
     }
-    let body = response.text().await.map_err(|e| crate::errors::net(&e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| HealthError::Net(crate::errors::net(&e)))?;
     Ok(Trace {
         country: country(&body),
         ms: start.elapsed().as_millis() as u64,

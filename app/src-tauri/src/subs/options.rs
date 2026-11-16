@@ -20,31 +20,52 @@ pub struct OptionsInput {
 pub(super) const MAX_USER_AGENT: usize = 200;
 pub(super) const MAX_HWID: usize = 128;
 
-pub(super) fn parse_options(input: OptionsInput) -> Result<(SubOptions, OwnHwid), String> {
-    let filter = NameFilter::parse(&input.keep, &input.drop)?;
+/// Что не так в «Расширенных» подписки. Окну — текстом (`From`).
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub(super) enum OptionsError {
+    /// Фильтр названий не разобран (`NameFilter::parse`).
+    #[error("{0}")]
+    Filter(String),
+    #[error("{}", kvt_core::i18n::tr(
+        "User-Agent пустой, длиннее 200 символов или не латиницей — проверьте строку.",
+        "The User-Agent is empty, longer than 200 characters or not in Latin script — check it.",
+    ))]
+    UserAgent,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr("Такого клиента KVT не знает.", "KVT doesn't know this client.")
+    )]
+    UnknownClient,
+    #[error("{}", kvt_core::i18n::tr(
+        "ID устройства длиннее 128 символов или не латиницей — скопируйте его у провайдера целиком.",
+        "The device ID is longer than 128 characters or not in Latin script — copy it from your provider in full.",
+    ))]
+    Hwid,
+}
+
+impl From<OptionsError> for String {
+    fn from(e: OptionsError) -> Self {
+        e.to_string()
+    }
+}
+
+pub(super) fn parse_options(input: OptionsInput) -> Result<(SubOptions, OwnHwid), OptionsError> {
+    let filter = NameFilter::parse(&input.keep, &input.drop).map_err(OptionsError::Filter)?;
     let custom = input.client.as_deref() == Some(fetch::CUSTOM);
     let user_agent = if custom {
-        Some(header_value(&input.user_agent, MAX_USER_AGENT).ok_or(
-            kvt_core::i18n::tr("User-Agent пустой, длиннее 200 символов или не латиницей — проверьте строку.", "The User-Agent is empty, longer than 200 characters or not in Latin script — check it."),
-        )?)
+        Some(header_value(&input.user_agent, MAX_USER_AGENT).ok_or(OptionsError::UserAgent)?)
     } else {
         None
     };
     if let Some(c) = input.client.as_deref() {
         if !custom && !fetch::PROFILES.contains(&c) {
-            return Err(kvt_core::i18n::tr(
-                "Такого клиента KVT не знает.",
-                "KVT doesn't know this client.",
-            )
-            .into());
+            return Err(OptionsError::UnknownClient);
         }
     }
     let own = match input.own_hwid.as_deref().map(str::trim) {
         None => OwnHwid::Keep,
         Some("") => OwnHwid::Clear,
-        Some(raw) => OwnHwid::Set(header_value(raw, MAX_HWID).ok_or(
-            kvt_core::i18n::tr("ID устройства длиннее 128 символов или не латиницей — скопируйте его у провайдера целиком.", "The device ID is longer than 128 characters or not in Latin script — copy it from your provider in full."),
-        )?),
+        Some(raw) => OwnHwid::Set(header_value(raw, MAX_HWID).ok_or(OptionsError::Hwid)?),
     };
     Ok((
         SubOptions {

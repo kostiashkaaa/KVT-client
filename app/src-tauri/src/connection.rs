@@ -308,7 +308,7 @@ pub(crate) async fn wait_for_service() -> Result<ServiceStatus, ConnectionError>
             match tauri::async_runtime::spawn_blocking(about::start_blocking).await {
                 Ok(Ok(())) => tracing::info!("служба KVT запущена из приложения"),
                 // Не установлена или отключена — ждать бесполезно.
-                Ok(Err(message)) => return Err(ConnectionError::ServiceStart(message)),
+                Ok(Err(e)) => return Err(e.into()),
                 Err(_) => {}
             }
         }

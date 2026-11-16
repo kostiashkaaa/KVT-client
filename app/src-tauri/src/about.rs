@@ -71,10 +71,76 @@ pub fn open_link(target: String) -> Result<(), String> {
             .into_owned(),
         _ => return Err(crate::errors::state_text().into()),
     };
-    shell_open(&what)
+    Ok(shell_open(&what)?)
 }
 
-pub(crate) fn shell_open(what: &str) -> Result<(), String> {
+/// Windows не открыла ссылку (`ShellExecute`).
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{}",
+    kvt_core::i18n::tr(
+        "Не удалось открыть — скопируйте адрес вручную.",
+        "Couldn't open — copy the address manually.",
+    )
+)]
+pub(crate) struct ShellError;
+
+impl From<ShellError> for String {
+    fn from(e: ShellError) -> Self {
+        e.to_string()
+    }
+}
+
+/// Почему Windows не запустила службу KVT.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum StartError {
+    #[error(
+        "{}",
+        kvt_core::i18n::tr(
+            "Не удалось обратиться к службам Windows.",
+            "Couldn't access Windows services.",
+        )
+    )]
+    NoManager,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr(
+            "Служба KVT не установлена. Переустановите KVT — установщик зарегистрирует её.",
+            "The KVT service isn't installed. Reinstall KVT — the installer will register it.",
+        )
+    )]
+    NotInstalled,
+    #[error("{}", kvt_core::i18n::tr(
+        "Служба KVT отключена в «Службах» Windows. Включите для неё тип запуска «Автоматически» или переустановите KVT.",
+        "The KVT service is disabled in Windows Services. Set its startup type to “Automatic” or reinstall KVT.",
+    ))]
+    Disabled,
+    #[error(
+        "{}",
+        kvt_core::i18n::tr(
+            "Нет прав запустить службу. Переустановите KVT — установщик выдаст их.",
+            "No permission to start the service. Reinstall KVT — the installer will grant it.",
+        )
+    )]
+    AccessDenied,
+    /// Другой код `StartService` (он — в журнале).
+    #[error(
+        "{}",
+        kvt_core::i18n::tr(
+            "Служба KVT не запустилась. Сохраните диагностику в разделе «Проверка».",
+            "The KVT service didn't start. Save diagnostics in the “Check” section.",
+        )
+    )]
+    Failed,
+}
+
+impl From<StartError> for String {
+    fn from(e: StartError) -> Self {
+        e.to_string()
+    }
+}
+
+pub(crate) fn shell_open(what: &str) -> Result<(), ShellError> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
@@ -94,11 +160,7 @@ pub(crate) fn shell_open(what: &str) -> Result<(), String> {
     if result as usize > 32 {
         Ok(())
     } else {
-        Err(kvt_core::i18n::tr(
-            "Не удалось открыть — скопируйте адрес вручную.",
-            "Couldn't open — copy the address manually.",
-        )
-        .into())
+        Err(ShellError)
     }
 }
 
@@ -122,7 +184,7 @@ pub async fn start_service(app: tauri::AppHandle) -> Result<(), String> {
     .into())
 }
 
-pub(crate) fn start_blocking() -> Result<(), String> {
+pub(crate) fn start_blocking() -> Result<(), StartError> {
     use windows_sys::Win32::Foundation::{
         GetLastError, ERROR_ACCESS_DENIED, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DISABLED,
         ERROR_SERVICE_DOES_NOT_EXIST,
@@ -136,11 +198,7 @@ pub(crate) fn start_blocking() -> Result<(), String> {
     unsafe {
         let manager = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
         if manager.is_null() {
-            return Err(kvt_core::i18n::tr(
-                "Не удалось обратиться к службам Windows.",
-                "Couldn't access Windows services.",
-            )
-            .into());
+            return Err(StartError::NoManager);
         }
         let service = OpenServiceW(manager, name.as_ptr(), SERVICE_START);
         let started = !service.is_null() && StartServiceW(service, 0, std::ptr::null()) != 0;
@@ -151,21 +209,13 @@ pub(crate) fn start_blocking() -> Result<(), String> {
         CloseServiceHandle(manager);
         match result {
             Ok(()) | Err(ERROR_SERVICE_ALREADY_RUNNING) => Ok(()),
-            Err(ERROR_SERVICE_DOES_NOT_EXIST) => Err(
-                kvt_core::i18n::tr("Служба KVT не установлена. Переустановите KVT — установщик зарегистрирует её.", "The KVT service isn't installed. Reinstall KVT — the installer will register it.")
-                    .into(),
-            ),
-            Err(ERROR_SERVICE_DISABLED) => Err(
-                kvt_core::i18n::tr("Служба KVT отключена в «Службах» Windows. Включите для неё тип запуска «Автоматически» или переустановите KVT.", "The KVT service is disabled in Windows Services. Set its startup type to “Automatic” or reinstall KVT.")
-                    .into(),
-            ),
-            Err(ERROR_ACCESS_DENIED) => Err(
-                kvt_core::i18n::tr("Нет прав запустить службу. Переустановите KVT — установщик выдаст их.", "No permission to start the service. Reinstall KVT — the installer will grant it.").into(),
-            ),
-            Err(code) => Err(crate::errors::logged(
-                kvt_core::i18n::tr("Служба KVT не запустилась. Сохраните диагностику в разделе «Проверка».", "The KVT service didn't start. Save diagnostics in the “Check” section."),
-                format!("StartService: {code}"),
-            )),
+            Err(ERROR_SERVICE_DOES_NOT_EXIST) => Err(StartError::NotInstalled),
+            Err(ERROR_SERVICE_DISABLED) => Err(StartError::Disabled),
+            Err(ERROR_ACCESS_DENIED) => Err(StartError::AccessDenied),
+            Err(code) => {
+                tracing::warn!(code, "служба KVT не запустилась (StartService)");
+                Err(StartError::Failed)
+            }
         }
     }
 }

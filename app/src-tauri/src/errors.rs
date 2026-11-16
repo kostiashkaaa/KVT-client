@@ -2,7 +2,6 @@
 //! исходный технический текст (на английском, с кодами) уходит в журнал.
 
 use kvt_core::i18n::tr;
-use std::fmt::Display;
 
 /// Замок состояния отравлен — значит, раньше в программе была паника (она уже в журнале).
 pub fn state_text() -> &'static str {
@@ -78,11 +77,4 @@ pub fn net(e: &reqwest::Error) -> String {
     } else {
         tr("ошибка сети", "network error").into()
     }
-}
-
-/// Записать в журнал и вернуть текст для пользователя.
-pub fn logged(user_text: impl Into<String>, detail: impl Display) -> String {
-    let text = user_text.into();
-    tracing::warn!(%detail, "{text}");
-    text
 }

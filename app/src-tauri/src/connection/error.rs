@@ -56,8 +56,8 @@ pub enum ConnectionError {
     )]
     NoData,
     /// Служба не установлена или отключена: Windows не запустила её (`about::start_blocking`).
-    #[error("{0}")]
-    ServiceStart(String),
+    #[error(transparent)]
+    ServiceStart(#[from] crate::about::StartError),
 }
 
 impl ConnectionError {

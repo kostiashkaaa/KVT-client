@@ -217,7 +217,7 @@ pub fn open_subscription_link(
             "The provider didn't specify such a link.",
         ))?
     };
-    crate::about::shell_open(&url)
+    Ok(crate::about::shell_open(&url)?)
 }
 
 /// «Обновить все» во вкладке «Подписки». Возвращает, сколько не обновилось: причины

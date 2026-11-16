@@ -48,6 +48,9 @@ pub enum SubsError {
         )
     )]
     NoLink,
+    /// Папка данных приложения не найдена (Tauri); текст — от системы.
+    #[error("{0}")]
+    DataDir(String),
     /// Выбор (сервер) не сохранился.
     #[error(transparent)]
     Settings(#[from] crate::settings::SettingsError),

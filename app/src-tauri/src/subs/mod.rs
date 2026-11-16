@@ -48,8 +48,11 @@ fn lock_err<T>(_: T) -> SubsError {
     SubsError::State
 }
 
-pub fn load(app: &AppHandle) -> Result<Store, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+pub fn load(app: &AppHandle) -> Result<Store, SubsError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| SubsError::DataDir(e.to_string()))?;
     Ok(Store::load(dir.join(STORE_FILE)))
 }
 

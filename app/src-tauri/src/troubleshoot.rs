@@ -688,7 +688,11 @@ async fn gather(state: &AppState) -> Facts {
         Some(QuickResult::Unreachable | QuickResult::DnsFailed)
     );
     if connected {
-        f.tunnel = Some(health::check(&state.health).await);
+        f.tunnel = Some(
+            health::check(&state.health)
+                .await
+                .map_err(|e| e.to_string()),
+        );
         if matches!(f.tunnel, Some(Err(_))) {
             f.captive = watchdog::captive().await == kvt_core::ipc::Captive::Portal;
         }
