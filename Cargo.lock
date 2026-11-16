@@ -2085,6 +2085,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-single-instance",
  "tauri-winrt-notification",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-native-tls",
  "tracing",

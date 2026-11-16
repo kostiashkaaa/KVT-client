@@ -21,6 +21,7 @@ base64.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+thiserror.workspace = true
 # Архив экспорта диагностики.
 zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 tauri = { version = "2", features = ["tray-icon"] }

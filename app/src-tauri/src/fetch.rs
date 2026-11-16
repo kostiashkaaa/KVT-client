@@ -2,11 +2,13 @@
 //! попадает ни в тексты ошибок, ни в логи.
 
 use kvt_core::governor::{Decision, NetGovernor};
+use kvt_core::i18n::tr;
 use kvt_core::netlog::{self, Origin, Purpose, Route};
 use kvt_core::parser::parse_subscription_body;
 use kvt_core::subscription::{
     hwid_signal, parse_headers, HwidSignal, SubscriptionMeta, Validators, MAX_BODY_BYTES,
 };
+use kvt_core::trf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -78,61 +80,144 @@ enum Reply {
     HwidRequired,
 }
 
-fn hwid_required() -> &'static str {
-    kvt_core::i18n::tr(
+/// Почему подписка не загрузилась. Текст для пользователя — в `Display`, без ссылки:
+/// в ней токен подписки. На границе с окном превращается в строку (`From`).
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum FetchError {
+    /// Ссылка «добавить в приложение» без адреса подписки (текст из `kvt-core`).
+    #[error("{0}")]
+    AppLink(&'static str),
+    #[error(
+        "{}",
+        tr("Ссылка на подписку повреждена", "The subscription link is broken")
+    )]
+    BrokenLink,
+    #[error(
+        "{}",
+        tr(
+            "Подписка загружается только по https",
+            "Subscriptions load over https only"
+        )
+    )]
+    NotHttps,
+    #[error(
+        "{}",
+        tr("В ссылке нет адреса сервера", "The link has no server address")
+    )]
+    NoHost,
+    /// Лимит `NetGovernor` к серверу подписки: секунды до повтора.
+    #[error("{}", trf!(
+        "Слишком частые запросы к серверу подписки — повторите через {} с",
+        "Too many requests to the subscription server — try again in {} s",
+        .0
+    ))]
+    TooFrequent(u64),
+    /// То же для других запросов окна (обновления, прокси Telegram).
+    #[error("{}", trf!(
+        "Слишком частые запросы к этому серверу — повторите через {} с",
+        "Too many requests to this server — try again in {} s",
+        .0
+    ))]
+    TooFrequentHost(u64),
+    /// Признак ТСПУ: соединения к SNI замерли, `NetGovernor` держит паузу.
+    #[error("{}", trf!(
+        "Провайдер интернета притормозил соединения с этим сервером — подождите {} с",
+        "Your ISP stalled connections to this server — wait {} s",
+        .0
+    ))]
+    Frozen(u64),
+    #[error("{}", tr(
         "Провайдер ограничивает число устройств и ждёт ID устройства — разрешите его в «Расширенных» у подписки",
         "The provider limits devices and expects a device ID — allow it in the subscription's “Advanced”",
-    )
-}
-
-fn hwid_rejected() -> &'static str {
-    kvt_core::i18n::tr(
-        "Провайдер не принял ID устройства — проверьте ID в «Расширенных» у подписки",
-        "The provider rejected the device ID — check the ID in the subscription's “Advanced”",
-    )
-}
-
-fn hwid_limit() -> &'static str {
-    kvt_core::i18n::tr(
+    ))]
+    HwidRequired,
+    #[error(
+        "{}",
+        tr(
+            "Провайдер не принял ID устройства — проверьте ID в «Расширенных» у подписки",
+            "The provider rejected the device ID — check the ID in the subscription's “Advanced”",
+        )
+    )]
+    HwidRejected,
+    #[error("{}", tr(
         "У провайдера достигнут лимит устройств — удалите лишнее устройство в личном кабинете провайдера",
         "The provider's device limit is reached — remove an extra device in your provider's account",
-    )
+    ))]
+    HwidLimit,
+    #[error(
+        "{}",
+        tr(
+            "Сервер подписки не ответил вовремя",
+            "The subscription server didn't respond in time",
+        )
+    )]
+    Timeout,
+    #[error("{}", tr(
+        "Не удалось подключиться к серверу подписки — возможно, он заблокирован. Включите VPN и повторите",
+        "Couldn't connect to the subscription server — it may be blocked. Turn on the VPN and try again",
+    ))]
+    Connect,
+    #[error(
+        "{}",
+        tr(
+            "Сервер подписки перенаправляет слишком много раз",
+            "The subscription server redirects too many times",
+        )
+    )]
+    TooManyRedirects,
+    /// HTTP-код ответа.
+    #[error("{}", trf!(
+        "Сервер подписки ответил ошибкой {}",
+        "The subscription server returned error {}",
+        .0
+    ))]
+    Status(u16),
+    #[error("{}", tr("Подписка слишком большая", "The subscription is too large"))]
+    TooLarge,
+    /// Прочая ошибка reqwest — уже без адреса (`describe`).
+    #[error("{}", trf!(
+        "Не удалось загрузить подписку: {}",
+        "Couldn't load the subscription: {}",
+        .0
+    ))]
+    Request(String),
+    /// Ни один клиент из очереди не вернул ответа.
+    #[error(
+        "{}",
+        tr("Не удалось загрузить подписку", "Couldn't load the subscription")
+    )]
+    Failed,
+    /// Отравленный замок состояния (`errors::state_text`).
+    #[error("{}", crate::errors::state_text())]
+    State,
 }
 
-pub fn validate_url(raw: &str) -> Result<Url, String> {
+impl From<FetchError> for String {
+    fn from(e: FetchError) -> Self {
+        e.to_string()
+    }
+}
+
+pub fn validate_url(raw: &str) -> Result<Url, FetchError> {
     // Ссылки «добавить в Happ / INCY / v2RayTun …» — в исходный адрес подписки.
-    let unwrapped = kvt_core::subscription::unwrap_app_link(raw).map_err(str::to_owned)?;
+    let unwrapped = kvt_core::subscription::unwrap_app_link(raw).map_err(FetchError::AppLink)?;
     let raw = unwrapped.as_deref().unwrap_or(raw);
-    let url = Url::parse(raw.trim()).map_err(|_| {
-        kvt_core::i18n::tr(
-            "Ссылка на подписку повреждена",
-            "The subscription link is broken",
-        )
-        .to_string()
-    })?;
+    let url = Url::parse(raw.trim()).map_err(|_| FetchError::BrokenLink)?;
     if url.scheme() != "https" {
-        return Err(kvt_core::i18n::tr(
-            "Подписка загружается только по https",
-            "Subscriptions load over https only",
-        )
-        .into());
+        return Err(FetchError::NotHttps);
     }
     if url.host_str().is_none() {
-        return Err(kvt_core::i18n::tr(
-            "В ссылке нет адреса сервера",
-            "The link has no server address",
-        )
-        .into());
+        return Err(FetchError::NoHost);
     }
     Ok(url)
 }
 
 /// Проверка лимитов NetGovernor до сетевого запроса.
-pub fn acquire(governor: &Mutex<NetGovernor>, host: &str) -> Result<(), String> {
+pub fn acquire(governor: &Mutex<NetGovernor>, host: &str) -> Result<(), FetchError> {
     let now = Instant::now();
     let decision = governor
         .lock()
-        .map_err(crate::errors::state)?
+        .map_err(|_| FetchError::State)?
         .try_acquire(host, now);
     settle(host, Purpose::Subscription, decision, now)
 }
@@ -144,7 +229,7 @@ pub async fn acquire_patiently(
     governor: &Mutex<NetGovernor>,
     host: &str,
     max_wait: Duration,
-) -> Result<(), String> {
+) -> Result<(), FetchError> {
     acquire_for(governor, host, Purpose::Subscription, max_wait).await
 }
 
@@ -155,7 +240,7 @@ pub async fn acquire_for(
     host: &str,
     purpose: Purpose,
     max_wait: Duration,
-) -> Result<(), String> {
+) -> Result<(), FetchError> {
     // Часы tokio: в тестах время виртуальное и проходит без настоящего ожидания.
     let clock = || tokio::time::Instant::now().into_std();
     let deadline = clock() + max_wait;
@@ -163,7 +248,7 @@ pub async fn acquire_for(
         let now = clock();
         let decision = governor
             .lock()
-            .map_err(crate::errors::state)?
+            .map_err(|_| FetchError::State)?
             .try_acquire(host, now);
         match decision {
             Decision::RetryAt(at) if at <= deadline => {
@@ -174,39 +259,36 @@ pub async fn acquire_for(
     }
 }
 
-fn settle(host: &str, purpose: Purpose, decision: Decision, now: Instant) -> Result<(), String> {
+fn settle(
+    host: &str,
+    purpose: Purpose,
+    decision: Decision,
+    now: Instant,
+) -> Result<(), FetchError> {
     netlog::record_hold(Origin::App, purpose, host, Route::Direct, &decision);
+    let secs = |at: Instant| at.saturating_duration_since(now).as_secs().max(1);
     match decision {
         Decision::Allowed => Ok(()),
-        Decision::RetryAt(at) if purpose == Purpose::Subscription => Err(kvt_core::trf!(
-            "Слишком частые запросы к серверу подписки — повторите через {} с",
-            "Too many requests to the subscription server — try again in {} s",
-            at.saturating_duration_since(now).as_secs().max(1)
-        )),
-        Decision::RetryAt(at) => Err(kvt_core::trf!(
-            "Слишком частые запросы к этому серверу — повторите через {} с",
-            "Too many requests to this server — try again in {} s",
-            at.saturating_duration_since(now).as_secs().max(1)
-        )),
-        Decision::Frozen { until } => Err(kvt_core::trf!(
-            "Провайдер интернета притормозил соединения с этим сервером — подождите {} с",
-            "Your ISP stalled connections to this server — wait {} s",
-            until.saturating_duration_since(now).as_secs().max(1)
-        )),
+        Decision::RetryAt(at) if purpose == Purpose::Subscription => {
+            Err(FetchError::TooFrequent(secs(at)))
+        }
+        Decision::RetryAt(at) => Err(FetchError::TooFrequentHost(secs(at))),
+        Decision::Frozen { until } => Err(FetchError::Frozen(secs(until))),
     }
 }
 
 /// Новая подписка: условного запроса нет, ответ всегда с телом.
-pub async fn fetch(url: &Url, hints: &Hints<'_>) -> Result<Fetched, String> {
+pub async fn fetch(url: &Url, hints: &Hints<'_>) -> Result<Fetched, FetchError> {
     match load(url, hints).await? {
         Loaded::Fresh(fetched) => Ok(fetched),
-        Loaded::NotModified(_) => Err(crate::errors::unexpected().into()),
+        // Без меток версии 304 не принимается (`fetch_as`), так что сюда не попасть.
+        Loaded::NotModified(_) => Err(FetchError::Failed),
     }
 }
 
 /// Обновление подписки: начинаем с клиента, который сработал в прошлый раз, и при
 /// метках версии спрашиваем «изменилась ли».
-pub async fn load(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
+pub async fn load(url: &Url, hints: &Hints<'_>) -> Result<Loaded, FetchError> {
     let start = Instant::now();
     let result = fetch_inner(url, hints).await;
     let outcome = if result.is_ok() {
@@ -223,7 +305,7 @@ pub async fn load(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
     )
     .ms(start.elapsed());
     match &result {
-        Err(e) => event = event.detail(e),
+        Err(e) => event = event.detail(e.to_string()),
         Ok(Loaded::NotModified(_)) => {
             event = event.detail(kvt_core::i18n::tr("не изменилась", "not changed"))
         }
@@ -294,7 +376,7 @@ const MAX_REDIRECTS: usize = 3;
 /// одному соединению (keep-alive), а не открывают новое TLS-рукопожатие к тому же
 /// SNI на каждую попытку — разрешение NetGovernor у загрузки одно. Перенаправления
 /// — вручную (`fetch_as`): ID устройства не должен уйти на чужой хост.
-fn client() -> Result<reqwest::Client, String> {
+fn client() -> Result<reqwest::Client, FetchError> {
     reqwest::Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
@@ -304,7 +386,7 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(describe)
 }
 
-async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
+async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, FetchError> {
     let client = client()?;
     let mut first_error = None;
     let mut hwid = match hints.hwid {
@@ -325,11 +407,10 @@ async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
             // Другой клиент тут не поможет.
             Ok(Reply::HwidRequired) => {
                 return Err(if hwid.is_some() {
-                    hwid_rejected()
+                    FetchError::HwidRejected
                 } else {
-                    hwid_required()
-                }
-                .into())
+                    FetchError::HwidRequired
+                })
             }
             Ok(Reply::Body {
                 meta,
@@ -356,13 +437,7 @@ async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, String> {
     }
     // Ни один вариант не дал серверов: вернуть первое, что было (ошибку или ответ —
     // тогда «не нашлось серверов» скажет проверка подписки).
-    first_error.unwrap_or_else(|| {
-        Err(kvt_core::i18n::tr(
-            "Не удалось загрузить подписку",
-            "Couldn't load the subscription",
-        )
-        .into())
-    })
+    first_error.unwrap_or(Err(FetchError::Failed))
 }
 
 /// Хост и порт совпадают (схема у подписок — только https).
@@ -376,7 +451,7 @@ async fn fetch_as(
     agent: &str,
     conditional: Option<&Validators>,
     hwid: Option<&str>,
-) -> Result<Reply, String> {
+) -> Result<Reply, FetchError> {
     let mut target = url.clone();
     let mut send_hwid = hwid;
     let mut answer = None;
@@ -418,11 +493,7 @@ async fn fetch_as(
         target = next;
     }
     let Some(mut resp) = answer else {
-        return Err(kvt_core::i18n::tr(
-            "Сервер подписки перенаправляет слишком много раз",
-            "The subscription server redirects too many times",
-        )
-        .into());
+        return Err(FetchError::TooManyRedirects);
     };
     let headers: Vec<(String, String)> = resp
         .headers()
@@ -435,7 +506,7 @@ async fn fetch_as(
         .collect();
     let pairs = || headers.iter().map(|(k, v)| (k.as_str(), v.as_str()));
     match hwid_signal(pairs()) {
-        Some(HwidSignal::LimitReached) => return Err(hwid_limit().into()),
+        Some(HwidSignal::LimitReached) => return Err(FetchError::HwidLimit),
         Some(HwidSignal::Required) if hwid.is_none() => return Ok(Reply::HwidRequired),
         _ => {}
     }
@@ -445,31 +516,19 @@ async fn fetch_as(
         return Ok(Reply::NotModified(meta));
     }
     if !resp.status().is_success() {
-        return Err(kvt_core::trf!(
-            "Сервер подписки ответил ошибкой {}",
-            "The subscription server returned error {}",
-            resp.status().as_u16()
-        ));
+        return Err(FetchError::Status(resp.status().as_u16()));
     }
     if resp
         .content_length()
         .is_some_and(|len| len > MAX_BODY_BYTES as u64)
     {
-        return Err(kvt_core::i18n::tr(
-            "Подписка слишком большая",
-            "The subscription is too large",
-        )
-        .into());
+        return Err(FetchError::TooLarge);
     }
 
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(describe)? {
         if body.len() + chunk.len() > MAX_BODY_BYTES {
-            return Err(kvt_core::i18n::tr(
-                "Подписка слишком большая",
-                "The subscription is too large",
-            )
-            .into());
+            return Err(FetchError::TooLarge);
         }
         body.extend_from_slice(&chunk);
     }
@@ -480,33 +539,17 @@ async fn fetch_as(
     })
 }
 
-/// Человеческое описание ошибки без URL (в нём токен подписки).
-fn describe(e: reqwest::Error) -> String {
+/// Ошибка reqwest без URL (в нём токен подписки).
+fn describe(e: reqwest::Error) -> FetchError {
     let e = e.without_url();
-    use kvt_core::i18n::tr;
     if e.is_timeout() {
-        tr(
-            "Сервер подписки не ответил вовремя",
-            "The subscription server didn't respond in time",
-        )
-        .into()
+        FetchError::Timeout
     } else if e.is_connect() {
-        tr(
-            "Не удалось подключиться к серверу подписки — возможно, он заблокирован. Включите VPN и повторите",
-            "Couldn't connect to the subscription server — it may be blocked. Turn on the VPN and try again",
-        )
-        .into()
+        FetchError::Connect
     } else if e.is_redirect() {
-        tr(
-            "Сервер подписки перенаправляет слишком много раз",
-            "The subscription server redirects too many times",
-        )
-        .into()
+        FetchError::TooManyRedirects
     } else {
-        kvt_core::trf!(
-            "Не удалось загрузить подписку: {e}",
-            "Couldn't load the subscription: {e}"
-        )
+        FetchError::Request(e.to_string())
     }
 }
 
@@ -590,14 +633,22 @@ mod tests {
     #[test]
     fn only_https_is_accepted() {
         assert!(validate_url("https://sub.example.com/abc").is_ok());
-        assert!(validate_url("http://sub.example.com/abc").is_err());
-        assert!(validate_url("vless://x@y:1").is_err());
+        assert_eq!(
+            validate_url("http://sub.example.com/abc"),
+            Err(FetchError::NotHttps)
+        );
+        assert_eq!(validate_url("vless://x@y:1"), Err(FetchError::NotHttps));
+        assert_eq!(validate_url("https://"), Err(FetchError::BrokenLink));
+        assert_eq!(validate_url("not a link"), Err(FetchError::BrokenLink));
     }
 
     #[test]
     fn errors_do_not_contain_token() {
         let err = validate_url("http://sub.example.com/SECRET-TOKEN").unwrap_err();
-        assert!(!err.contains("SECRET"));
+        assert!(!err.to_string().contains("SECRET"));
+        // Прочая ошибка reqwest — без адреса (`describe` снимает URL).
+        let text = String::from(FetchError::Request("connection closed".into()));
+        assert!(text.contains("connection closed"), "{text}");
     }
 
     #[tokio::test(start_paused = true)]
@@ -611,20 +662,32 @@ mod tests {
                 .is_ok()
         );
         // Третий запрос в минуту — ждать почти минуту, а разрешено 5 с: отказ.
-        assert!(
-            acquire_patiently(&g, "sub.example.com", Duration::from_secs(5))
-                .await
-                .unwrap_err()
-                .contains("повторите")
-        );
+        assert!(matches!(
+            acquire_patiently(&g, "sub.example.com", Duration::from_secs(5)).await,
+            Err(FetchError::TooFrequent(_))
+        ));
     }
 
     #[test]
     fn second_immediate_fetch_is_throttled() {
         let g = Mutex::new(NetGovernor::new(NetPolicy::default()));
         assert!(acquire(&g, "sub.example.com").is_ok());
-        assert!(acquire(&g, "sub.example.com")
-            .unwrap_err()
-            .contains("повторите"));
+        assert!(matches!(
+            acquire(&g, "sub.example.com"),
+            Err(FetchError::TooFrequent(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn other_requests_get_their_own_limit_text() {
+        let g = Mutex::new(NetGovernor::new(NetPolicy::default()));
+        let wait = Duration::ZERO;
+        assert!(acquire_for(&g, "api.github.com", Purpose::Update, wait)
+            .await
+            .is_ok());
+        assert!(matches!(
+            acquire_for(&g, "api.github.com", Purpose::Update, wait).await,
+            Err(FetchError::TooFrequentHost(secs)) if secs >= 1
+        ));
     }
 }
