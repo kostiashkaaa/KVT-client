@@ -66,21 +66,20 @@ pub async fn spawn_supervised(
     what: &str,
     watch: Option<(CoreKind, Issues)>,
     ready: impl Fn() -> bool,
-) -> Result<(Child, Job), String> {
+) -> Result<(Child, Job), ProcessError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
         .kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|e| {
-        kvt_core::trf!(
-            "не удалось запустить {what}: {e}",
-            "couldn't start {what}: {e}"
-        )
+    let mut child = cmd.spawn().map_err(|e| ProcessError::Spawn {
+        what: what.to_owned(),
+        cause: e.to_string(),
     })?;
-    let job = Job::kill_on_close().map_err(|e| format!("job: {e}"))?;
+    let job = Job::kill_on_close().map_err(|e| ProcessError::Job(e.to_string()))?;
     if let Some(handle) = child.raw_handle() {
-        job.assign(handle).map_err(|e| format!("job: {e}"))?;
+        job.assign(handle)
+            .map_err(|e| ProcessError::Job(e.to_string()))?;
     }
     if let Some(out) = child.stdout.take() {
         tokio::spawn(collect(out, Arc::clone(log), watch.clone()));
@@ -113,12 +112,11 @@ pub async fn spawn_supervised(
                 .collect::<Vec<_>>()
                 .join(" | ")
         });
-        return Err(kvt_core::trf!(
-            "{what} завершился сразу после запуска ({}): {}",
-            "{what} exited right after starting ({}): {}",
-            status.map(|s| s.to_string()).unwrap_or_default(),
-            last.unwrap_or_default()
-        ));
+        return Err(ProcessError::ExitedEarly {
+            what: what.to_owned(),
+            status: status.map(|s| s.to_string()).unwrap_or_default(),
+            last: last.unwrap_or_default(),
+        });
     }
     Ok((child, job))
 }
@@ -230,7 +228,7 @@ mod tests {
         let Err(err) = spawn_supervised(cmd, &log, "test", None, || false).await else {
             panic!("ожидалась ошибка")
         };
-        assert!(err.contains("bad config"), "{err}");
+        assert!(err.to_string().contains("bad config"), "{err}");
     }
 
     #[tokio::test]
@@ -271,7 +269,7 @@ mod tests {
         let Err(err) = spawn_supervised(cmd, &log, "test", None, ready).await else {
             panic!("ожидалась ошибка")
         };
-        assert!(err.contains("bad config"), "{err}");
+        assert!(err.to_string().contains("bad config"), "{err}");
     }
 
     /// Строка не в UTF-8 не обрывает чтение: следующие строки ядра по-прежнему

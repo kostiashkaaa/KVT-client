@@ -25,11 +25,13 @@ use tokio::process::{Child, Command};
 
 mod adapter;
 mod checked;
+mod error;
 mod killswitch;
 mod process;
 
 use adapter::*;
 use checked::*;
+pub use error::{ConnectError, ProcessError};
 use killswitch::*;
 pub use process::spawn_supervised;
 use process::*;
@@ -177,12 +179,12 @@ impl Supervisor {
     /// держатся, пока не встанут новые: интернет на это время закрыт, но мимо
     /// туннеля не уходит ни одного пакета. Подуровни WFP у сессий разные, поэтому
     /// два набора фильтров не конфликтуют.
-    pub async fn start(&mut self, plan: &ConnectPlan) -> Result<(), String> {
+    pub async fn start(&mut self, plan: &ConnectPlan) -> Result<(), ConnectError> {
         self.reconnected = false;
         self.connect(plan).await
     }
 
-    async fn connect(&mut self, plan: &ConnectPlan) -> Result<(), String> {
+    async fn connect(&mut self, plan: &ConnectPlan) -> Result<(), ConnectError> {
         self.last_plan = Some(plan.clone());
         let previous = if plan.kill_switch {
             self.kill_switch.take()
@@ -194,21 +196,18 @@ impl Supervisor {
             // Ядро не поднялось — zapret без него в гибриде не нужен.
             self.set_zapret(None);
         }
-        if let (Err(e), Some(previous)) = (&result, previous) {
+        if let (true, Some(previous)) = (result.is_err(), previous) {
             if self.kill_switch.is_none() {
                 // Защиту включали до переподключения — не снимаем её из-за сбоя.
                 self.kill_switch = Some(previous);
                 self.mark_kill_switch(true);
-                return Err(kvt_core::trf!(
-                    "{e}. Kill switch держит интернет закрытым — нажмите «Отключить» или подключитесь заново",
-                    "{e}. The kill switch is keeping the internet blocked — press “Disconnect” or connect again"
-                ));
+                return result.map_err(|e| ConnectError::KillSwitchKept(Box::new(e)));
             }
         }
         result
     }
 
-    async fn start_inner(&mut self, plan: &ConnectPlan) -> Result<(), String> {
+    async fn start_inner(&mut self, plan: &ConnectPlan) -> Result<(), ConnectError> {
         // Адреса имён сервера — через DoH, не DNS провайдера: их получают ядро (само
         // имя не резолвит), маскировщик журналов и (в гибриде) исключения winws.
         hide_server_addresses(&plan.server);
@@ -227,14 +226,10 @@ impl Supervisor {
         self.stop_running().await;
         remove_stale_wintun_devices().await;
         wait_adapter_removed().await;
-        plan.routing.validate().map_err(|e| e.to_string())?;
+        plan.routing.validate()?;
         if !crate::win::is_elevated() {
             tracing::error!("служба без прав администратора — TUN не создать");
-            return Err(kvt_core::i18n::tr(
-                "Службе KVT не хватает прав, чтобы создать сетевой адаптер. Переустановите KVT — служба должна работать от имени системы.",
-                "The KVT service lacks the rights to create a network adapter. Reinstall KVT — the service must run as SYSTEM.",
-            )
-            .into());
+            return Err(ConnectError::NoRightsTun);
         }
         secure_dir(&self.paths.rules)?;
         secure_dir(&self.paths.run)?;
@@ -250,8 +245,8 @@ impl Supervisor {
         let (background, force) = if complete {
             (files, false)
         } else {
-            let http =
-                NetClient::new(kvt_core::netlog::Purpose::Rules).map_err(|e| e.to_string())?;
+            let http = NetClient::new(kvt_core::netlog::Purpose::Rules)
+                .map_err(|e| ConnectError::Net(e.to_string()))?;
             let report = rulesync::sync(&http, &self.paths.rules, &files, unix_now(), false).await;
             for (file, err) in &report.failed {
                 tracing::warn!(file, err, "список не обновлён");
@@ -263,11 +258,7 @@ impl Supervisor {
                 .iter()
                 .find(|f| !self.paths.rules.join(&f.local).exists())
             {
-                return Err(kvt_core::trf!(
-                    "Не удалось загрузить список «{}» с GitHub. Проверьте интернет и подключитесь снова.",
-                    "Couldn't download the list “{}” from GitHub. Check your internet and connect again.",
-                    missing.local
-                ));
+                return Err(ConnectError::RulesMissing(missing.local.to_string()));
             }
             // Прежние версии на месте, но обновить не вышло: повторим через туннель,
             // когда он поднимется.
@@ -315,9 +306,9 @@ impl Supervisor {
                 ipv6,
                 hosts: &hosts,
             },
-        )
-        .map_err(|e| e.to_string())?;
-        let config = serde_json::to_vec(&compiled.config).map_err(|e| e.to_string())?;
+        )?;
+        let config = serde_json::to_vec(&compiled.config)
+            .map_err(|e| ConnectError::Config(e.to_string()))?;
         let fingerprint = config_fingerprint(plan.core, &config);
 
         let spec = CoreSpec::new(plan.core, &self.paths);
@@ -325,12 +316,7 @@ impl Supervisor {
         // Секреты на диске не задерживаются: файл удаляется, как только ядро его
         // прочитало (или не запустилось), — и когда запуск отменён на полпути.
         let config_file = RemoveOnDrop(config_path);
-        std::fs::write(&config_file.0, config).map_err(|e| {
-            kvt_core::trf!(
-                "не удалось записать конфиг: {e}",
-                "couldn't write the config: {e}"
-            )
-        })?;
+        std::fs::write(&config_file.0, config).map_err(|e| ConnectError::Config(e.to_string()))?;
         if let Ok(mut issues) = self.issues.lock() {
             *issues = None;
         }
@@ -357,20 +343,14 @@ impl Supervisor {
             // Как и с kill switch: не оставляем соединение, у которого DNS уходит мимо.
             self.stop_running().await;
             tracing::error!(error = %e, "DNS мимо туннеля не закрыт");
-            return Err(kvt_core::trf!(
-                "Не удалось закрыть DNS-запросы мимо VPN, поэтому подключение остановлено. Подключитесь снова; если повторится — сохраните диагностику. ({e})",
-                "Couldn't block DNS requests outside the VPN, so the connection was stopped. Connect again; if it happens again, save diagnostics. ({e})"
-            ));
+            return Err(ConnectError::DnsGuard(Box::new(e)));
         }
         if plan.kill_switch {
             if let Err(e) = self.enable_kill_switch(luid) {
                 // Защиту обещали, но включить не смогли — не оставляем «полузащищённое» соединение.
                 self.stop_running().await;
                 tracing::error!(error = %e, "kill switch не включился");
-                return Err(kvt_core::trf!(
-                    "Не удалось включить kill switch, поэтому подключение остановлено. Подключитесь снова; если повторится — выключите kill switch в настройках и сохраните диагностику. ({e})",
-                    "Couldn't turn on the kill switch, so the connection was stopped. Connect again; if it happens again, turn off the kill switch in settings and save diagnostics. ({e})"
-                ));
+                return Err(ConnectError::KillSwitch(Box::new(e)));
             }
         }
         tracing::info!(core = ?plan.core, kill_switch = plan.kill_switch, "подключено");
@@ -468,7 +448,7 @@ impl Supervisor {
 
     /// Ждёт интерфейс TUN. Он появляется не мгновенно после старта ядра: Wintun сам
     /// ждёт устройство до 15 с. Ждём дольше, но не дольше, чем живёт ядро.
-    async fn wait_tun(&mut self) -> Result<u64, String> {
+    async fn wait_tun(&mut self) -> Result<u64, ConnectError> {
         for _ in 0..200 {
             if let Some(luid) = wfp::interface_luid(TUN_INTERFACE) {
                 return Ok(luid);
@@ -479,18 +459,11 @@ impl Supervisor {
                 .is_none_or(|r| matches!(r.child.try_wait(), Ok(Some(_))));
             if exited {
                 let last = self.recent_log(1).pop().unwrap_or_default();
-                return Err(kvt_core::trf!(
-                    "VPN-ядро остановилось, не создав адаптер: {last}",
-                    "The VPN core stopped without creating an adapter: {last}"
-                ));
+                return Err(ConnectError::CoreStopped(last));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        Err(kvt_core::i18n::tr(
-            "интерфейс TUN не появился за 20 с",
-            "the TUN interface didn't appear within 20 s",
-        )
-        .into())
+        Err(ConnectError::TunTimeout)
     }
 
     async fn check_and_spawn(
@@ -498,7 +471,7 @@ impl Supervisor {
         spec: &CoreSpec,
         config: &Path,
         fingerprint: u64,
-    ) -> Result<(Child, Job), String> {
+    ) -> Result<(Child, Job), ConnectError> {
         let start = std::time::Instant::now();
         if !self.checked.contains(fingerprint) {
             let check = Command::new(&spec.exe)
@@ -507,22 +480,16 @@ impl Supervisor {
                 .creation_flags(CREATE_NO_WINDOW)
                 .output()
                 .await
-                .map_err(|e| {
-                    kvt_core::trf!(
-                        "не удалось запустить {}: {e}",
-                        "couldn't start {}: {e}",
-                        spec.exe.display()
-                    )
+                .map_err(|e| ProcessError::Spawn {
+                    what: spec.exe.display().to_string(),
+                    cause: e.to_string(),
                 })?;
             if !check.status.success() {
                 let text =
                     String::from_utf8_lossy(&[check.stdout, check.stderr].concat()).into_owned();
                 let detail = tail(&kvt_core::redact::text(&text), 3);
                 tracing::error!(%detail, "ядро отвергло конфигурацию");
-                return Err(kvt_core::trf!(
-                    "VPN-ядро не приняло настройки этого сервера — возможно, в ключе неподдерживаемые параметры. Выберите другой сервер или сохраните диагностику. ({detail})",
-                    "The VPN core rejected this server's settings — the key may have unsupported parameters. Pick another server or save diagnostics. ({detail})"
-                ));
+                return Err(ConnectError::CoreRejected(detail));
             }
             self.checked.remember(fingerprint);
         }
@@ -550,18 +517,14 @@ impl Supervisor {
                 "ядро запущено"
             );
         }
-        spawned
+        Ok(spawned?)
     }
 
     /// Только zapret, без VPN: winws на всех интерфейсах.
-    pub async fn start_zapret(&mut self, plan: &ZapretPlan) -> Result<String, String> {
+    pub async fn start_zapret(&mut self, plan: &ZapretPlan) -> Result<String, ConnectError> {
         self.stop().await;
         if !crate::win::is_elevated() {
-            return Err(kvt_core::i18n::tr(
-                "Службе KVT не хватает прав, чтобы запустить zapret. Переустановите KVT — служба должна работать от имени системы.",
-                "The KVT service lacks the rights to start zapret. Reinstall KVT — the service must run as SYSTEM.",
-            )
-            .into());
+            return Err(ConnectError::NoRightsZapret);
         }
         let winws = crate::zapret::start(
             &self.paths,

@@ -20,8 +20,8 @@ pub(super) fn clear_marker(marker: &Path) {
 impl Supervisor {
     /// Ядра и служба. Оба ядра: тестовое ядро проверки серверов бывает не тем,
     /// что подключено.
-    pub(super) fn trusted_apps(&self) -> Result<Vec<PathBuf>, String> {
-        let service = std::env::current_exe().map_err(|e| e.to_string())?;
+    pub(super) fn trusted_apps(&self) -> Result<Vec<PathBuf>, ConnectError> {
+        let service = std::env::current_exe().map_err(ConnectError::wfp)?;
         Ok(vec![
             CoreSpec::new(CoreKind::Xray, &self.paths).exe,
             CoreSpec::new(CoreKind::SingBox, &self.paths).exe,
@@ -30,10 +30,14 @@ impl Supervisor {
     }
 
     /// `block_ipv6` — TUN поднят без IPv6: IPv6 мимо туннеля тоже закрывается.
-    pub(super) fn enable_dns_guard(&mut self, luid: u64, block_ipv6: bool) -> Result<(), String> {
+    pub(super) fn enable_dns_guard(
+        &mut self,
+        luid: u64,
+        block_ipv6: bool,
+    ) -> Result<(), ConnectError> {
         let apps = self.trusted_apps()?;
         let apps: Vec<&Path> = apps.iter().map(PathBuf::as_path).collect();
-        let guard = DnsGuard::enable(&apps, luid, block_ipv6).map_err(|e| e.to_string())?;
+        let guard = DnsGuard::enable(&apps, luid, block_ipv6).map_err(ConnectError::wfp)?;
         if block_ipv6 {
             tracing::info!("TUN без IPv6: IPv6 мимо туннеля закрыт");
         }
@@ -46,13 +50,13 @@ impl Supervisor {
     /// Kill switch пропускает оба ядра, а не только подключённое: «Проверить» при VPN
     /// запускает тестовое ядро того типа, который нужен серверу, и без этого сервер на
     /// другом ядре выглядел бы мёртвым. Оба файла лежат рядом со службой.
-    pub(super) fn enable_kill_switch(&mut self, luid: u64) -> Result<(), String> {
+    pub(super) fn enable_kill_switch(&mut self, luid: u64) -> Result<(), ConnectError> {
         let apps = self.trusted_apps()?;
         let apps: Vec<&Path> = apps.iter().map(PathBuf::as_path).collect();
         // «Гибрид»: пакеты, которые winws отправляет заново, Windows приписывает ядру
         // системы — kill switch должен их пропускать (см. `wfp::KillSwitch::enable`).
         let hybrid = self.zapret.is_some();
-        let ks = KillSwitch::enable(&apps, Some(luid), hybrid).map_err(|e| e.to_string())?;
+        let ks = KillSwitch::enable(&apps, Some(luid), hybrid).map_err(ConnectError::wfp)?;
         tracing::info!("kill switch включён");
         self.kill_switch = Some(ks);
         self.mark_kill_switch(true);
@@ -98,7 +102,7 @@ impl Supervisor {
         }
         let enabled = self.trusted_apps().and_then(|apps| {
             let apps: Vec<&Path> = apps.iter().map(PathBuf::as_path).collect();
-            KillSwitch::enable(&apps, None, false).map_err(|e| e.to_string())
+            KillSwitch::enable(&apps, None, false).map_err(ConnectError::wfp)
         });
         match enabled {
             Ok(ks) => {
@@ -121,7 +125,7 @@ impl Supervisor {
     /// от пользователя) открывается выход мимо туннеля к `ips`. Адреса локальной сети
     /// и loopback kill switch и так пропускает, служебные (0.0.0.0, multicast) не
     /// нужны. Без kill switch открывать нечего.
-    pub fn open_probe(&mut self, ips: &[std::net::IpAddr]) -> Result<(), String> {
+    pub fn open_probe(&mut self, ips: &[std::net::IpAddr]) -> Result<(), ConnectError> {
         let Some(ks) = self.kill_switch.as_mut() else {
             return Ok(());
         };
@@ -131,18 +135,14 @@ impl Supervisor {
             .filter(|ip| !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast())
             .collect();
         if ks.probe_len() + ips.len() > kvt_core::ipc::MAX_PROBE_ADDRS {
-            return Err(kvt_core::i18n::tr(
-                "Слишком много адресов для проверки серверов за раз",
-                "Too many addresses to check servers at once",
-            )
-            .into());
+            return Err(ConnectError::TooManyProbeAddresses);
         }
         let cores = [
             CoreSpec::new(CoreKind::Xray, &self.paths).exe,
             CoreSpec::new(CoreKind::SingBox, &self.paths).exe,
         ];
         let cores: Vec<&Path> = cores.iter().map(PathBuf::as_path).collect();
-        ks.open_probe(&cores, &ips).map_err(|e| e.to_string())?;
+        ks.open_probe(&cores, &ips).map_err(ConnectError::wfp)?;
         self.probe_until = Some(Instant::now() + PROBE_TTL);
         tracing::info!(
             addresses = ks.probe_len(),

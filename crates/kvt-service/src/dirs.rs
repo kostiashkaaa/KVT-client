@@ -74,10 +74,23 @@ impl Secured {
 /// `secure_dir` зовут журнал, манифест и zapret, у которых своего состояния нет.
 static SECURED: std::sync::LazyLock<Secured> = std::sync::LazyLock::new(Secured::default);
 
+/// Каталог не удалось закрыть от обычных пользователей.
+#[derive(Debug, thiserror::Error)]
+#[error("{}", kvt_core::trf!(
+    "не удалось подготовить каталог {}: {}",
+    "couldn't prepare the folder {}: {}",
+    .dir.display(),
+    .cause
+))]
+pub struct DirError {
+    pub dir: PathBuf,
+    pub cause: String,
+}
+
 /// Каталог только для SYSTEM и администраторов, владелец — администраторы
 /// (`win::private_dir`). Внутри `ProgramData\KVT` сначала проверяются родители:
 /// пока родитель чужой, в нём можно подложить что угодно.
-pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
+pub(crate) fn secure_dir(dir: &Path) -> Result<(), DirError> {
     let still_dir = std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir());
     if SECURED.fresh(dir, still_dir) {
         return Ok(());
@@ -86,12 +99,9 @@ pub(crate) fn secure_dir(dir: &Path) -> Result<(), String> {
     if let Some(parent) = dir.parent().filter(|p| p.starts_with(&data)) {
         secure_dir(parent)?;
     }
-    crate::win::private_dir(dir).map_err(|e| {
-        kvt_core::trf!(
-            "не удалось подготовить каталог {}: {e}",
-            "couldn't prepare the folder {}: {e}",
-            dir.display()
-        )
+    crate::win::private_dir(dir).map_err(|e| DirError {
+        dir: dir.to_path_buf(),
+        cause: e.to_string(),
     })?;
     SECURED.remember(dir);
     Ok(())

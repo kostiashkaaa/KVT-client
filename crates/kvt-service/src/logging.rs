@@ -30,6 +30,7 @@ pub fn init_console() {
 pub fn init_service(console: bool) {
     let dir = crate::dirs::data_dir().join("logs");
     let file = match crate::dirs::secure_dir(&dir)
+        .map_err(|e| e.to_string())
         .and_then(|()| LogFile::open(dir.join("service.log")).map_err(|e| e.to_string()))
     {
         Ok(f) => Some(f),

@@ -69,7 +69,7 @@ impl NetClient {
 
     /// Разрешение NetGovernor на первое соединение с хостом `url` мимо туннеля
     /// (CLAUDE.md: лимиты на SNI против блокировок ТСПУ).
-    async fn admit(&self, url: &str) -> Result<(), String> {
+    async fn admit(&self, url: &str) -> Result<(), Throttled> {
         let host = netlog::host_of(url);
         if self.admitted.lock().is_ok_and(|h| h.contains(&host)) {
             return Ok(());
@@ -130,9 +130,27 @@ impl Http for NetClient {
     }
 }
 
+/// NetGovernor службы не пустил запрос: лимит к хосту или заморозка ТСПУ.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{}",
+    kvt_core::i18n::tr(
+        "Слишком частые запросы к серверу загрузки — повторите позже",
+        "Too many requests to the download server — try again later",
+    )
+)]
+pub struct Throttled;
+
+/// На границе с `kvt_core::rulesync::Http` (ошибки там — строки).
+impl From<Throttled> for String {
+    fn from(e: Throttled) -> Self {
+        e.to_string()
+    }
+}
+
 /// Ждёт разрешения NetGovernor службы на новое TLS-соединение с `host`: лимит —
 /// не дольше `max_wait`, заморозку не ждёт. Отказ виден в «Журнале».
-async fn governed(host: &str, purpose: Purpose, max_wait: Duration) -> Result<(), String> {
+async fn governed(host: &str, purpose: Purpose, max_wait: Duration) -> Result<(), Throttled> {
     let deadline = Instant::now() + max_wait;
     loop {
         let now = Instant::now();
@@ -147,11 +165,7 @@ async fn governed(host: &str, purpose: Purpose, max_wait: Duration) -> Result<()
             }
             other => {
                 netlog::record_hold(Origin::Service, purpose, host, Route::Direct, &other);
-                return Err(kvt_core::i18n::tr(
-                    "Слишком частые запросы к серверу загрузки — повторите позже",
-                    "Too many requests to the download server — try again later",
-                )
-                .into());
+                return Err(Throttled);
             }
         }
     }

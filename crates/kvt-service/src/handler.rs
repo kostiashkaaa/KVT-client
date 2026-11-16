@@ -192,7 +192,9 @@ pub async fn stateless(shared: &Shared, request: Request) -> Result<Response, Re
             // PowerShell и sc.exe работают секунды — не держим поток обработки.
             match tokio::task::spawn_blocking(move || crate::audit::fix(&fix)).await {
                 Ok(Ok(())) => Response::Ok,
-                Ok(Err(message)) => Response::Error { message },
+                Ok(Err(e)) => Response::Error {
+                    message: e.to_string(),
+                },
                 Err(_) => Response::Error {
                     message: kvt_core::i18n::tr(
                         "Исправление прервалось. Повторите; если не выйдет — сохраните диагностику.",
@@ -254,7 +256,9 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
         }
         Request::ProbeOpen { ips } => match state.supervisor.open_probe(&ips) {
             Ok(()) => Response::Ok,
-            Err(message) => Response::Error { message },
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
         },
         Request::ProbeClose => {
             state.supervisor.close_probe();
@@ -363,7 +367,8 @@ async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
             state.status = ServiceStatus::Connected { core: plan.core };
             state.status_response()
         }
-        Err(message) => {
+        Err(e) => {
+            let message = e.to_string();
             tracing::warn!(%message, "подключение не удалось");
             state.status = ServiceStatus::Failed {
                 reason: message.clone(),
@@ -411,7 +416,9 @@ pub async fn fetch_zapret_update(
         // Обновлять нечего — подключение не трогаем.
         Ok(Err(report)) => Err(Response::Maintenance(Box::new(report))),
         Ok(Ok(prepared)) => Ok(prepared),
-        Err(message) => Err(Response::Error { message }),
+        Err(e) => Err(Response::Error {
+            message: e.to_string(),
+        }),
     }
 }
 
@@ -448,7 +455,9 @@ pub async fn install_zapret(
     };
     match result {
         Ok(report) => Response::Maintenance(Box::new(report)),
-        Err(message) => Response::Error { message },
+        Err(e) => Response::Error {
+            message: e.to_string(),
+        },
     }
 }
 
@@ -463,7 +472,8 @@ async fn start_zapret(state: &mut State, plan: &ZapretPlan) -> Response {
             state.status = ServiceStatus::Zapret { strategy };
             state.status_response()
         }
-        Err(message) => {
+        Err(e) => {
+            let message = e.to_string();
             state.status = ServiceStatus::Failed {
                 reason: message.clone(),
                 blocked: state.supervisor.kill_switch_active(),

@@ -15,9 +15,12 @@
 //! файлы принимаются, только если их хэш KVT уже знает; иначе остаются прежние.
 
 use crate::dirs::{secure_dir, Paths};
+
+mod error;
 use crate::net::NetClient;
 use crate::supervisor::{spawn_supervised, Log};
 use crate::win::Job;
+pub use error::ZapretError;
 use kvt_core::ipc::{Conflict, DriverState, MaintenanceReport, ZapretInfo, ZapretPlan};
 use kvt_core::rulesync::{sha256_hex, Http};
 use kvt_core::zapret::{self, RenderContext, Strategy};
@@ -91,8 +94,8 @@ fn scan_strategies(bundle: &Path) -> (Vec<Strategy>, Vec<String>) {
             continue;
         };
         match std::fs::read_to_string(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|t| zapret::parse_bat(id, &t).map_err(|e| e.to_string()))
+            .map_err(ZapretError::io)
+            .and_then(|t| zapret::parse_bat(id, &t).map_err(ZapretError::io))
         {
             Ok(s) => ok.push(s),
             Err(e) => {
@@ -106,29 +109,26 @@ fn scan_strategies(bundle: &Path) -> (Vec<Strategy>, Vec<String>) {
     (ok, rejected)
 }
 
-fn verify_binaries(bin: &Path) -> Result<(), String> {
+fn verify_binaries(bin: &Path) -> Result<(), ZapretError> {
     for name in zapret::BINARIES {
         let bytes = std::fs::read(bin.join(name))
-            .map_err(|_| kvt_core::trf!("нет файла {name}", "file {name} is missing"))?;
+            .map_err(|_| ZapretError::FileMissing(name.to_string()))?;
         if !zapret::binary_known(name, &sha256_hex(&bytes)) {
-            return Err(kvt_core::trf!(
-                "файл {name} изменён",
-                "file {name} was modified"
-            ));
+            return Err(ZapretError::FileModified(name.to_string()));
         }
     }
     Ok(())
 }
 
 /// Комплект цел: программы проверены, списки на месте, есть хоть одна стратегия.
-fn check_bundle(bundle: &Path) -> Result<(Vec<Strategy>, Vec<String>), String> {
+fn check_bundle(bundle: &Path) -> Result<(Vec<Strategy>, Vec<String>), ZapretError> {
     verify_binaries(&bundle.join("bin"))?;
     if !bundle.join("lists").join("list-general.txt").exists() {
-        return Err(kvt_core::i18n::tr("нет списков", "no lists").into());
+        return Err(ZapretError::NoLists);
     }
     let (ok, rejected) = scan_strategies(bundle);
     if ok.is_empty() {
-        return Err(kvt_core::i18n::tr("нет ни одной стратегии", "no strategies").into());
+        return Err(ZapretError::NoStrategies);
     }
     Ok((ok, rejected))
 }
@@ -160,11 +160,11 @@ fn driver_state() -> DriverState {
 }
 
 /// Драйвер WinDivert ставит сам winws при первом запуске; удалённый — поставится заново.
-fn remove_driver() -> Result<(), String> {
+fn remove_driver() -> Result<(), ZapretError> {
     use windows_service::service::ServiceAccess;
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-        .map_err(|e| e.to_string())?;
+        .map_err(ZapretError::io)?;
     let Ok(service) = manager.open_service(
         DRIVER_SERVICE,
         ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
@@ -172,17 +172,13 @@ fn remove_driver() -> Result<(), String> {
         return Ok(());
     };
     let _ = service.stop();
-    service.delete().map_err(|e| e.to_string())
+    service.delete().map_err(ZapretError::io)
 }
 
 /// При удалении KVT: драйвер убирается, если им сейчас не пользуется чужой winws.
-pub fn remove_driver_if_unused(paths: &Paths) -> Result<(), String> {
+pub fn remove_driver_if_unused(paths: &Paths) -> Result<(), ZapretError> {
     if conflicts(paths, None).iter().any(|(c, _)| !c.service) {
-        return Err(kvt_core::i18n::tr(
-            "им пользуется другая программа",
-            "another app is using it",
-        )
-        .into());
+        return Err(ZapretError::DriverInUse);
     }
     remove_driver()
 }
@@ -199,7 +195,7 @@ pub fn info(paths: &Paths) -> ZapretInfo {
         bundled_version: read_version(&paths.zapret),
         updated: bundle == paths.zapret_update,
         ok: checked.is_ok(),
-        problem: checked.err(),
+        problem: checked.err().map(|e| e.to_string()),
         strategies,
         rejected,
         driver: driver_state(),
@@ -219,7 +215,7 @@ fn copy_files(
     to: &Path,
     keep: impl Fn(&str) -> bool,
     max: u64,
-) -> Result<usize, String> {
+) -> Result<usize, ZapretError> {
     let mut n = 0;
     let Ok(entries) = std::fs::read_dir(from) else {
         return Ok(0);
@@ -227,9 +223,10 @@ fn copy_files(
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let meta = entry.metadata().map_err(|e| e.to_string())?;
+        let meta = entry.metadata().map_err(ZapretError::io)?;
         if meta.is_file() && meta.len() <= max && safe_name(name) && keep(name) {
-            std::fs::copy(entry.path(), to.join(name)).map_err(|e| format!("{name}: {e}"))?;
+            std::fs::copy(entry.path(), to.join(name))
+                .map_err(|e| ZapretError::Io(format!("{name}: {e}")))?;
             n += 1;
         }
     }
@@ -244,9 +241,9 @@ fn stage(
     fallback_bin: &Path,
     staging: &Path,
     version: &str,
-) -> Result<bool, String> {
+) -> Result<bool, ZapretError> {
     for sub in ["bin", "lists", "strategies"] {
-        std::fs::create_dir_all(staging.join(sub)).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(staging.join(sub)).map_err(ZapretError::io)?;
     }
     // Стратегии лежат в корне релиза (так у Flowseal) или в strategies/ (так у KVT).
     for dir in [release.to_path_buf(), release.join("strategies")] {
@@ -266,7 +263,7 @@ fn stage(
             };
             if id.starts_with("general") && zapret::parse_bat(id, &text).is_ok() {
                 std::fs::write(staging.join("strategies").join(format!("{id}.bat")), text)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(ZapretError::io)?;
             }
         }
     }
@@ -294,7 +291,7 @@ fn stage(
             fallback_bin.join(name)
         };
         std::fs::copy(&source, staging.join("bin").join(name))
-            .map_err(|e| format!("{name}: {e}"))?;
+            .map_err(|e| ZapretError::Io(format!("{name}: {e}")))?;
     }
     for license in [
         release.join("LICENSE.txt"),
@@ -304,15 +301,15 @@ fn stage(
             break;
         }
     }
-    std::fs::write(staging.join("VERSION"), version).map_err(|e| e.to_string())?;
+    std::fs::write(staging.join("VERSION"), version).map_err(ZapretError::io)?;
     Ok(all_new)
 }
 
 /// Системный tar.exe (bsdtar) распаковывает zip и не выходит за каталог назначения.
-fn extract(archive: &Path, dest: &Path) -> Result<PathBuf, String> {
+fn extract(archive: &Path, dest: &Path) -> Result<PathBuf, ZapretError> {
     let system =
         std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dest).map_err(ZapretError::io)?;
     let status = std::process::Command::new(system.join("System32").join("tar.exe"))
         .arg("-xf")
         .arg(archive)
@@ -322,17 +319,13 @@ fn extract(archive: &Path, dest: &Path) -> Result<PathBuf, String> {
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .status()
-        .map_err(|e| format!("tar: {e}"))?;
+        .map_err(|e| ZapretError::Unpack(e.to_string()))?;
     if !status.success() {
-        return Err(kvt_core::i18n::tr(
-            "не удалось распаковать архив",
-            "couldn't unpack the archive",
-        )
-        .into());
+        return Err(ZapretError::UnpackFailed);
     }
     // В архиве Flowseal всё лежит в одном каталоге zapret-discord-youtube-<версия>.
     let dirs: Vec<PathBuf> = std::fs::read_dir(dest)
-        .map_err(|e| e.to_string())?
+        .map_err(ZapretError::io)?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.is_dir())
@@ -351,19 +344,13 @@ fn data_dir(paths: &Paths) -> PathBuf {
 }
 
 /// Скачивает архив и сверяет SHA-256.
-async fn fetch_archive(http: &NetClient, url: &str, sha256: &str) -> Result<Vec<u8>, String> {
-    let bytes = http.get(url, MAX_ARCHIVE).await.map_err(|e| {
-        kvt_core::trf!(
-            "не удалось скачать Flowseal с GitHub: {e}",
-            "couldn't download Flowseal from GitHub: {e}"
-        )
-    })?;
+async fn fetch_archive(http: &NetClient, url: &str, sha256: &str) -> Result<Vec<u8>, ZapretError> {
+    let bytes = http
+        .get(url, MAX_ARCHIVE)
+        .await
+        .map_err(|e| ZapretError::Download(e.to_string()))?;
     if sha256_hex(&bytes) != sha256.to_ascii_lowercase() {
-        return Err(kvt_core::i18n::tr(
-            "архив не совпал с хэшем — загрузка отменена",
-            "the archive didn't match its hash — download cancelled",
-        )
-        .into());
+        return Err(ZapretError::HashMismatch);
     }
     Ok(bytes)
 }
@@ -375,8 +362,8 @@ async fn download_bundle(
     sha256: &str,
     version: &str,
     fallback_bin: &Path,
-) -> Result<bool, String> {
-    let http = NetClient::new(kvt_core::netlog::Purpose::Update).map_err(|e| e.to_string())?;
+) -> Result<bool, ZapretError> {
+    let http = NetClient::new(kvt_core::netlog::Purpose::Update).map_err(ZapretError::io)?;
     let bytes = fetch_archive(&http, url, sha256).await?;
     let (paths, version, fallback_bin) = (
         paths.clone(),
@@ -389,20 +376,16 @@ async fn download_bundle(
 /// Файловая работа (распаковка, копирование, хэши) и вызовы Windows, которые идут
 /// секунды, — в отдельном потоке, а не на потоке обработки команд службы.
 pub async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
+    work: impl FnOnce() -> Result<T, ZapretError> + Send + 'static,
+) -> Result<T, ZapretError> {
     tokio::task::spawn_blocking(work)
         .await
-        .unwrap_or_else(|_| Err(interrupted()))
+        .unwrap_or(Err(ZapretError::Interrupted))
 }
 
 /// Работа в отдельном потоке оборвалась (паника) — текст для окна.
 pub fn interrupted() -> String {
-    kvt_core::i18n::tr(
-        "Операция с zapret прервалась. Повторите; если не выйдет — сохраните диагностику.",
-        "The zapret operation was interrupted. Try again; if it fails, save diagnostics.",
-    )
-    .into()
+    ZapretError::Interrupted.to_string()
 }
 
 /// Собирает комплект из проверенного архива в `zapret-bundle`.
@@ -411,7 +394,7 @@ fn install_bundle(
     bytes: &[u8],
     version: &str,
     fallback_bin: &Path,
-) -> Result<bool, String> {
+) -> Result<bool, ZapretError> {
     // Сначала ProgramData\KVT: удаления ниже идут от SYSTEM и не должны уйти по
     // ссылке, подложенной в чужой каталог.
     secure_dir(&data_dir(paths))?;
@@ -420,7 +403,7 @@ fn install_bundle(
     secure_dir(&work)?;
     let result = (|| {
         let archive = work.join("release.zip");
-        std::fs::write(&archive, bytes).map_err(|e| e.to_string())?;
+        std::fs::write(&archive, bytes).map_err(ZapretError::io)?;
         let root = extract(&archive, &work.join("x"))?;
         let staging = data_dir(paths).join("zapret-bundle.new");
         let _ = std::fs::remove_dir_all(&staging);
@@ -428,13 +411,10 @@ fn install_bundle(
         let binaries = stage(&root, fallback_bin, &staging, version)?;
         if let Err(e) = check_bundle(&staging) {
             let _ = std::fs::remove_dir_all(&staging);
-            return Err(kvt_core::trf!(
-                "новый комплект не прошёл проверку: {e}",
-                "the new bundle failed verification: {e}"
-            ));
+            return Err(ZapretError::Rejected(Box::new(e)));
         }
         let _ = std::fs::remove_dir_all(&paths.zapret_update);
-        std::fs::rename(&staging, &paths.zapret_update).map_err(|e| e.to_string())?;
+        std::fs::rename(&staging, &paths.zapret_update).map_err(ZapretError::io)?;
         Ok(binaries)
     })();
     let _ = std::fs::remove_dir_all(&work);
@@ -454,16 +434,12 @@ pub struct Prepared {
 pub async fn fetch_update(
     paths: &Paths,
     http: &NetClient,
-) -> Result<Result<Prepared, MaintenanceReport>, String> {
-    let release =
-        zapret::parse_release(&http.get(zapret::RELEASES_API, 1024 * 1024).await.map_err(
-            |e| {
-                kvt_core::trf!(
-                    "не удалось узнать последнюю версию Flowseal на GitHub: {e}",
-                    "couldn't get the latest Flowseal version from GitHub: {e}"
-                )
-            },
-        )?)?;
+) -> Result<Result<Prepared, MaintenanceReport>, ZapretError> {
+    let body = http
+        .get(zapret::RELEASES_API, 1024 * 1024)
+        .await
+        .map_err(|e| ZapretError::Version(e.to_string()))?;
+    let release = zapret::parse_release(&body).map_err(ZapretError::Release)?;
     let active = active_bundle(paths);
     let current = read_version(&active);
     if !zapret::newer(&release.version, &current) {
@@ -486,7 +462,7 @@ pub async fn fetch_update(
 }
 
 /// «Обновить», шаг 2 — winws уже остановлен: собрать комплект из скачанного архива.
-pub fn install_update(paths: &Paths, prepared: Prepared) -> Result<MaintenanceReport, String> {
+pub fn install_update(paths: &Paths, prepared: Prepared) -> Result<MaintenanceReport, ZapretError> {
     let Prepared {
         release,
         archive,
@@ -533,14 +509,14 @@ pub fn install_update(paths: &Paths, prepared: Prepared) -> Result<MaintenanceRe
 /// «Переустановить»: комплект из поставки KVT (или заново скачанный по зафиксированному
 /// хэшу, если он повреждён), чистые списки и драйвер WinDivert, который поставится заново.
 /// `touch_driver` — нет чужих программ, которые сейчас пользуются WinDivert.
-pub async fn repair(paths: &Paths, touch_driver: bool) -> Result<MaintenanceReport, String> {
+pub async fn repair(paths: &Paths, touch_driver: bool) -> Result<MaintenanceReport, ZapretError> {
     let local = paths.clone();
     let (mut steps, mut version, damaged) = blocking(move || {
         let paths = local;
         let mut steps = Vec::new();
         secure_dir(&data_dir(&paths))?;
         if paths.zapret_update.exists() {
-            std::fs::remove_dir_all(&paths.zapret_update).map_err(|e| e.to_string())?;
+            std::fs::remove_dir_all(&paths.zapret_update).map_err(ZapretError::io)?;
             steps.push(
                 kvt_core::i18n::tr(
                     "Обновление удалено — используется комплект из KVT",
@@ -631,7 +607,7 @@ fn prepare_lists(
     bundle: &Path,
     lists: &zapret::UserLists,
     ipset: bool,
-) -> Result<(), String> {
+) -> Result<(), ZapretError> {
     secure_dir(&paths.zapret_lists)?;
     let source = bundle.join("lists");
     copy_files(
@@ -646,13 +622,7 @@ fn prepare_lists(
             source.join("ipset-all.txt.backup"),
             paths.zapret_lists.join("ipset-all.txt"),
         )
-        .map_err(|_| {
-            kvt_core::i18n::tr(
-                "в комплекте нет полного IP-списка (ipset-all.txt.backup)",
-                "the bundle has no full IP list (ipset-all.txt.backup)",
-            )
-            .to_string()
-        })?;
+        .map_err(|_| ZapretError::NoFullIpset)?;
     }
     for (name, text) in [
         ("list-general-user.txt", &lists.general),
@@ -660,7 +630,7 @@ fn prepare_lists(
         ("ipset-exclude-user.txt", &lists.ipset_exclude),
     ] {
         std::fs::write(paths.zapret_lists.join(name), text)
-            .map_err(|e| kvt_core::trf!("список {name}: {e}", "list {name}: {e}"))?;
+            .map_err(|e| ZapretError::List(name.to_owned(), e.to_string()))?;
     }
     Ok(())
 }
@@ -720,41 +690,25 @@ pub async fn start(
     servers: &ServerAddresses,
     interface: Option<u32>,
     log: &Log,
-) -> Result<Winws, String> {
+) -> Result<Winws, ZapretError> {
     if !zapret::valid_id(&plan.strategy) {
-        return Err(kvt_core::trf!(
-            "неизвестная стратегия «{}»",
-            "unknown strategy “{}”",
-            plan.strategy
-        ));
+        return Err(ZapretError::UnknownStrategy(plan.strategy.clone()));
     }
     let bundle = active_bundle(paths);
     let strategy = scan_strategies(&bundle)
         .0
         .into_iter()
         .find(|s| s.id == plan.strategy)
-        .ok_or_else(|| {
-            kvt_core::trf!(
-                "стратегии «{}» нет в комплекте zapret",
-                "strategy “{}” isn't in the zapret bundle",
-                plan.strategy
-            )
-        })?;
+        .ok_or_else(|| ZapretError::StrategyMissing(plan.strategy.clone()))?;
     let bin = bundle.join("bin");
-    verify_binaries(&bin).map_err(|e| {
-        kvt_core::trf!(
-            "Файлы zapret повреждены ({e}). Нажмите «Переустановить» во вкладке Zapret или запустите scripts\\fetch-zapret.ps1",
-            "zapret files are damaged ({e}). Press “Reinstall” on the Zapret tab or run scripts\\fetch-zapret.ps1"
-        )
-    })?;
+    verify_binaries(&bin).map_err(|e| ZapretError::Damaged(Box::new(e)))?;
 
     let lists = zapret::user_lists(
         domains,
         &plan.exclude_domains,
         &servers.domains,
         &servers.ips,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     prepare_lists(paths, &bundle, &lists, plan.ipset)?;
     if strategy.needs_timestamps && plan.tcp_timestamps {
         enable_tcp_timestamps();
