@@ -73,10 +73,7 @@ pub async fn set_subscription_options(
         let changed = s.set_options(&id, options, own);
         (changed, s.get(&id).is_some_and(|x| x.url.is_some()))
     })?;
-    let request_changed = request_changed.ok_or(kvt_core::i18n::tr(
-        "Этой подписки уже нет.",
-        "This subscription no longer exists.",
-    ))?;
+    let request_changed = request_changed.ok_or(SubsError::Gone)?;
     let result = if request_changed && by_url {
         refresh_one(&state, &id, Refresh::Now).await
     } else {
@@ -86,5 +83,5 @@ pub async fn set_subscription_options(
     crate::tray::invalidate(&app);
     guard_selected(&app, before, Gone::ByUser).await;
     notify(&app);
-    result
+    Ok(result?)
 }

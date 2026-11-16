@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod edit;
+mod error;
 mod options;
 mod refresh;
 mod selection;
@@ -23,6 +24,7 @@ mod view;
 // Команды окна (`generate_handler!` в main.rs) и то, что зовут трей и перенос,
 // доступны как `subs::…`, как до разбиения на модули.
 pub use edit::*;
+pub use error::SubsError;
 pub use options::*;
 pub use refresh::*;
 use selection::*;
@@ -42,8 +44,8 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-fn lock_err<T>(e: T) -> String {
-    crate::errors::state(e)
+fn lock_err<T>(_: T) -> SubsError {
+    SubsError::State
 }
 
 pub fn load(app: &AppHandle) -> Result<Store, String> {
@@ -52,7 +54,7 @@ pub fn load(app: &AppHandle) -> Result<Store, String> {
 }
 
 /// Пересобирает единый список серверов и группы для интерфейса.
-pub fn rebuild(state: &AppState) -> Result<(), String> {
+pub fn rebuild(state: &AppState) -> Result<(), SubsError> {
     let (groups, entries) = {
         let store = state.store.lock().map_err(lock_err)?;
         store.as_ref().map(catalog::build).unwrap_or_default()
@@ -87,7 +89,7 @@ pub struct Added {
 
 /// `body` — что добавили: выбираем первый сервер из него, а не из всей группы
 /// (ручные ключи дописываются в общую группу).
-fn added(state: &AppState, id: String, body: &str) -> Result<Added, String> {
+fn added(state: &AppState, id: String, body: &str) -> Result<Added, SubsError> {
     rebuild(state)?;
     let new = parse_subscription_body(body).servers;
     let servers = state.servers.lock().map_err(lock_err)?;
@@ -103,32 +105,25 @@ fn added(state: &AppState, id: String, body: &str) -> Result<Added, String> {
     })
 }
 
-fn with_store<R>(state: &AppState, f: impl FnOnce(&mut Store) -> R) -> Result<R, String> {
+fn with_store<R>(state: &AppState, f: impl FnOnce(&mut Store) -> R) -> Result<R, SubsError> {
     let mut guard = state.store.lock().map_err(lock_err)?;
-    let store = guard.as_mut().ok_or(kvt_core::i18n::tr(
-        "хранилище подписок не загружено",
-        "the subscription store isn't loaded",
-    ))?;
+    let store = guard.as_mut().ok_or(SubsError::NotLoaded)?;
     let result = f(store);
     store.save().map_err(|e| {
-        crate::errors::io(
+        SubsError::Save(crate::errors::io(
             kvt_core::i18n::tr(
                 "Не удалось сохранить подписки",
                 "Couldn't save subscriptions",
             ),
             &e,
-        )
+        ))
     })?;
     Ok(result)
 }
 
-fn ensure_servers(body: &str) -> Result<(), String> {
+fn ensure_servers(body: &str) -> Result<(), SubsError> {
     if parse_subscription_body(body).servers.is_empty() {
-        return Err(kvt_core::i18n::tr(
-            "В подписке не нашлось ни одного сервера.",
-            "No servers found in the subscription.",
-        )
-        .into());
+        return Err(SubsError::NoServers);
     }
     Ok(())
 }
@@ -139,7 +134,7 @@ fn notify(app: &AppHandle) {
 
 /// Ключи, вставленные вручную (ссылки на серверы, base64 или конфиги), — в группу
 /// «Добавлено вручную».
-fn add_pasted(state: &AppState, body: &str) -> Result<Added, String> {
+fn add_pasted(state: &AppState, body: &str) -> Result<Added, SubsError> {
     // В ручной группе — только ссылки: base64 раскрыт, конфиги Xray и sing-box переведены.
     let body = normalize_pasted(body);
     ensure_servers(&body)?;
@@ -150,7 +145,7 @@ fn add_pasted(state: &AppState, body: &str) -> Result<Added, String> {
 }
 
 /// Подписка по ссылке. Та же ссылка второй раз — обновление прежней подписки.
-async fn add_url(state: &AppState, raw: &str, patient: bool) -> Result<Added, String> {
+async fn add_url(state: &AppState, raw: &str, patient: bool) -> Result<Added, SubsError> {
     let url = fetch::validate_url(raw)?;
     let host = url.host_str().unwrap_or_default();
     if patient {
@@ -238,7 +233,7 @@ pub async fn add_input(
                 report.failed.push(if many_urls {
                     kvt_core::trf!("Подписка {}: {e}", "Subscription {}: {e}", i + 1)
                 } else {
-                    e.clone()
+                    e.to_string()
                 });
                 first_error.get_or_insert(e);
             }
@@ -249,7 +244,7 @@ pub async fn add_input(
             Ok(a) => report.merge(a),
             Err(e) => {
                 report.failed.push(if split.urls.is_empty() {
-                    e.clone()
+                    e.to_string()
                 } else {
                     kvt_core::trf!("Ключи: {e}", "Keys: {e}")
                 });
@@ -258,7 +253,7 @@ pub async fn add_input(
         }
     }
     if report.group.is_none() {
-        return Err(first_error.unwrap_or_else(|| {
+        return Err(first_error.map(String::from).unwrap_or_else(|| {
             kvt_core::i18n::tr(
                 "Не нашлось ни ссылки на подписку, ни ключей. Скопируйте ссылку из личного кабинета провайдера целиком.",
                 "No subscription link or keys found. Copy the whole link from your provider's account page.",
@@ -289,11 +284,7 @@ pub fn rename_subscription(
     }
     let found = with_store(&state, |s| s.rename(&id, title))?;
     if !found {
-        return Err(kvt_core::i18n::tr(
-            "Этой подписки уже нет.",
-            "This subscription no longer exists.",
-        )
-        .into());
+        return Err(SubsError::Gone.into());
     }
     rebuild(&state)?;
     crate::tray::invalidate(&app);
@@ -319,7 +310,7 @@ pub(crate) async fn import_url(
     state: &AppState,
     raw: &str,
     name: &str,
-) -> Result<Imported, String> {
+) -> Result<Imported, SubsError> {
     let url = fetch::validate_url(raw)?;
     let exists = state
         .store
@@ -340,7 +331,7 @@ pub(crate) async fn import_url(
         let plan = Plan::of(state, |_| false)?;
         let fetched = fetch::fetch(&url, &plan.hints(host, None)?.hints()).await?;
         ensure_servers(&fetched.body)?;
-        Ok::<_, String>(fetched)
+        Ok::<_, SubsError>(fetched)
     }
     .await;
     match loaded {
@@ -363,7 +354,7 @@ pub(crate) async fn import_url(
             };
             with_store(state, |s| {
                 let id = s.add(Some(Secret::new(url.as_str())), String::new(), meta, now());
-                s.postpone(&id, now(), Some(&e));
+                s.postpone(&id, now(), Some(&e.to_string()));
             })?;
             Ok(Imported::Pending)
         }
@@ -372,7 +363,7 @@ pub(crate) async fn import_url(
 
 /// Ссылки на серверы из другого клиента — в группу «Добавлено вручную».
 /// Возвращает, сколько серверов стало доступно.
-pub(crate) fn import_links(state: &AppState, links: &[&str]) -> Result<usize, String> {
+pub(crate) fn import_links(state: &AppState, links: &[&str]) -> Result<usize, SubsError> {
     if links.is_empty() {
         return Ok(0);
     }
@@ -386,7 +377,7 @@ pub(crate) fn import_links(state: &AppState, links: &[&str]) -> Result<usize, St
     Ok(count)
 }
 
-pub(crate) fn changed(app: &AppHandle, state: &AppState) -> Result<(), String> {
+pub(crate) fn changed(app: &AppHandle, state: &AppState) -> Result<(), SubsError> {
     rebuild(state)?;
     notify(app);
     Ok(())

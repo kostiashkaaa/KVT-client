@@ -17,17 +17,14 @@ pub(super) enum Refresh {
 
 /// Обновляет одну подписку по ссылке. Ошибка не трогает сохранённую версию, а
 /// запоминается у подписки.
-pub(super) async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Result<(), String> {
+pub(super) async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Result<(), SubsError> {
     let (url, plan) = {
         let guard = state.store.lock().map_err(lock_err)?;
         let url = guard
             .as_ref()
             .and_then(|s| s.get(id))
             .and_then(|s| s.url.clone())
-            .ok_or(kvt_core::i18n::tr(
-                "У этой подписки нет ссылки для обновления",
-                "This subscription has no update link",
-            ))?;
+            .ok_or(SubsError::NoLink)?;
         drop(guard);
         let mut plan = Plan::of(state, |s| s.id == id)?;
         // Метки — только по расписанию и у непустого тела: подписка, добавленная
@@ -50,7 +47,7 @@ pub(super) async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Res
         if let fetch::Loaded::Fresh(fetched) = &loaded {
             ensure_servers(&fetched.body)?;
         }
-        Ok::<_, String>(loaded)
+        Ok::<_, SubsError>(loaded)
     }
     .await;
     match result {
@@ -66,7 +63,7 @@ pub(super) async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Res
             Ok(())
         }
         Err(e) => {
-            with_store(state, |s| s.postpone(id, now(), Some(&e)))?;
+            with_store(state, |s| s.postpone(id, now(), Some(&e.to_string())))?;
             Err(e)
         }
     }
@@ -97,7 +94,7 @@ impl Plan {
     pub(super) fn of(
         state: &AppState,
         find: impl Fn(&Subscription) -> bool,
-    ) -> Result<Plan, String> {
+    ) -> Result<Plan, SubsError> {
         let guard = state.store.lock().map_err(lock_err)?;
         let Some(store) = guard.as_ref() else {
             return Ok(Plan::default());
@@ -126,7 +123,7 @@ impl Plan {
         &'a self,
         host: &str,
         agent: Option<&'a str>,
-    ) -> Result<Request<'a>, String> {
+    ) -> Result<Request<'a>, SubsError> {
         let mode = self.options.hwid;
         let hwid = if mode == HwidMode::Never {
             None
@@ -136,13 +133,13 @@ impl Plan {
             match self.dir.as_deref().map(|d| crate::device::hwid(d, host)) {
                 Some(Ok(id)) => Some(id),
                 Some(Err(e)) if mode == HwidMode::Always => {
-                    return Err(crate::errors::io(
+                    return Err(SubsError::Device(crate::errors::io(
                         kvt_core::i18n::tr(
                             "Не удалось прочитать ID устройства",
                             "Couldn't read the device ID",
                         ),
                         &e,
-                    ))
+                    )))
                 }
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "ID устройства недоступен");
@@ -193,7 +190,7 @@ pub async fn refresh_subscription(
     rebuild(&state)?;
     guard_selected(&app, before, Gone::ByProvider).await;
     notify(&app);
-    result
+    Ok(result?)
 }
 
 /// Открывает в браузере поддержку (`support`) или сайт (`site`) провайдера подписки.
@@ -209,10 +206,7 @@ pub fn open_subscription_link(
         let sub = guard
             .as_ref()
             .and_then(|s| s.get(&id))
-            .ok_or(kvt_core::i18n::tr(
-                "Этой подписки уже нет.",
-                "This subscription no longer exists.",
-            ))?;
+            .ok_or(SubsError::Gone)?;
         match which.as_str() {
             "support" => sub.meta.support_url.clone(),
             "site" => sub.meta.web_page_url.clone(),
