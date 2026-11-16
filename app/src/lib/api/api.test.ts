@@ -1,14 +1,20 @@
 // Правила для моста к Rust, которые легко нарушить при новой команде.
+//
+// Исходники читаются через `import.meta.glob(…?raw)` Vite, а не `node:fs`: типов Node
+// в проекте нет (svelte-check в CI их не находит).
 
-import { readdirSync, readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import barrel from "../api.ts?raw";
 
-const dir = path.dirname(fileURLToPath(import.meta.url));
-const modules = readdirSync(dir)
-  .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
-  .map((f) => ({ file: f, text: readFileSync(path.join(dir, f), "utf8") }));
+const sources = import.meta.glob<string>(["./*.ts", "!./*.test.ts"], {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+const modules = Object.entries(sources).map(([path, text]) => ({
+  file: path.replace(/^\.\//, ""),
+  text,
+}));
 
 /** Экспортированные функции модуля с телами (до следующего объявления верхнего уровня). */
 function functions(text: string): { name: string; body: string }[] {
@@ -17,6 +23,11 @@ function functions(text: string): { name: string; body: string }[] {
 }
 
 describe("api", () => {
+  it("исходники разделов прочитаны", () => {
+    expect(modules.length).toBeGreaterThan(5);
+    expect(modules.some((m) => m.file === "connection.ts")).toBe(true);
+  });
+
   it("каждая команда Rust работает и в превью браузера (`if (!inTauri)`)", () => {
     const missing: string[] = [];
     for (const { file, text } of modules) {
@@ -30,7 +41,6 @@ describe("api", () => {
   });
 
   it("каждый раздел доступен через api.ts (данные превью — внутренние)", () => {
-    const barrel = readFileSync(path.join(dir, "..", "api.ts"), "utf8");
     const unused = modules
       .map((m) => m.file.replace(/\.ts$/, ""))
       .filter((name) => name !== "preview" && !barrel.includes(`"./api/${name}"`));
