@@ -111,21 +111,22 @@ pub(super) fn load_choice(app: &AppHandle) -> settings::Loaded {
 pub(crate) fn update_choice(
     app: &AppHandle,
     f: impl FnOnce(&mut Choice),
-) -> Result<Choice, String> {
+) -> Result<Choice, settings::SettingsError> {
     let state = app.state::<AppState>();
-    let mut choice = state.choice.lock().map_err(crate::errors::state)?;
+    let mut choice = state
+        .choice
+        .lock()
+        .map_err(|_| settings::SettingsError::State)?;
     f(&mut choice);
     save_choice(app, &choice)?;
     Ok(choice.clone())
 }
 
-pub(super) fn save_choice(app: &AppHandle, choice: &Choice) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|_| {
-        kvt_core::i18n::tr(
-            "Не найдена папка настроек Windows — настройки не сохранились.",
-            "The Windows settings folder wasn't found — settings weren't saved.",
-        )
-    })?;
+pub(super) fn save_choice(app: &AppHandle, choice: &Choice) -> Result<(), settings::SettingsError> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| settings::SettingsError::NoFolder)?;
     settings::save(&dir, choice)
 }
 

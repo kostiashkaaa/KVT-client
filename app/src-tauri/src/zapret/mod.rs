@@ -169,18 +169,15 @@ fn now_unix() -> u64 {
 }
 
 async fn call(request: Request) -> Result<Response, ZapretError> {
-    match service_client::call(request)
-        .await
-        .map_err(ZapretError::Service)?
-    {
-        Response::Error { message } => Err(ZapretError::Service(message)),
+    match service_client::call(request).await? {
+        Response::Error { message } => Err(ZapretError::Remote(message)),
         other => Ok(other),
     }
 }
 
 /// Статус службы; не ответила — `ZapretError::Service`.
 async fn status() -> Result<Option<ServiceStatus>, ZapretError> {
-    query_status().await.map_err(ZapretError::Service)
+    Ok(query_status().await?)
 }
 
 async fn strategies() -> Result<Vec<Strategy>, ZapretError> {

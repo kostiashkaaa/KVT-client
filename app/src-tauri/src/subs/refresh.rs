@@ -224,11 +224,11 @@ pub fn open_subscription_link(
 /// видны у каждой подписки.
 #[tauri::command]
 pub async fn refresh_all_subscriptions(app: AppHandle) -> Result<usize, String> {
-    refresh_all(&app).await
+    Ok(refresh_all(&app).await?)
 }
 
 /// Обновляет все подписки по ссылке (пункт трея). Возвращает, сколько не обновилось.
-pub(crate) async fn refresh_all(app: &AppHandle) -> Result<usize, String> {
+pub(crate) async fn refresh_all(app: &AppHandle) -> Result<usize, SubsError> {
     let state = app.state::<AppState>();
     let ids: Vec<String> = {
         let guard = state.store.lock().map_err(lock_err)?;

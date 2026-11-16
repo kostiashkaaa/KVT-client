@@ -162,30 +162,52 @@ fn title(key: &str) -> String {
     .into()
 }
 
-pub fn save(dir: &Path, choice: &Choice) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| {
-        crate::errors::io(
-            kvt_core::i18n::tr("Не удалось сохранить настройки", "Couldn't save settings"),
-            &e,
+/// Почему выбор не сохранился. Командам окна уходит строкой через `From`.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SettingsError {
+    /// Запись на диск не удалась; текст — от `errors::io` (что и почему).
+    #[error("{0}")]
+    Write(String),
+    #[error(
+        "{}",
+        kvt_core::i18n::tr(
+            "Не найдена папка настроек Windows — настройки не сохранились.",
+            "The Windows settings folder wasn't found — settings weren't saved.",
         )
-    })?;
-    let mut value = serde_json::to_value(choice).map_err(|_| crate::errors::state_text())?;
+    )]
+    NoFolder,
+    /// Отравленный замок или выбор не сериализовался (`errors::state_text`).
+    #[error("{}", crate::errors::state_text())]
+    State,
+}
+
+impl From<SettingsError> for String {
+    fn from(e: SettingsError) -> Self {
+        e.to_string()
+    }
+}
+
+fn write_error(e: &std::io::Error) -> SettingsError {
+    SettingsError::Write(crate::errors::io(
+        kvt_core::i18n::tr("Не удалось сохранить настройки", "Couldn't save settings"),
+        e,
+    ))
+}
+
+pub fn save(dir: &Path, choice: &Choice) -> Result<(), SettingsError> {
+    std::fs::create_dir_all(dir).map_err(|e| write_error(&e))?;
+    let mut value = serde_json::to_value(choice).map_err(|_| SettingsError::State)?;
     if let Value::Object(map) = &mut value {
         map.insert("version".into(), VERSION.into());
     }
-    let bytes = serde_json::to_vec_pretty(&value).map_err(|_| crate::errors::state_text())?;
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|_| SettingsError::State)?;
     // Сохраняют окно, трей, автопереключение и профиль сети — из разных потоков.
     // Общий .tmp при одновременной записи давал бы битый JSON (хвост длинной
     // записи после короткой), а битый файл при запуске сбросил бы kill switch.
     static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = dir.join(format!("{FILE}.tmp"));
-    crate::atomic::write(&dir.join(FILE), &tmp, &bytes).map_err(|e| {
-        crate::errors::io(
-            kvt_core::i18n::tr("Не удалось сохранить настройки", "Couldn't save settings"),
-            &e,
-        )
-    })
+    crate::atomic::write(&dir.join(FILE), &tmp, &bytes).map_err(|e| write_error(&e))
 }
 
 #[cfg(test)]

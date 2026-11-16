@@ -9,6 +9,7 @@
 
 #![allow(unsafe_code)]
 
+use kvt_core::i18n::tr;
 use kvt_core::ipc::{self, Request, Response, PIPE_NAME, PROTOCOL_VERSION};
 use std::fs::File;
 use std::os::windows::fs::OpenOptionsExt;
@@ -17,6 +18,76 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::NamedPipeClient;
+
+/// Почему запрос к службе не прошёл. Текст для пользователя — в `Display`; командам
+/// окна уходит строкой через `From`.
+#[derive(Debug, thiserror::Error, PartialEq, Eq, Clone, Copy)]
+pub enum ServiceError {
+    /// Pipe нет: служба не запущена (`errors::no_service`).
+    #[error("{}", crate::errors::no_service())]
+    NotRunning,
+    /// Pipe создан не службой: владелец не SYSTEM и не администраторы.
+    #[error("{}", tr(
+        "Канал связи со службой KVT занят другой программой. Перезагрузите компьютер; если повторится — проверьте его антивирусом.",
+        "The KVT service channel is taken by another program. Restart the computer; if it happens again, scan it with an antivirus.",
+    ))]
+    PipeTaken,
+    /// Служба не пустила клиента: не `kvt.exe` из её каталога.
+    #[error("{}", tr(
+        "Служба KVT не пустила это окно: она принимает команды только от KVT из папки установки. Запустите KVT из меню «Пуск» или переустановите его.",
+        "The KVT service refused this window: it only accepts commands from KVT in its install folder. Start KVT from the Start menu or reinstall it.",
+    ))]
+    Refused,
+    #[error(
+        "{}",
+        tr(
+            "Не удалось связаться со службой KVT. Повторите через несколько секунд.",
+            "Couldn't reach the KVT service. Try again in a few seconds.",
+        )
+    )]
+    Unreachable,
+    /// Все экземпляры pipe заняты дольше секунды.
+    #[error(
+        "{}",
+        tr(
+            "Служба KVT занята — повторите через несколько секунд.",
+            "The KVT service is busy — try again in a few seconds.",
+        )
+    )]
+    Busy,
+    /// Канал оборвался посреди обмена.
+    #[error(
+        "{}",
+        tr(
+            "Связь со службой KVT прервалась. Повторите; если не выйдет — перезагрузите компьютер.",
+            "Lost connection to the KVT service. Try again; if it fails, restart the computer.",
+        )
+    )]
+    Broken,
+    /// Ответ не разобрался или не тот (`errors::unexpected`).
+    #[error("{}", crate::errors::unexpected())]
+    Unexpected,
+    /// Служба отвергла приветствие: окно и служба разных версий.
+    #[error("{}", crate::errors::version_mismatch())]
+    VersionMismatch,
+    #[error("{}", tr(
+        "Служба KVT не ответила вовремя. Повторите через несколько секунд; если не выйдет — перезагрузите компьютер и сохраните диагностику.",
+        "The KVT service didn't answer in time. Try again in a few seconds; if it fails, restart the computer and save diagnostics.",
+    ))]
+    NoAnswer,
+}
+
+impl From<ServiceError> for String {
+    fn from(e: ServiceError) -> Self {
+        e.to_string()
+    }
+}
+
+/// Причину — в журнал (по-русски, с кодом системы), окну — понятный вариант.
+fn logged(err: ServiceError, detail: impl std::fmt::Display) -> ServiceError {
+    tracing::warn!(%detail, "{err}");
+    err
+}
 
 const ERROR_FILE_NOT_FOUND: i32 = 2;
 const ERROR_ACCESS_DENIED: i32 = 5;
@@ -85,75 +156,47 @@ fn into_tokio(pipe: File) -> std::io::Result<NamedPipeClient> {
 /// Pipe открывается через `std` (у клиента tokio не задать права доступа) в
 /// асинхронном режиме и отдаётся tokio: тогда таймаут `call` закрывает канал, а не
 /// оставляет поток висеть на чтении, пока служба не ответит.
-async fn open() -> Result<NamedPipeClient, String> {
+async fn open() -> Result<NamedPipeClient, ServiceError> {
     for _ in 0..20 {
         match open_raw(PIPE_NAME) {
             Ok(pipe) if owned_by_system(&pipe) => {
-                return into_tokio(pipe).map_err(|e| crate::errors::logged(broken(), e));
+                return into_tokio(pipe).map_err(|e| logged(ServiceError::Broken, e));
             }
             Ok(_) => {
                 tracing::error!("канал службы KVT создан не службой — команды не отправлены");
-                return Err(kvt_core::i18n::tr(
-                    "Канал связи со службой KVT занят другой программой. Перезагрузите компьютер; если повторится — проверьте его антивирусом.",
-                    "The KVT service channel is taken by another program. Restart the computer; if it happens again, scan it with an antivirus.",
-                )
-                .into());
+                return Err(ServiceError::PipeTaken);
             }
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(e) if e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => {
-                return Err(crate::errors::no_service().into())
+                return Err(ServiceError::NotRunning)
             }
             Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
-                return Err(crate::errors::logged(
-                    kvt_core::i18n::tr(
-                        "Служба KVT не пустила это окно: она принимает команды только от KVT из папки установки. Запустите KVT из меню «Пуск» или переустановите его.",
-                        "The KVT service refused this window: it only accepts commands from KVT in its install folder. Start KVT from the Start menu or reinstall it.",
-                    ),
-                    e,
-                ))
+                return Err(logged(ServiceError::Refused, e))
             }
-            Err(e) => {
-                return Err(crate::errors::logged(
-                    kvt_core::i18n::tr(
-                        "Не удалось связаться со службой KVT. Повторите через несколько секунд.",
-                        "Couldn't reach the KVT service. Try again in a few seconds.",
-                    ),
-                    e,
-                ))
-            }
+            Err(e) => return Err(logged(ServiceError::Unreachable, e)),
         }
     }
-    Err(kvt_core::i18n::tr(
-        "Служба KVT занята — повторите через несколько секунд.",
-        "The KVT service is busy — try again in a few seconds.",
-    )
-    .into())
+    Err(ServiceError::Busy)
 }
 
-fn broken() -> &'static str {
-    kvt_core::i18n::tr(
-        "Связь со службой KVT прервалась. Повторите; если не выйдет — перезагрузите компьютер.",
-        "Lost connection to the KVT service. Try again; if it fails, restart the computer.",
-    )
-}
-
-async fn exchange(pipe: &mut NamedPipeClient, request: &Request) -> Result<Response, String> {
-    let frame = ipc::encode(request).map_err(|e| crate::errors::logged(broken(), e))?;
+async fn exchange(pipe: &mut NamedPipeClient, request: &Request) -> Result<Response, ServiceError> {
+    let broken = |e| logged(ServiceError::Broken, e);
+    let frame = ipc::encode(request).map_err(|e| broken(e.to_string()))?;
     pipe.write_all(&frame)
         .await
-        .map_err(|e| crate::errors::logged(broken(), e))?;
+        .map_err(|e| broken(e.to_string()))?;
     let mut header = [0u8; 4];
     pipe.read_exact(&mut header)
         .await
-        .map_err(|e| crate::errors::logged(broken(), e))?;
-    let len = ipc::frame_len(header).map_err(|e| crate::errors::logged(broken(), e))?;
+        .map_err(|e| broken(e.to_string()))?;
+    let len = ipc::frame_len(header).map_err(|e| broken(e.to_string()))?;
     let mut body = vec![0u8; len];
     pipe.read_exact(&mut body)
         .await
-        .map_err(|e| crate::errors::logged(broken(), e))?;
-    ipc::decode(&body).map_err(|e| crate::errors::logged(crate::errors::unexpected(), e))
+        .map_err(|e| broken(e.to_string()))?;
+    ipc::decode(&body).map_err(|e| logged(ServiceError::Unexpected, e))
 }
 
 /// Служба отвергла приветствие: окно и служба разных версий (прерванное обновление).
@@ -199,17 +242,10 @@ fn deadline(request: &Request) -> Option<Duration> {
     }
 }
 
-fn no_answer() -> &'static str {
-    kvt_core::i18n::tr(
-        "Служба KVT не ответила вовремя. Повторите через несколько секунд; если не выйдет — перезагрузите компьютер и сохраните диагностику.",
-        "The KVT service didn't answer in time. Try again in a few seconds; if it fails, restart the computer and save diagnostics.",
-    )
-}
-
 /// Запрос целиком. По истечении `deadline` окно перестаёт ждать, и канал
 /// закрывается вместе с брошенным запросом: зависшая служба не копит у окна потоки,
 /// застрявшие на чтении (трей спрашивает статус каждые несколько секунд).
-pub async fn call(request: Request) -> Result<Response, String> {
+pub async fn call(request: Request) -> Result<Response, ServiceError> {
     let deadline = deadline(&request);
     let work = call_inner(request);
     match deadline {
@@ -217,14 +253,14 @@ pub async fn call(request: Request) -> Result<Response, String> {
             Ok(result) => result,
             Err(_) => {
                 tracing::warn!(secs = limit.as_secs(), "служба не ответила вовремя");
-                Err(no_answer().into())
+                Err(ServiceError::NoAnswer)
             }
         },
         None => work.await,
     }
 }
 
-async fn call_inner(request: Request) -> Result<Response, String> {
+async fn call_inner(request: Request) -> Result<Response, ServiceError> {
     let mut pipe = open().await?;
     let hello = exchange(
         &mut pipe,
@@ -237,11 +273,11 @@ async fn call_inner(request: Request) -> Result<Response, String> {
     match hello {
         Ok(Response::Hello { .. }) => MISMATCH.store(false, Ordering::Relaxed),
         // Связь оборвалась — это не версия, а сбой канала.
-        Err(e) if e != crate::errors::unexpected() => return Err(e),
+        Err(e) if e != ServiceError::Unexpected => return Err(e),
         // Служба старше или новее: приветствие не принято или ответ не разобрался.
         _ => {
             MISMATCH.store(true, Ordering::Relaxed);
-            return Err(crate::errors::version_mismatch().into());
+            return Err(ServiceError::VersionMismatch);
         }
     }
     exchange(&mut pipe, &request).await

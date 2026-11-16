@@ -169,8 +169,7 @@ pub(super) async fn pick(
                 c.zapret.by_network.insert(key.clone(), strategy.id.clone());
             }
             c.zapret.strategy = Some(strategy.id.clone());
-        })
-        .map_err(ZapretError::Settings)?;
+        })?;
         let _ = app.emit(watchdog::CHOICE_EVENT, ());
     }
 

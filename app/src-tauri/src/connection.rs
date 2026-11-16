@@ -3,6 +3,10 @@
 
 use super::*;
 
+mod error;
+pub(crate) use error::ConnectionError;
+use service_client::ServiceError;
+
 /// Подключение, которое KVT начал сам (автопереключение, после сна, при запуске),
 /// по состоянию на `epoch`. «Отключить», нажатое после проверки `epoch`, но раньше,
 /// чем служба приняла «Подключить», служба не отменяет: она прерывает только запуск,
@@ -12,17 +16,17 @@ pub(crate) async fn connect_auto(
     app: &AppHandle,
     epoch: u64,
     verify: bool,
-) -> Result<ServiceStatus, String> {
+) -> Result<ServiceStatus, ConnectionError> {
     let state = app.state::<AppState>();
     if state.epoch() != epoch {
-        return Err(kvt_core::ipc::cancelled().into());
+        return Err(ConnectionError::Cancelled);
     }
     let result = connect_current(app, verify).await;
     if state.disconnected_after(epoch) {
         tracing::info!("пользователь отключился во время автоматического подключения — отключаем");
         let _ = disconnect_service().await;
         tunnel::set(app, None);
-        return Err(kvt_core::ipc::cancelled().into());
+        return Err(ConnectionError::Cancelled);
     }
     result
 }
@@ -31,11 +35,11 @@ pub(crate) async fn connect_auto(
 pub(super) fn servers_of(
     state: &AppState,
     group: Option<&str>,
-) -> Result<(Vec<String>, Vec<Server>), String> {
+) -> Result<(Vec<String>, Vec<Server>), ConnectionError> {
     Ok(state
         .servers
         .lock()
-        .map_err(crate::errors::state)?
+        .map_err(|_| ConnectionError::State)?
         .iter()
         .filter(|e| group.is_none_or(|g| e.sub == g))
         .map(|e| (e.key.clone(), e.server.clone()))
@@ -65,7 +69,7 @@ pub(super) async fn quick_check(
 pub(crate) async fn ping_servers(
     doh: &tester::Doh<'_>,
     servers: &[Server],
-) -> Result<Vec<QuickResult>, String> {
+) -> Result<Vec<QuickResult>, ConnectionError> {
     if !matches!(
         query_status().await,
         Ok(Some(
@@ -89,9 +93,9 @@ pub(crate) async fn ping_servers(
     };
     match service_client::call(request).await {
         Ok(Response::Ping { results }) if results.len() == servers.len() => Ok(results),
-        Ok(Response::Error { message }) => Err(message),
-        Ok(_) => Err(crate::errors::unexpected().into()),
-        Err(e) => Err(e),
+        Ok(Response::Error { message }) => Err(ConnectionError::remote(message)),
+        Ok(_) => Err(ConnectionError::Unexpected),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -101,7 +105,7 @@ pub(crate) async fn ping_servers(
 pub(super) async fn connect_current(
     app: &AppHandle,
     verify: bool,
-) -> Result<ServiceStatus, String> {
+) -> Result<ServiceStatus, ConnectionError> {
     let state = app.state::<AppState>();
     tunnel::set(app, None);
     let status = send_plan(&state).await?;
@@ -119,7 +123,7 @@ pub(crate) enum Plan {
 }
 
 /// Подключение к выбранному серверу (или только zapret).
-pub(super) async fn send_plan(state: &AppState) -> Result<ServiceStatus, String> {
+pub(super) async fn send_plan(state: &AppState) -> Result<ServiceStatus, ConnectionError> {
     let request = match build_plan(state)? {
         Plan::Vpn(plan) => Request::Connect(plan),
         Plan::Zapret(plan) => Request::StartZapret(Box::new(plan)),
@@ -131,27 +135,25 @@ pub(super) async fn send_plan(state: &AppState) -> Result<ServiceStatus, String>
             }
             Ok(status)
         }
-        Response::Error { message } => Err(message),
-        _ => Err(crate::errors::unexpected().into()),
+        Response::Error { message } => Err(ConnectionError::remote(message)),
+        _ => Err(ConnectionError::Unexpected),
     }
 }
 
 /// План по текущему выбору. Конфиг ядра из него собирает служба (а для
 /// экспорта диагностики — приложение тем же компилятором).
-pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
-    let choice = state.choice.lock().map_err(crate::errors::state)?.clone();
+pub(crate) fn build_plan(state: &AppState) -> Result<Plan, ConnectionError> {
+    let choice = state
+        .choice
+        .lock()
+        .map_err(|_| ConnectionError::State)?
+        .clone();
     let mode = choice.mode.unwrap_or_else(|| "vpn".into());
     let network = zapret::network_key(state);
     if mode == "zapret" {
         return Ok(Plan::Zapret(choice.zapret.plan(network.as_deref())));
     }
-    let server = state
-        .selected()
-        .ok_or(kvt_core::i18n::tr(
-            "Выберите сервер в списке на главной.",
-            "Pick a server from the list on the home page.",
-        ))?
-        .server;
+    let server = state.selected().ok_or(ConnectionError::NoServer)?.server;
 
     let mut routing = presets::from_settings(&choice.routing)
         .with_servers(server.endpoints())
@@ -168,10 +170,8 @@ pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
         ));
     }
     routing.validate().map_err(|e| {
-        errors::logged(
-            kvt_core::i18n::tr("Настройки маршрутизации противоречат друг другу — проверьте раздел «Маршрутизация».", "Routing settings contradict each other — check the “Routing” section."),
-            e,
-        )
+        tracing::warn!(error = %e, "маршрутизация противоречива");
+        ConnectionError::Routing
     })?;
     let sni = server
         .visible_sni()
@@ -183,10 +183,8 @@ pub(crate) fn build_plan(state: &AppState) -> Result<Plan, String> {
         routing,
         kill_switch: choice.kill_switch,
         dns: DnsPlan::from_ids(&choice.dns.local, &choice.dns.remote).map_err(|e| {
-            errors::logged(
-                kvt_core::i18n::tr("Выбранный DNS-сервер больше не поддерживается — выберите другой в настройках.", "The selected DNS server is no longer supported — pick another one in settings."),
-                e,
-            )
+            tracing::warn!(error = %e, "DNS из настроек не поддерживается");
+            ConnectionError::Dns
         })?,
         // Гибрид: winws рядом с ядром, домены zapret служба берёт из RoutingPlan.
         // SNI сервера winws не трогает: адрес сервера служба исключает сама, но если он
@@ -210,7 +208,7 @@ pub(super) async fn connect(app: AppHandle) -> Result<ServiceStatus, String> {
     app.state::<AppState>().user_acted();
     let result = connect_current(&app, true).await;
     tray::refresh(&app).await;
-    result
+    Ok(result?)
 }
 
 /// Сообщения, которые появились до открытия окна (окно забирает их один раз).
@@ -243,11 +241,11 @@ pub(super) async fn leak_test(
     Ok(diagnostics::run(connected, &remote).await)
 }
 
-pub(super) async fn disconnect_service() -> Result<ServiceStatus, String> {
+pub(super) async fn disconnect_service() -> Result<ServiceStatus, ConnectionError> {
     match service_client::call(Request::Disconnect).await? {
         Response::Ok => Ok(ServiceStatus::Disconnected),
-        Response::Error { message } => Err(message),
-        _ => Err(crate::errors::unexpected().into()),
+        Response::Error { message } => Err(ConnectionError::remote(message)),
+        _ => Err(ConnectionError::Unexpected),
     }
 }
 
@@ -256,14 +254,14 @@ pub(super) async fn disconnect(app: AppHandle) -> Result<ServiceStatus, String> 
     app.state::<AppState>().user_disconnected();
     let result = disconnect_service().await;
     tray::refresh(&app).await;
-    result
+    Ok(result?)
 }
 
 /// Статус службы. Если служба не запущена — `None` и текст причины не нужен:
 /// интерфейс просто показывает «Отключено».
 #[tauri::command]
 pub(super) async fn service_status() -> Result<Option<ServiceStatus>, String> {
-    query_status().await
+    Ok(query_status().await?)
 }
 
 /// Время и трафик текущего сеанса из последнего ответа службы (без запроса к ней).
@@ -272,11 +270,11 @@ pub(super) fn service_session(state: State<'_, AppState>) -> Option<Session> {
     state.session.lock().ok().and_then(|s| *s)
 }
 
-pub(super) async fn query_status() -> Result<Option<ServiceStatus>, String> {
+pub(super) async fn query_status() -> Result<Option<ServiceStatus>, ConnectionError> {
     let (result, session) = match service_client::call(Request::Status).await {
         Ok(Response::Status { status, session }) => (Ok(Some(status)), session),
-        Ok(Response::Error { message }) => (Err(message), None),
-        Ok(_) => (Err(crate::errors::unexpected().into()), None),
+        Ok(Response::Error { message }) => (Err(ConnectionError::remote(message)), None),
+        Ok(_) => (Err(ConnectionError::Unexpected), None),
         Err(_) => (Ok(None), None),
     };
     if let Some(app) = APP.get() {
@@ -295,7 +293,7 @@ pub(super) const SERVICE_WAIT: Duration = Duration::from_secs(5 * 60);
 
 /// Ждёт, пока служба начнёт отвечать. Если её нет — один раз просит Windows её
 /// запустить. `Err` — служба так и не ответила (текст для пользователя).
-pub(crate) async fn wait_for_service() -> Result<ServiceStatus, String> {
+pub(crate) async fn wait_for_service() -> Result<ServiceStatus, ConnectionError> {
     let start = Instant::now();
     let mut asked = false;
     loop {
@@ -303,19 +301,19 @@ pub(crate) async fn wait_for_service() -> Result<ServiceStatus, String> {
             return Ok(status);
         }
         if service_client::version_mismatch() {
-            return Err(errors::version_mismatch().into());
+            return Err(ServiceError::VersionMismatch.into());
         }
         if !asked {
             asked = true;
             match tauri::async_runtime::spawn_blocking(about::start_blocking).await {
                 Ok(Ok(())) => tracing::info!("служба KVT запущена из приложения"),
                 // Не установлена или отключена — ждать бесполезно.
-                Ok(Err(message)) => return Err(message),
+                Ok(Err(message)) => return Err(ConnectionError::ServiceStart(message)),
                 Err(_) => {}
             }
         }
         if start.elapsed() >= SERVICE_WAIT {
-            return Err(errors::no_service().into());
+            return Err(ServiceError::NotRunning.into());
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
@@ -353,7 +351,7 @@ pub(super) fn spawn_connect_on_start(app: AppHandle) {
             Ok(_) if app.state::<AppState>().epoch() != epoch => return,
             Ok(ServiceStatus::Disconnected | ServiceStatus::Failed { .. }) => {
                 match connect_auto(&app, epoch, true).await {
-                    Err(e) if kvt_core::ipc::is_cancelled(&e) => return,
+                    Err(ConnectionError::Cancelled) => return,
                     other => other.map(|_| ()),
                 }
             }

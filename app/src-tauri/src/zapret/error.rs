@@ -5,9 +5,15 @@ use kvt_core::i18n::tr;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ZapretError {
-    /// Служба не ответила или ответила ошибкой; текст уже для пользователя.
+    /// Запрос до службы не дошёл.
+    #[error(transparent)]
+    Service(#[from] crate::service_client::ServiceError),
+    /// Статус службы не получен.
+    #[error(transparent)]
+    Connection(#[from] crate::connection::ConnectionError),
+    /// Служба ответила ошибкой (`Response::Error`); текст уже для пользователя.
     #[error("{0}")]
-    Service(String),
+    Remote(String),
     /// Служба ответила не тем (`errors::unexpected`: разные версии окна и службы).
     #[error("{}", crate::errors::unexpected())]
     Unexpected,
@@ -53,9 +59,9 @@ pub enum ZapretError {
     /// Последний релиз Flowseal не получен или не разобран; текст без адреса.
     #[error("{0}")]
     Release(String),
-    /// Выбор (стратегия для сети) не сохранился; текст — от `update_choice`.
-    #[error("{0}")]
-    Settings(String),
+    /// Выбор (стратегия для сети) не сохранился.
+    #[error(transparent)]
+    Settings(#[from] crate::settings::SettingsError),
     /// Отравленный замок или упавшая фоновая задача (`errors::state_text`).
     #[error("{}", crate::errors::state_text())]
     State,
@@ -73,7 +79,7 @@ mod tests {
 
     #[test]
     fn service_text_is_passed_through() {
-        let e = ZapretError::Service("winws не запустился".into());
+        let e = ZapretError::Remote("winws не запустился".into());
         assert_eq!(String::from(e), "winws не запустился");
     }
 }

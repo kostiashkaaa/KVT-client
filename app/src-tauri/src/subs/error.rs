@@ -48,6 +48,9 @@ pub enum SubsError {
         )
     )]
     NoLink,
+    /// Выбор (сервер) не сохранился.
+    #[error(transparent)]
+    Settings(#[from] crate::settings::SettingsError),
 }
 
 impl From<SubsError> for String {

@@ -3,6 +3,24 @@
 
 use super::*;
 
+/// Почему пункт меню не сработал. В уведомление — текстом (`Display`).
+#[derive(Debug, thiserror::Error)]
+pub(super) enum ActionError {
+    #[error(transparent)]
+    Settings(#[from] crate::settings::SettingsError),
+    #[error(transparent)]
+    Connection(#[from] crate::ConnectionError),
+    #[error(transparent)]
+    Subs(#[from] crate::subs::SubsError),
+    /// «Обновить подписки»: сколько не обновилось (причины — у подписок).
+    #[error("{}", trf!(
+        "Не обновилось подписок: {}. Откройте KVT — у подписки будет видна причина.",
+        "Subscriptions not updated: {}. Open KVT — the reason is shown on the subscription.",
+        .0
+    ))]
+    NotRefreshed(usize),
+}
+
 pub(super) fn on_menu(app: &AppHandle, id: &str) {
     let app = app.clone();
     let id = id.to_owned();
@@ -17,10 +35,8 @@ pub(super) fn on_menu(app: &AppHandle, id: &str) {
             tauri::async_runtime::spawn(async move {
                 match act(&app, &id).await {
                     // Подключение прервали «Отключить» — это не ошибка.
-                    Err(message) if !kvt_core::ipc::is_cancelled(&message) => {
-                        crate::notify::error(&app, &message)
-                    }
-                    _ => {}
+                    Err(ActionError::Connection(crate::ConnectionError::Cancelled)) | Ok(()) => {}
+                    Err(e) => crate::notify::error(&app, &e.to_string()),
                 }
                 invalidate(&app);
             });
@@ -50,17 +66,17 @@ pub(super) fn active(app: &AppHandle) -> (bool, bool, bool) {
 pub(super) fn change(
     app: &AppHandle,
     f: impl FnOnce(&mut crate::Choice),
-) -> Result<crate::Choice, String> {
+) -> Result<crate::Choice, crate::settings::SettingsError> {
     let choice = crate::update_choice(app, f)?;
     let _ = app.emit(watchdog::CHOICE_EVENT, ());
     Ok(choice)
 }
 
-pub(super) async fn reconnect(app: &AppHandle) -> Result<(), String> {
+pub(super) async fn reconnect(app: &AppHandle) -> Result<(), crate::ConnectionError> {
     connect_current(app, true).await.map(|_| ())
 }
 
-pub(super) async fn act(app: &AppHandle, id: &str) -> Result<(), String> {
+pub(super) async fn act(app: &AppHandle, id: &str) -> Result<(), ActionError> {
     if id != "auto" && id != "tool:refresh" {
         app.state::<AppState>().user_acted();
     }
@@ -142,10 +158,7 @@ pub(super) async fn act(app: &AppHandle, id: &str) -> Result<(), String> {
         "tool:refresh" => {
             let failed = crate::subs::refresh_all(app).await?;
             if failed > 0 {
-                return Err(trf!(
-                    "Не обновилось подписок: {failed}. Откройте KVT — у подписки будет видна причина.",
-                    "Subscriptions not updated: {failed}. Open KVT — the reason is shown on the subscription."
-                ));
+                return Err(ActionError::NotRefreshed(failed));
             }
         }
         "quit" => quit(app).await,

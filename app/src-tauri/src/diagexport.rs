@@ -65,7 +65,7 @@ fn config(state: &AppState) -> Value {
             }
         }
         Ok(Plan::Zapret(plan)) => json!({ "mode": "zapret", "plan": plan }),
-        Err(e) => json!({ "error": e }),
+        Err(e) => json!({ "error": e.to_string() }),
     }
 }
 
@@ -108,7 +108,7 @@ async fn collect(state: &AppState) -> Vec<DiagFile> {
         "service": match &status {
             Ok(Some(s)) => serde_json::to_value(s).unwrap_or_default(),
             Ok(None) => json!("служба не отвечает"),
-            Err(e) => json!(e),
+            Err(e) => json!(e.to_string()),
         },
         "tunnelOk": state.tunnel.lock().ok().and_then(|t| *t),
         "choice": choice,

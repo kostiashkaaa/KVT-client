@@ -92,7 +92,7 @@ async fn on_resume(app: &AppHandle) {
     }
     tracing::info!("после сна данные не идут — переподключение");
     match crate::connect_auto(app, epoch, true).await {
-        Err(e) if kvt_core::ipc::is_cancelled(&e) => return,
+        Err(crate::ConnectionError::Cancelled) => return,
         Err(e) => tracing::warn!(error = %e, "переподключение после сна не удалось"),
         Ok(_) => {}
     }

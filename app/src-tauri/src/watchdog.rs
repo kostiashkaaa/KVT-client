@@ -180,7 +180,11 @@ async fn tunnel_alive(client: &reqwest::Client) -> Option<u64> {
 
 /// Подключается к серверу `key` и проверяет, что данные пошли. `epoch` — когда
 /// начали замену: «Отключить» после него подключение не перебьёт (`connect_auto`).
-pub(crate) async fn switch_to(app: &AppHandle, key: &str, epoch: u64) -> Result<(), String> {
+pub(crate) async fn switch_to(
+    app: &AppHandle,
+    key: &str,
+    epoch: u64,
+) -> Result<(), crate::ConnectionError> {
     let state = app.state::<AppState>();
     crate::update_choice(app, |c| c.server = Some(key.to_owned()))?;
     let _ = app.emit(CHOICE_EVENT, ());
@@ -189,11 +193,7 @@ pub(crate) async fn switch_to(app: &AppHandle, key: &str, epoch: u64) -> Result<
     tokio::time::sleep(crate::tunnel::SETTLE).await;
     let Some(ms) = tunnel_alive(&state.health).await else {
         crate::tunnel::set(app, Some(false));
-        return Err(kvt_core::i18n::tr(
-            "через сервер не идут данные",
-            "no data is going through the server",
-        )
-        .into());
+        return Err(crate::ConnectionError::NoData);
     };
     crate::tunnel::set(app, Some(true));
     crate::outcomes::worked(&state, key, ms);
@@ -282,7 +282,7 @@ pub(crate) fn revert_failed(app: &AppHandle, failed: Option<&str>, original: Opt
 }
 
 /// Возвращает выбор на сервер `key` и подключается к нему без проверки туннеля.
-async fn restore(app: &AppHandle, key: &str, epoch: u64) -> Result<(), String> {
+async fn restore(app: &AppHandle, key: &str, epoch: u64) -> Result<(), crate::ConnectionError> {
     crate::update_choice(app, |c| c.server = Some(key.to_owned()))?;
     let _ = app.emit(CHOICE_EVENT, ());
     let result = connect_auto(app, epoch, true).await.map(|_| ());
