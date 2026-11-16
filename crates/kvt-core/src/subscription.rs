@@ -161,9 +161,26 @@ pub struct NameFilter {
 const MAX_FILTER_WORDS: usize = 30;
 const MAX_FILTER_WORD: usize = 60;
 
+/// Фильтр названий не принят.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum FilterError {
+    #[error("{}", crate::trf!(
+        "Слово фильтра длиннее {} символов или с непечатаемыми символами.",
+        "A filter word is longer than {} characters or has non-printable characters.",
+        MAX_FILTER_WORD
+    ))]
+    BadWord,
+    #[error("{}", crate::trf!(
+        "В фильтре больше {} слов.",
+        "The filter has more than {} words.",
+        MAX_FILTER_WORDS
+    ))]
+    TooManyWords,
+}
+
 impl NameFilter {
     /// Из строк, как их ввёл пользователь: слова через запятую или с новой строки.
-    pub fn parse(keep: &str, drop: &str) -> Result<Self, String> {
+    pub fn parse(keep: &str, drop: &str) -> Result<Self, FilterError> {
         Ok(NameFilter {
             keep: filter_words(keep)?,
             drop: filter_words(drop)?,
@@ -182,7 +199,7 @@ impl NameFilter {
     }
 }
 
-fn filter_words(text: &str) -> Result<Vec<String>, String> {
+fn filter_words(text: &str) -> Result<Vec<String>, FilterError> {
     let mut words: Vec<String> = Vec::new();
     for w in text.split([',', ';', '\n']) {
         let w = w.trim().to_lowercase();
@@ -190,18 +207,12 @@ fn filter_words(text: &str) -> Result<Vec<String>, String> {
             continue;
         }
         if w.chars().count() > MAX_FILTER_WORD || w.chars().any(char::is_control) {
-            return Err(crate::trf!(
-                "Слово фильтра длиннее {MAX_FILTER_WORD} символов или с непечатаемыми символами.",
-                "A filter word is longer than {MAX_FILTER_WORD} characters or has non-printable characters."
-            ));
+            return Err(FilterError::BadWord);
         }
         words.push(w);
     }
     if words.len() > MAX_FILTER_WORDS {
-        return Err(crate::trf!(
-            "В фильтре больше {MAX_FILTER_WORDS} слов.",
-            "The filter has more than {MAX_FILTER_WORDS} words."
-        ));
+        return Err(FilterError::TooManyWords);
     }
     Ok(words)
 }

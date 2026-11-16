@@ -66,6 +66,27 @@ pub async fn resolve(
     resolve_with(&BOOK, local, hosts, doh, origin, query).await
 }
 
+/// Резолвер DoH не дал ответа на имя. Только для журнала (`log_round`).
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+enum DohError {
+    /// HTTP-клиент не создался.
+    #[error("{0}")]
+    Client(String),
+    /// Запрос DNS не собрался или ответ не разобрался.
+    #[error("{0}")]
+    Wire(String),
+    #[error("{}", crate::i18n::tr("нет ответа", "no response"))]
+    NoAnswer,
+    /// Прочая ошибка запроса.
+    #[error("{0}")]
+    Request(String),
+    #[error("HTTP {0}")]
+    Status(u16),
+    /// SERVFAIL, REFUSED: этот резолвер не смог — спросим следующий.
+    #[error("rcode {0}")]
+    Rcode(u8),
+}
+
 static BOOK: LazyLock<Mutex<Book>> = LazyLock::new(Mutex::default);
 static CLIENTS: LazyLock<Mutex<HashMap<Option<Ipv4Addr>, reqwest::Client>>> =
     LazyLock::new(Mutex::default);
@@ -197,7 +218,7 @@ async fn resolve_with<Q, F>(
 ) -> HashMap<String, Lookup>
 where
     Q: Fn(Endpoint, String) -> F + Clone + Send + Sync + 'static,
-    F: Future<Output = Result<Vec<IpAddr>, String>> + Send + 'static,
+    F: Future<Output = Result<Vec<IpAddr>, DohError>> + Send + 'static,
 {
     let mut out = HashMap::new();
     let mut wanted: Vec<(String, String)> = Vec::new();
@@ -277,7 +298,7 @@ where
     out
 }
 
-type Round = (HashMap<String, Vec<IpAddr>>, Vec<String>, Option<String>);
+type Round = (HashMap<String, Vec<IpAddr>>, Vec<String>, Option<DohError>);
 
 /// Все имена — одному резолверу, по `PARALLEL` сразу. Возвращает ответы, имена без
 /// ответа и первую ошибку (для журнала). Резолвер, не ответивший ни на одно из первых
@@ -286,7 +307,7 @@ type Round = (HashMap<String, Vec<IpAddr>>, Vec<String>, Option<String>);
 async fn ask_all<Q, F>(names: &[String], endpoint: Endpoint, query: &Q) -> Round
 where
     Q: Fn(Endpoint, String) -> F + Clone + Send + Sync + 'static,
-    F: Future<Output = Result<Vec<IpAddr>, String>> + Send + 'static,
+    F: Future<Output = Result<Vec<IpAddr>, DohError>> + Send + 'static,
 {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(PARALLEL));
     let mut set = JoinSet::new();
@@ -334,7 +355,7 @@ fn log_round(
     host: &str,
     asked: usize,
     answered: usize,
-    error: Option<String>,
+    error: Option<DohError>,
     took: Duration,
 ) {
     let outcome = if answered > 0 {
@@ -358,7 +379,7 @@ fn log_round(
 
 /// Клиент DoH на адрес источника `local`: имена резолверов привязаны к их IP,
 /// системный прокси не используется.
-fn client(local: Option<Ipv4Addr>) -> Result<reqwest::Client, String> {
+fn client(local: Option<Ipv4Addr>) -> Result<reqwest::Client, DohError> {
     let mut clients = lock(&CLIENTS);
     if let Some(c) = clients.get(&local) {
         return Ok(c.clone());
@@ -373,7 +394,9 @@ fn client(local: Option<Ipv4Addr>) -> Result<reqwest::Client, String> {
     for doh in RESOLVERS.iter().filter_map(|r| r.doh) {
         builder = builder.resolve(doh.host, SocketAddr::from((doh.ip, 443)));
     }
-    let client = builder.build().map_err(|e| e.to_string())?;
+    let client = builder
+        .build()
+        .map_err(|e| DohError::Client(e.to_string()))?;
     // Адрес адаптера меняется со сменой сети — старые клиенты не копим.
     if clients.len() >= 4 {
         clients.clear();
@@ -387,13 +410,13 @@ async fn ask(
     client: reqwest::Client,
     endpoint: Endpoint,
     name: String,
-) -> Result<Vec<IpAddr>, String> {
+) -> Result<Vec<IpAddr>, DohError> {
     let a = post(&client, endpoint, &name, wire::TYPE_A).await?;
     match a.rcode {
         0 => {}
         wire::RCODE_NXDOMAIN => return Ok(Vec::new()),
         // SERVFAIL, REFUSED: этот резолвер не смог — спросим следующий.
-        code => return Err(format!("rcode {code}")),
+        code => return Err(DohError::Rcode(code)),
     }
     let ips = usable(a.a.into_iter().map(IpAddr::V4));
     if !ips.is_empty() {
@@ -408,9 +431,9 @@ async fn post(
     endpoint: Endpoint,
     name: &str,
     qtype: u16,
-) -> Result<wire::Answer, String> {
+) -> Result<wire::Answer, DohError> {
     // RFC 8484: в DoH id = 0, ответ привязан к HTTP-запросу.
-    let q = wire::query(0, name, qtype).map_err(|e| e.to_string())?;
+    let q = wire::query(0, name, qtype).map_err(|e| DohError::Wire(e.to_string()))?;
     let response = client
         .post(format!("https://{}/dns-query", endpoint.host))
         .header("content-type", "application/dns-message")
@@ -420,17 +443,17 @@ async fn post(
         .await
         .map_err(|e| describe(&e))?;
     if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status().as_u16()));
+        return Err(DohError::Status(response.status().as_u16()));
     }
     let body = response.bytes().await.map_err(|e| describe(&e))?;
-    wire::parse(&body, 0).map_err(|e| e.to_string())
+    wire::parse(&body, 0).map_err(|e| DohError::Wire(e.to_string()))
 }
 
-fn describe(e: &reqwest::Error) -> String {
+fn describe(e: &reqwest::Error) -> DohError {
     if e.is_timeout() || e.is_connect() {
-        crate::i18n::tr("нет ответа", "no response").into()
+        DohError::NoAnswer
     } else {
-        e.to_string()
+        DohError::Request(e.to_string())
     }
 }
 
@@ -442,7 +465,7 @@ mod tests {
     const SERVER: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
 
     /// Поддельный резолвер: кто и сколько раз спрошен, отвечают только `alive`.
-    type FakeAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Vec<IpAddr>, String>> + Send>>;
+    type FakeAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Vec<IpAddr>, DohError>> + Send>>;
 
     #[derive(Clone)]
     struct Fake {
@@ -467,7 +490,7 @@ mod tests {
                 Box::pin(async move {
                     if !alive {
                         tokio::time::sleep(Duration::from_millis(20)).await;
-                        Err("нет ответа".into())
+                        Err(DohError::NoAnswer)
                     } else if name.starts_with("nx.") {
                         Ok(Vec::new())
                     } else {

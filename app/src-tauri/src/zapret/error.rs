@@ -56,9 +56,12 @@ pub enum ZapretError {
         )
     )]
     Interrupted,
-    /// Последний релиз Flowseal не получен или не разобран; текст без адреса.
+    /// Последний релиз Flowseal не получен; текст без адреса.
     #[error("{0}")]
     Release(String),
+    /// Ответ GitHub о релизе не подошёл.
+    #[error(transparent)]
+    ReleaseAnswer(#[from] kvt_core::zapret::ReleaseError),
     /// Выбор (стратегия для сети) не сохранился.
     #[error(transparent)]
     Settings(#[from] crate::settings::SettingsError),

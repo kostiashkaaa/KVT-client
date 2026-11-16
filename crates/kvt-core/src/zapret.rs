@@ -84,7 +84,29 @@ pub struct Release {
 
 /// Разбор `releases/latest`. Ссылка — только на релизы Flowseal, хэш — из `digest`
 /// (GitHub считает его сам при загрузке файла).
-pub fn parse_release(json: &[u8]) -> Result<Release, String> {
+/// Ответ GitHub о релизе Flowseal не подошёл.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ReleaseError {
+    #[error("{}", crate::trf!("ответ GitHub: {}", "GitHub response: {}", .0))]
+    Json(String),
+    #[error("{}", crate::trf!("непонятная версия «{}»", "unrecognized version “{}”", .0))]
+    Version(String),
+    #[error(
+        "{}",
+        crate::i18n::tr("в релизе нет архива zip", "the release has no zip archive")
+    )]
+    NoZip,
+    #[error(
+        "{}",
+        crate::i18n::tr(
+            "у архива нет SHA-256 от GitHub",
+            "the archive has no SHA-256 from GitHub",
+        )
+    )]
+    NoHash,
+}
+
+pub fn parse_release(json: &[u8]) -> Result<Release, ReleaseError> {
     #[derive(Deserialize)]
     struct Asset {
         name: String,
@@ -96,34 +118,23 @@ pub fn parse_release(json: &[u8]) -> Result<Release, String> {
         tag_name: String,
         assets: Vec<Asset>,
     }
-    let raw: Raw = serde_json::from_slice(json)
-        .map_err(|e| crate::trf!("ответ GitHub: {e}", "GitHub response: {e}"))?;
+    let raw: Raw = serde_json::from_slice(json).map_err(|e| ReleaseError::Json(e.to_string()))?;
     let version = raw.tag_name.trim_start_matches('v').to_owned();
     if !valid_version(&version) {
-        return Err(crate::trf!(
-            "непонятная версия «{}»",
-            "unrecognized version “{}”",
-            raw.tag_name
-        ));
+        return Err(ReleaseError::Version(raw.tag_name));
     }
     let expected = archive_url(&version);
     let asset = raw
         .assets
         .into_iter()
         .find(|a| a.name.ends_with(".zip") && a.browser_download_url == expected)
-        .ok_or(crate::i18n::tr(
-            "в релизе нет архива zip",
-            "the release has no zip archive",
-        ))?;
+        .ok_or(ReleaseError::NoZip)?;
     let sha256 = asset
         .digest
         .as_deref()
         .and_then(|d| d.strip_prefix("sha256:"))
         .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-        .ok_or(crate::i18n::tr(
-            "у архива нет SHA-256 от GitHub",
-            "the archive has no SHA-256 from GitHub",
-        ))?
+        .ok_or(ReleaseError::NoHash)?
         .to_ascii_lowercase();
     Ok(Release {
         version,

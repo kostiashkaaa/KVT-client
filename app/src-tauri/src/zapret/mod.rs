@@ -278,7 +278,7 @@ async fn latest(force: bool, state: &AppState) -> Result<Release, ZapretError> {
         );
     }
     let body = body.map_err(ZapretError::Release)?;
-    let release = kvt_core::zapret::parse_release(&body).map_err(ZapretError::Release)?;
+    let release = kvt_core::zapret::parse_release(&body)?;
     if let Ok(mut cache) = state.zapret_release.lock() {
         *cache = Some((Instant::now(), release.clone()));
     }

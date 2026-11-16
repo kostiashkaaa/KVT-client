@@ -291,13 +291,18 @@ pub struct BrowserDns {
     pub templates: String,
 }
 
-pub fn parse_facts(json: &str) -> Result<Facts, String> {
-    serde_json::from_str(json.trim().trim_start_matches('\u{feff}')).map_err(|e| {
-        trf!(
-            "не удалось разобрать сведения о системе: {e}",
-            "couldn't read the system information: {e}"
-        )
-    })
+/// Ответ скрипта сбора сведений о системе не разобран.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("{}", trf!(
+    "не удалось разобрать сведения о системе: {}",
+    "couldn't read the system information: {}",
+    .0
+))]
+pub struct FactsError(pub String);
+
+pub fn parse_facts(json: &str) -> Result<Facts, FactsError> {
+    serde_json::from_str(json.trim().trim_start_matches('\u{feff}'))
+        .map_err(|e| FactsError(e.to_string()))
 }
 
 /// Адрес прокси из `WinHttpSettings` (структура WINHTTP_PROXY_INFO в реестре):

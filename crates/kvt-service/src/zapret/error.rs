@@ -81,8 +81,8 @@ pub enum ZapretError {
     ))]
     Version(String),
     /// Ответ GitHub о релизе Flowseal не разобран; текст — от `parse_release`.
-    #[error("{0}")]
-    Release(String),
+    #[error(transparent)]
+    Release(#[from] kvt_core::zapret::ReleaseError),
     /// Новый комплект собран, но не прошёл ту же проверку, что и при запуске.
     #[error("{}", trf!(
         "новый комплект не прошёл проверку: {}",

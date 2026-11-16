@@ -24,8 +24,8 @@ pub(super) const MAX_HWID: usize = 128;
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(super) enum OptionsError {
     /// Фильтр названий не разобран (`NameFilter::parse`).
-    #[error("{0}")]
-    Filter(String),
+    #[error(transparent)]
+    Filter(#[from] kvt_core::subscription::FilterError),
     #[error("{}", kvt_core::i18n::tr(
         "User-Agent пустой, длиннее 200 символов или не латиницей — проверьте строку.",
         "The User-Agent is empty, longer than 200 characters or not in Latin script — check it.",
@@ -50,7 +50,7 @@ impl From<OptionsError> for String {
 }
 
 pub(super) fn parse_options(input: OptionsInput) -> Result<(SubOptions, OwnHwid), OptionsError> {
-    let filter = NameFilter::parse(&input.keep, &input.drop).map_err(OptionsError::Filter)?;
+    let filter = NameFilter::parse(&input.keep, &input.drop)?;
     let custom = input.client.as_deref() == Some(fetch::CUSTOM);
     let user_agent = if custom {
         Some(header_value(&input.user_agent, MAX_USER_AGENT).ok_or(OptionsError::UserAgent)?)

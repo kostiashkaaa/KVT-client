@@ -51,8 +51,8 @@ enum FixError {
     ))]
     PowerShell(String),
     /// Ответ скрипта сбора фактов не разобран (`audit::parse_facts`).
-    #[error("{0}")]
-    Facts(String),
+    #[error(transparent)]
+    Facts(#[from] audit::FactsError),
     #[error(
         "{}",
         kvt_core::i18n::tr(
@@ -106,7 +106,7 @@ fn facts() -> Result<audit::Facts, FixError> {
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| FixError::PowerShell(e.to_string()))?;
-    audit::parse_facts(&String::from_utf8_lossy(&out.stdout)).map_err(FixError::Facts)
+    Ok(audit::parse_facts(&String::from_utf8_lossy(&out.stdout))?)
 }
 
 fn run(program: &str, args: &[&str]) -> Result<(), FixError> {

@@ -439,7 +439,7 @@ pub async fn fetch_update(
         .get(zapret::RELEASES_API, 1024 * 1024)
         .await
         .map_err(|e| ZapretError::Version(e.to_string()))?;
-    let release = zapret::parse_release(&body).map_err(ZapretError::Release)?;
+    let release = zapret::parse_release(&body)?;
     let active = active_bundle(paths);
     let current = read_version(&active);
     if !zapret::newer(&release.version, &current) {
