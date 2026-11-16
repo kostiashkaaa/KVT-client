@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs",
     "screenshots": "node scripts/screenshots.mjs",
     "tauri": "tauri"
   },
@@ -22,6 +24,7 @@
     "svelte": "^5.16.0",
     "svelte-check": "^4.1.1",
     "typescript": "~5.7.2",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "vitest": "^3.2.4"
   }
 }

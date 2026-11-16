@@ -10,7 +10,8 @@ let current: Lang = "ru";
 
 export function setLang(lang: Lang): void {
   current = lang;
-  document.documentElement.lang = lang;
+  // Без документа — в тестах (Vitest, среда node).
+  if (typeof document !== "undefined") document.documentElement.lang = lang;
 }
 
 export function lang(): Lang {

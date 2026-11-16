@@ -41,4 +41,7 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: npm run check
+      - run: npm test
+      # Все разделы превью открываются без ошибок; браузер — Chrome раннера.
+      - run: npm run smoke
       - run: npm run build
