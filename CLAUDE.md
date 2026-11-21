@@ -7,14 +7,16 @@ kill switch. Rust (Tauri 2) + Svelte 5. Сборка, запуск службы,
 ## Части
 
 - `crates/kvt-core` — общая логика без прав: модель, парсеры ссылок (`parser/`), конфиги
-  ядер (`compile/`), маршрутизация, IPC (`ipc.rs`), `governor.rs`, `netlog.rs`.
+  ядер (`compile/`), маршрутизация, IPC (`ipc.rs`), `governor.rs`, `netlog.rs`,
+  `services/` (плитки сервисов: путь трафика и вердикт пробы, без сети).
 - `crates/kvt-service` — служба Windows с правами администратора: ядра, TUN, kill switch
   (WFP), zapret. Принимает команды по named pipe (`pipe.rs` → `handler.rs`).
 - `app/src-tauri` — крейт `kvt-app`, бинарник `kvt.exe`: подписки, трей, watchdog, связь
   со службой (`service_client.rs`). Команды для окна — `generate_handler!` в `main.rs`.
 - `app/src` — интерфейс; весь вызов Rust идёт через `app/src/lib/api.ts` — вход, разделы
   в `app/src/lib/api/` (`bridge.ts` — `invoke`/`inTauri`, `preview.ts` — данные превью).
-- `presets/` — данные (сетевая политика, правила ошибок ядер), не код.
+- `presets/` — данные (сетевая политика, правила ошибок ядер, `services.json` — сервисы
+  для плиток на вкладке «Проверка»), не код.
 - `ARCHITECTURE.md` — открытое устройство и «Чего не делаем». `docs/` — локальный план
   (`docs/ARCHITECTURE.md` с этапами, чек-лист релиза), в git не идёт.
 
@@ -85,6 +87,9 @@ kill switch. Rust (Tauri 2) + Svelte 5. Сборка, запуск службы,
   дорастает до 30 ГБ. Чистит `scripts\clean-target.ps1`, `dev.ps1` зовёт его сам.
 - Журналы: окно — `%LOCALAPPDATA%\dev.kvt.client\logs\kvt.log`, служба —
   `C:\ProgramData\KVT\logs\service.log`.
+- `RoutingPlan::resolve_domain` не видит наборы правил (`itdog:…`, `rf:…` — бинарные
+  файлы ядер): «только заблокированное» покажет YouTube напрямую, хотя он идёт через VPN.
+  Для «куда пойдёт сервис» — `resolve_host` с членством из `presets/services.json`.
 - Версия живёт в трёх местах: `Cargo.toml` (workspace), `app/package.json`,
   `app/src-tauri/tauri.conf.json`; `release.yml` сверяет тег с `tauri.conf.json`. Плюс
   раздел в `CHANGELOG.md`.
