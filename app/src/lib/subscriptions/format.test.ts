@@ -82,6 +82,11 @@ describe("details", () => {
     expect(details(sub({ hidden: 2 }))).toContain("12 серверов (ещё 2 скрыто фильтром)");
   });
 
+  it("по-английски скобка со скрытыми серверами отделена пробелом", () => {
+    setLang("en");
+    expect(details(sub({ hidden: 2 }))).toContain("12 servers (2 more hidden by the filter)");
+  });
+
   it("только что и минуты", () => {
     expect(details(sub({ updatedAt: sec(NOW) }))).toContain("обновлена только что");
     expect(details(sub({ updatedAt: sec(NOW) - 5 * 60 }))).toContain("обновлена 5 мин назад");
@@ -165,6 +170,12 @@ describe("trouble", () => {
   it("без серверов — без пометки", () => {
     const s = sub({ lastError: "Нет ответа.", servers: 0 });
     expect(trouble(s, sec(NOW) - 2 * HOUR)).toBe("Не обновилась 2 ч назад: Нет ответа.");
+  });
+
+  it("по-английски пометка отделена от причины пробелом", () => {
+    setLang("en");
+    const s = sub({ lastError: "No answer!", servers: 5 });
+    expect(trouble(s, sec(NOW) - 2 * HOUR)).toBe("Not updated 2 h ago: No answer. Servers from the previous version still work.");
   });
 });
 

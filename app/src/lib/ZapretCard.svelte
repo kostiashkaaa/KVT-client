@@ -100,7 +100,7 @@
           <option value={current}>{strategyTitle(current)}</option>
         {/if}
         {#each strategies as s (s.id)}
-          <option value={s.id}>{s.title}{s.recommended ? "" : t(" (не рекомендуется)", "(not recommended)")}</option>
+          <option value={s.id}>{s.title}{s.recommended ? "" : t(" (не рекомендуется)", " (not recommended)")}</option>
         {/each}
       </select>
       {#if pick.running}

@@ -51,7 +51,7 @@ export function details(s: SubscriptionItem): string {
   // Перенесённая подписка, которую ещё не удалось загрузить.
   if (s.byUrl && s.servers === 0 && s.hidden === 0)
     return t("ещё не загружена — нажмите «Обновить», когда будет доступ к сайту провайдера", "not loaded yet — press “Update” once the provider's site is reachable");
-  const hidden = s.hidden > 0 ? t(` (ещё ${s.hidden} скрыто фильтром)`, `(${s.hidden} more hidden by the filter)`) : "";
+  const hidden = s.hidden > 0 ? t(` (ещё ${s.hidden} скрыто фильтром)`, ` (${s.hidden} more hidden by the filter)`) : "";
   const servers = `${count(s.servers, ["сервер", "сервера", "серверов"], ["server", "servers"])}${hidden}`;
   if (!s.byUrl) return t(`${servers} · добавлены вручную, не обновляются`, `${servers} · added manually, not updated`);
   return [servers, t(`обновлена ${ago(s.updatedAt)}`, `updated ${ago(s.updatedAt)}`), s.nextUpdate ? t(`следующее ${inFuture(s.nextUpdate)}`, `next ${inFuture(s.nextUpdate)}`) : null]
@@ -107,6 +107,6 @@ export function skippedSummary(s: SubscriptionItem, skipped: number): string {
 /** Причина неудачного обновления одной фразой, с точкой в конце. */
 export function trouble(s: SubscriptionItem, at: number): string {
   const reason = s.lastError?.trim().replace(/[.!]*$/, ".") ?? "";
-  const old = s.servers > 0 ? t(" Пока работают серверы из прошлой версии.", "Servers from the previous version still work.") : "";
+  const old = s.servers > 0 ? t(" Пока работают серверы из прошлой версии.", " Servers from the previous version still work.") : "";
   return t(`Не обновилась ${ago(at)}: ${reason}${old}`, `Not updated ${ago(at)}: ${reason}${old}`);
 }
