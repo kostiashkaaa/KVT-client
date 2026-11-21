@@ -577,6 +577,7 @@
       <Diagnostics
         connected={status?.state === "connected"}
         vpnState={status?.state ?? "none"}
+        {mode}
         bind:dns
         {onfix}
         autorun={autoDiagnose}

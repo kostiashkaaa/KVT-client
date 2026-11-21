@@ -48,12 +48,15 @@ async function shoot(browser, lang) {
     localStorage.setItem("kvt.lang", value);
   }, lang);
   const page = await context.newPage();
-  const save = async (name) => {
+  // `anchor` — id карточки, с которой начать кадр (иначе — с начала страницы).
+  const save = async (name, anchor) => {
     // Клик мог прокрутить страницу — снимаем с начала.
-    await page.evaluate(() => {
+    await page.evaluate((id) => {
       window.scrollTo(0, 0);
       for (const el of document.querySelectorAll("*")) if (el.scrollTop) el.scrollTop = 0;
-    });
+      // Вкладка «Проверка» начинается с плиток сервисов: «Почему не работает?» ниже.
+      if (id) document.getElementById(id)?.scrollIntoView({ block: "start" });
+    }, anchor);
     await page.waitForTimeout(200);
     await page.screenshot({ path: path.join(out, `${name}-${lang}.png`) });
   };
@@ -80,7 +83,7 @@ async function shoot(browser, lang) {
   await nav(l.home);
   await page.getByText(l.why, { exact: true }).click();
   await page.waitForTimeout(3000); // шаги проверки в превью идут по очереди
-  await save("why");
+  await save("why", "why-card");
 
   await context.close();
 }

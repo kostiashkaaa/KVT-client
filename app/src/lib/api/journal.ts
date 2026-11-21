@@ -12,7 +12,8 @@ export type NetPurpose =
   | "zapret"
   | "rules"
   | "update"
-  | "captive";
+  | "captive"
+  | "service";
 
 export interface NetEvent {
   /** Unix-время в миллисекундах. */

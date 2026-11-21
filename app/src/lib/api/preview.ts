@@ -1,6 +1,7 @@
 import { t } from "../i18n";
 import { inTauri } from "./bridge";
 import type { Added, Group, ServerSummary, ServiceStatus } from "./connection";
+import type { ServicesSnapshot, ServiceTile } from "./services";
 
 // Предпросмотр интерфейса в обычном браузере (npm run dev) без Rust-части.
 // Флаг — первый эмодзи-флаг, ведущий уходит из названия (упрощённо, как kvt_core::flag).
@@ -225,5 +226,64 @@ export function previewAdd(body: string): Added {
     servers: lines.length,
     subscriptions: 0,
     failed: [],
+  };
+}
+
+// Сервисы на вкладке «Проверка». В `?demo` VPN подключён и всё открывается; в обычном превью
+// ничего не подключено, а кнопка «Проверить» показывает все три вердикта. Тексты
+// считаются при вызове: язык ставится до монтирования, а не при загрузке модуля.
+let servicesChecked = false;
+
+/** Превью сервисов; `check` — нажали «Проверить». */
+export function previewServices(opts: { check?: boolean } = {}): ServicesSnapshot {
+  if (opts.check) servicesChecked = true;
+  const at = Math.floor(Date.now() / 1000) - 90;
+  const tile = (
+    id: string,
+    name: string,
+    via: ServiceTile["via"],
+    state: ServiceTile["state"],
+  ): ServiceTile => ({
+    id,
+    name,
+    via,
+    state,
+    detail:
+      state === "works"
+        ? t("Открывается", "Opens")
+        : state === "slow"
+          ? t("Открывается, но медленно", "Opens, but slowly")
+          : state === "down"
+            ? t("Соединение обрывается — похоже на блокировку", "The connection drops — looks like a block")
+            : "",
+  });
+  if (demo) {
+    return {
+      at,
+      checking: false,
+      running: "vpn",
+      tiles: [
+        tile("youtube", "YouTube", "vpn", "works"),
+        tile("discord", "Discord", "vpn", "works"),
+        tile("telegram", "Telegram", "vpn", "works"),
+        tile("instagram", "Instagram", "vpn", "works"),
+        tile("chatgpt", "ChatGPT", "vpn", "works"),
+      ],
+    };
+  }
+  const states = servicesChecked
+    ? (["down", "slow", "works", "down", "works"] as const)
+    : (["unknown", "unknown", "unknown", "unknown", "unknown"] as const);
+  return {
+    at: servicesChecked ? at : null,
+    checking: false,
+    running: "off",
+    tiles: [
+      tile("youtube", "YouTube", "direct", states[0]),
+      tile("discord", "Discord", "direct", states[1]),
+      tile("telegram", "Telegram", "direct", states[2]),
+      tile("instagram", "Instagram", "direct", states[3]),
+      tile("chatgpt", "ChatGPT", "direct", states[4]),
+    ],
   };
 }

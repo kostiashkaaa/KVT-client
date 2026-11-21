@@ -22,12 +22,14 @@
   import Icon from "./Icon.svelte";
   import DiagExport from "./DiagExport.svelte";
   import PcAudit from "./PcAudit.svelte";
+  import ServiceTiles from "./services/ServiceTiles.svelte";
   import {
     dnsCatalog,
     dnsCheck,
     troubleshoot,
     type DnsChoice,
     type Fix,
+    type Mode,
     type PathStatus,
     type Resolver,
   } from "./api";
@@ -35,6 +37,7 @@
   let {
     connected,
     vpnState,
+    mode,
     dns = $bindable(),
     onfix,
     autorun,
@@ -43,6 +46,8 @@
     connected: boolean;
     /** Состояние службы (`status.state`): итог проверки устаревает, когда оно меняется. */
     vpnState: string;
+    /** Выбранный режим: от него зависит набор сервисов. */
+    mode: Mode;
     dns: DnsChoice;
     onfix: (fix: Fix) => void;
     /** «Почему не работает?» нажали с главной: запустить проверку сразу. */
@@ -63,6 +68,14 @@
     } finally {
       st.diagnosing = false;
     }
+  }
+
+  /** ✗ на плитке сервиса: искать причину прямо здесь, карточка ниже.
+   *  TODO(этап 0.9.8): передать сервис в `troubleshoot` (`conclude_for` в Rust) —
+   *  пока это общий поиск причины. */
+  function whyService() {
+    document.getElementById("why-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    void diagnose();
   }
 
   $effect(() => {
@@ -144,7 +157,9 @@
 </script>
 
 <div class="page">
-<section class="card block">
+<ServiceTiles {mode} {vpnState} onwhy={whyService} />
+
+<section class="card block" id="why-card">
   <div class="row">
     <div>
       <h2>{t("Почему не работает?", "Why isn't it working?")}</h2>
@@ -303,6 +318,11 @@
     flex-direction: column;
     gap: var(--space-3);
     padding: var(--space-5);
+  }
+
+  /* Прокрутка к карточке с плитки сервиса (и кадр README) не прижимает её к краю. */
+  #why-card {
+    scroll-margin-top: var(--space-5);
   }
 
   .row {

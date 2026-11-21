@@ -120,6 +120,16 @@ export {
   onZapretAuto,
 } from "./api/zapret";
 export {
+  type ServiceVia,
+  type TileState,
+  type ServicesRunning,
+  type ServiceTile,
+  type ServicesSnapshot,
+  servicesLast,
+  servicesCheck,
+  onServices,
+} from "./api/services";
+export {
   type TgProxyStatus,
   tgProxyStatus,
   tgProxyOpen,

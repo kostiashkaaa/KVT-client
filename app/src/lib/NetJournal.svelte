@@ -9,7 +9,7 @@
   /** Сколько серверов сводки видно сразу: после проверки сотни серверов таблица растянулась бы на экраны. */
   const HOSTS_SHOWN = 10;
 
-  type Filter = "all" | "problems" | "subscription" | "servers" | "tunnel" | "network" | "dns" | "zapret" | "lists";
+  type Filter = "all" | "problems" | "subscription" | "servers" | "tunnel" | "network" | "dns" | "zapret" | "service" | "lists";
 
   let journal = $state<NetJournal | null>(null);
   let error = $state<string | null>(null);
@@ -27,6 +27,7 @@
     ["network", t("Проверка сети", "Network check")],
     ["dns", "DNS"],
     ["zapret", "Zapret"],
+    ["service", t("Сервисы", "Services")],
     ["lists", t("Списки и обновления", "Lists and updates")],
   ];
 
@@ -40,6 +41,7 @@
     rules: t("Списки", "Lists"),
     update: t("Обновление", "Update"),
     captive: t("Проверка сети", "Network check"),
+    service: t("Сервис", "Service"),
   };
 
   const routeTitle: Record<NetEvent["route"], string> = {
