@@ -31,6 +31,7 @@ mod prober;
 mod service_client;
 mod services;
 mod settings;
+mod sitecheck;
 mod state;
 mod store;
 mod subs;
@@ -164,6 +165,7 @@ fn main() {
             dns_catalog,
             dnscheck::dns_check,
             troubleshoot::troubleshoot,
+            sitecheck::site_check,
             services::services_last,
             services::services_check,
             services::services_pick,

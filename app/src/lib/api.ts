@@ -61,6 +61,17 @@ export {
   fullCheck,
 } from "./api/check";
 export {
+  type SiteRunning,
+  type SitePath,
+  type SiteSkip,
+  type SiteVerdict,
+  type SiteAdvice,
+  type SitePathReport,
+  type SiteSkipped,
+  type SiteReport,
+  siteCheck,
+} from "./api/sitecheck";
+export {
   type PathStatus,
   type ResolverReport,
   type SpoofFinding,

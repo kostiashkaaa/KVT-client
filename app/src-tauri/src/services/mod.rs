@@ -26,7 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod probe;
 mod run;
 
-pub(crate) use run::{check, export, fact, spawn_after_connect, Trigger};
+pub(crate) use run::{check, connected_plan, export, fact, spawn_after_connect, Trigger};
 
 /// Событие окну: итог изменился или проверка началась.
 pub const EVENT: &str = "services";

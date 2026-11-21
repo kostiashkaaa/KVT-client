@@ -22,6 +22,7 @@
   import Icon from "./Icon.svelte";
   import DiagExport from "./DiagExport.svelte";
   import PcAudit from "./PcAudit.svelte";
+  import SiteCheck from "./sitecheck/SiteCheck.svelte";
   import ServiceTiles from "./services/ServiceTiles.svelte";
   import {
     dnsCatalog,
@@ -204,6 +205,8 @@
     <DiagExport />
   </div>
 </section>
+
+<SiteCheck />
 
 <section class="card block" id="dns-check">
   <div class="row">

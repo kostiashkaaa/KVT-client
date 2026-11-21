@@ -138,7 +138,9 @@ async fn detect(state: &AppState) -> Active {
 
 /// План, с которым подключились. Окно перезапустили при работающем VPN — запомненного
 /// плана нет, тогда лучшее, что есть, — план из сохранённого выбора.
-fn connected_plan(state: &AppState) -> Option<(RoutingPlan, bool)> {
+/// Вне `services` им пользуется проверка одного сайта (`sitecheck`): «Гибрид» или
+/// нет — решает то, что реально запущено, а не выбранный режим.
+pub(crate) fn connected_plan(state: &AppState) -> Option<(RoutingPlan, bool)> {
     if let Some(with) = state.services.plan() {
         return Some((with.plan, with.hybrid));
     }

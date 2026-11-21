@@ -26,6 +26,7 @@ pub mod routing;
 pub mod rulesync;
 pub mod secret;
 pub mod services;
+pub mod sitecheck;
 pub mod subscription;
 pub mod tester;
 pub mod tgproxy;
