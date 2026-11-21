@@ -10,17 +10,19 @@
     zapretConflicts,
     zapretStopConflicts,
     zapretStrategies,
-    type ZapretChoice,
     type ZapretConflict,
     type ZapretStrategy,
   } from "./api";
   import { check, listenChecks, pick, startAutoselect } from "./zapretStore.svelte";
+  import { choice } from "./choiceStore.svelte";
+  import { conn } from "./connectionStore.svelte";
 
-  let {
-    zapret = $bindable(),
-    vpnConnected,
-    onopen,
-  }: { zapret: ZapretChoice; vpnConnected: boolean; onopen: () => void } = $props();
+  // Настройки zapret читаются и пишутся прямо в стор выбора, статус — `connectionStore`;
+  // один проп — переход на вкладку Zapret (навигация — дело окна).
+  let { onopen }: { onopen: () => void } = $props();
+
+  const zapret = $derived(choice.zapret);
+  const vpnConnected = $derived(conn.status?.state === "connected");
 
   listenChecks();
 
@@ -46,7 +48,7 @@
   function choose(id: string) {
     const byNetwork = { ...zapret.byNetwork };
     if (networkKey) delete byNetwork[networkKey];
-    zapret = { ...zapret, strategy: id, byNetwork };
+    choice.zapret = { ...zapret, strategy: id, byNetwork };
   }
 
   let conflicts = $state<ZapretConflict[]>([]);

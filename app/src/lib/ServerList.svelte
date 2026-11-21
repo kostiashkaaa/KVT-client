@@ -4,50 +4,34 @@
   import Icon from "./Icon.svelte";
   import Flag, { country } from "./Flag.svelte";
   import ServerName, { parts } from "./ServerName.svelte";
-  import type { Group, Outcome, QuickResult, ServerSummary, SubscriptionInfo } from "./api";
+  import type { Outcome, QuickResult, ServerSummary, SubscriptionInfo } from "./api";
+  import { choice } from "./choiceStore.svelte";
+  import { checks, subs } from "./subscriptionsStore.svelte";
 
-  let {
-    groups,
-    selected = $bindable(),
-    results,
-    checking,
-    oncheck,
-    outcomes,
-    fullChecking,
-    onfullcheck,
-    refreshing,
-    onrefresh,
-    onadd,
-    onremove,
-  }: {
-    groups: Group[];
-    /** Ключ выбранного сервера. */
-    selected: string | null;
-    results: Record<string, QuickResult>;
-    /** Группа, которую сейчас пингуют. */
-    checking: string | null;
-    oncheck: (group: string) => void;
-    /** Итоги полной проверки (приходят по одному). */
-    outcomes: Record<string, Outcome>;
-    /** Группа, которую сейчас проверяют полностью. */
-    fullChecking: string | null;
-    onfullcheck: (group: string) => void;
-    refreshing: string | null;
-    onrefresh: (group: string) => void;
-    onadd: () => void;
-    /** Удалить ключ из группы «Добавлено вручную». */
-    onremove?: (key: string) => Promise<void>;
-  } = $props();
+  // Список, выбор и проверки берутся из сторов окна; у списка один проп — «+»,
+  // открывающий панель добавления (ею владеет окно).
+  let { onadd }: { onadd: () => void } = $props();
+
+  const groups = $derived(subs.groups);
+  /** Ключ выбранного сервера. */
+  const selected = $derived(choice.selected);
+  const results = $derived(checks.results);
+  /** Группа, которую сейчас пингуют. */
+  const checking = $derived(checks.checking);
+  /** Итоги полной проверки (приходят по одному). */
+  const outcomes = $derived(checks.outcomes);
+  /** Группа, которую сейчас проверяют полностью. */
+  const fullChecking = $derived(checks.fullChecking);
+  const refreshing = $derived(checks.refreshing);
 
   /** Ключ, удаление которого ждёт подтверждения. */
   let confirmKey = $state<string | null>(null);
   let removing = $state(false);
 
   async function remove(key: string) {
-    if (!onremove) return;
     removing = true;
     try {
-      await onremove(key);
+      await checks.removeKey(key);
       confirmKey = null;
     } finally {
       removing = false;
@@ -262,7 +246,7 @@
             <button
               class="btn ghost square"
               disabled={refreshing !== null}
-              onclick={() => onrefresh(g.id)}
+              onclick={() => checks.refresh(g.id)}
               title={t("Обновить подписку", "Update subscription")}
               aria-label={t(`Обновить ${g.title}`, `Update ${g.title}`)}
             >
@@ -274,7 +258,7 @@
             class="btn ghost"
             class:busy={checking === g.id}
             disabled={checking !== null || fullChecking !== null}
-            onclick={() => oncheck(g.id)}
+            onclick={() => checks.check(g.id)}
             title={t("Пинг: только TCP-соединение, без TLS — не привлекает внимание DPI", "Ping: TCP connection only, no TLS — doesn't attract DPI attention")}
           >
             {t("Пинг", "Ping")}
@@ -283,7 +267,7 @@
             class="btn ghost"
             class:busy={fullChecking === g.id}
             disabled={checking !== null || fullChecking !== null}
-            onclick={() => onfullcheck(g.id)}
+            onclick={() => checks.runFullCheck(g.id)}
             title={t("Подключается к каждому серверу и скачивает 200 КБ. К одному серверу — не чаще двух раз в минуту; если провайдер заморозил соединения, серверы с тем же SNI несколько минут не проверяются", "Connects to each server and downloads 200 KB. At most twice a minute per server; if your ISP freezes connections, servers with the same SNI aren't checked for a few minutes")}
           >
             {t("Проверить", "Check")}
@@ -301,13 +285,13 @@
         <ul role="listbox" aria-label={g.title}>
           {#each servers.slice(0, limitOf(g.id)) as s (s.key)}
             {@const l = cell(g.id, s.key)}
-            <li class:manual={!g.byUrl && onremove}>
+            <li class:manual={!g.byUrl}>
               <button
                 class="row"
                 role="option"
                 aria-selected={selected === s.key}
                 class:selected={selected === s.key}
-                onclick={() => (selected = s.key)}
+                onclick={() => (choice.selected = s.key)}
               >
                 <Flag code={s.flag} width={24} />
                 <span class="info">
@@ -327,7 +311,7 @@
               </button>
               <!-- Ключ, добавленный вручную, удаляется по одному; подписку провайдер
                    обновляет сам — её серверы удаляются только всей подпиской. -->
-              {#if !g.byUrl && onremove}
+              {#if !g.byUrl}
                 <button
                   class="remove"
                   class:shown={confirmKey === s.key}
@@ -339,7 +323,7 @@
                 </button>
               {/if}
             </li>
-            {#if confirmKey === s.key && onremove}
+            {#if confirmKey === s.key && !g.byUrl}
               <li class="confirm" transition:slide={{ duration: 150 }}>
                 <span class="caption">
                   {t(`Удалить ключ «${s.name}»?`, `Delete key “${s.name}”?`)}{#if selected === s.key} {t("Если VPN подключён к нему, он отключится.", "If the VPN is connected to it, it will disconnect.")}{/if}

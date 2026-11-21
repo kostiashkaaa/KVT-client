@@ -12,28 +12,15 @@
     zapretConflicts,
     zapretStopConflicts,
     zapretStrategies,
-    type Mode,
-    type ServiceStatus,
-    type ZapretChoice,
     type ZapretConflict,
     type ZapretStrategy as Strategy,
   } from "./api";
   import { listenChecks } from "./zapretStore.svelte";
+  import { choice } from "./choiceStore.svelte";
+  import { conn, connect } from "./connectionStore.svelte";
 
-  let {
-    zapret = $bindable(),
-    mode = $bindable(),
-    status,
-    busy,
-    onconnect,
-  }: {
-    zapret: ZapretChoice;
-    mode: Mode;
-    status: ServiceStatus | null;
-    busy: boolean;
-    onconnect: () => Promise<void>;
-  } = $props();
-
+  // Настройки zapret и режим читаются и пишутся прямо в стор выбора; статус —
+  // `connectionStore`. Пропсов нет.
   listenChecks();
 
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -51,18 +38,19 @@
   });
 
   const running = $derived(
-    status?.state === "zapret"
-      ? { mode: "Zapret", strategy: status.strategy }
-      : status?.state === "connected" && mode === "hybrid"
-        ? { mode: t("Гибрид", "Hybrid"), strategy: strategyFor(zapret, networkKey) }
+    conn.status?.state === "zapret"
+      ? { mode: "Zapret", strategy: conn.status.strategy }
+      : conn.status?.state === "connected" && choice.mode === "hybrid"
+        ? { mode: t("Гибрид", "Hybrid"), strategy: strategyFor(choice.zapret, networkKey) }
         : null,
   );
-  const vpnConnected = $derived(status?.state === "connected");
+  const vpnConnected = $derived(conn.status?.state === "connected");
+  const busy = $derived(conn.busy);
 
   /** При работающем VPN zapret добавляется «Гибридом» — VPN не отключается. */
   async function enable() {
-    mode = vpnConnected ? "hybrid" : "zapret";
-    await onconnect();
+    choice.mode = vpnConnected ? "hybrid" : "zapret";
+    await connect();
   }
 
   // ── Стратегии ──
@@ -114,7 +102,7 @@
 <div class="page">
   <!-- Состояние и проверка -->
   <ZapretStatus
-    bind:zapret
+    bind:zapret={choice.zapret}
     {running}
     {vpnConnected}
     {networkLabel}
@@ -128,13 +116,13 @@
   />
 
   <!-- Стратегия и автопроверка -->
-  <ZapretStrategy bind:zapret {strategies} {networkKey} {networkLabel} {vpnConnected} {running} {busy} onenable={enable} />
+  <ZapretStrategy bind:zapret={choice.zapret} {strategies} {networkKey} {networkLabel} {vpnConnected} {running} {busy} onenable={enable} />
 
   <!-- Telegram -->
-  <ZapretTelegram bind:zapret {status} />
+  <ZapretTelegram bind:zapret={choice.zapret} status={conn.status} />
 
   <!-- Параметры -->
-  <ZapretOptions bind:zapret {running} />
+  <ZapretOptions bind:zapret={choice.zapret} {running} />
 
   <!-- Версия и обслуживание -->
   <ZapretMaintenance bind:confirmRepair onrefresh={reloadAfterMaintenance} />

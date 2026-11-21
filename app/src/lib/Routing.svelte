@@ -5,25 +5,21 @@
     listCatalog,
     type ListAction,
     type ListInfo,
-    type RoutingSettings,
   } from "./api";
   import Icon from "./Icon.svelte";
   import SiteList from "./SiteList.svelte";
+  import { choice } from "./choiceStore.svelte";
+  import { conn, connect, routingKey } from "./connectionStore.svelte";
 
-  let {
-    routing = $bindable(),
-    connected,
-    pending,
-    busy,
-    onapply,
-  }: {
-    routing: RoutingSettings;
-    connected: boolean;
-    /** Подключены с другими настройками маршрутизации. */
-    pending: boolean;
-    busy: boolean;
-    onapply: () => void;
-  } = $props();
+  // Настройки маршрутизации читаются и пишутся прямо в стор выбора; статус и
+  // переподключение — `connectionStore`. Пропсов нет.
+  /** Работает VPN (в режиме «VPN» или «Гибрид»). */
+  const connected = $derived(conn.status?.state === "connected");
+  /** Подключены с другими настройками маршрутизации. */
+  const pending = $derived(
+    conn.status?.state === "connected" && !!conn.connectedWith && conn.connectedWith.routing !== routingKey(),
+  );
+  const busy = $derived(conn.busy);
 
   let catalog = $state<ListInfo[]>([]);
   $effect(() => {
@@ -48,26 +44,26 @@
   /** Что делает пресет со списком, если пользователь ничего не выбрал. В режиме
    *  «напрямую» сайт из списка всё равно идёт через VPN, если он заблокирован. */
   function presetAction(id: string): string {
-    if (routing.listMode === "compact" && id === "russia_inside") return t("через VPN", "via VPN");
-    if (routing.listMode === "compact" && id === "russia_outside") return t("напрямую", "direct");
+    if (choice.routing.listMode === "compact" && id === "russia_inside") return t("через VPN", "via VPN");
+    if (choice.routing.listMode === "compact" && id === "russia_outside") return t("напрямую", "direct");
     if (id === "geoblock") return t("через VPN", "via VPN");
-    return routing.everythingElse === "proxy" ? t("через VPN", "via VPN") : t("по спискам блокировок", "by block lists");
+    return choice.routing.everythingElse === "proxy" ? t("через VPN", "via VPN") : t("по спискам блокировок", "by block lists");
   }
 
   function setOverride(id: string, value: string) {
-    const overrides = { ...routing.overrides };
+    const overrides = { ...choice.routing.overrides };
     if (value === "default") delete overrides[id];
     else overrides[id] = value as ListAction;
-    routing = { ...routing, overrides };
+    choice.routing = { ...choice.routing, overrides };
   }
 
-  const changedCount = $derived(Object.keys(routing.overrides).length);
-  const custom = $derived(routing.custom ?? []);
+  const changedCount = $derived(Object.keys(choice.routing.overrides).length);
+  const custom = $derived(choice.routing.custom ?? []);
 
   // --- Свои сайты ---
   /** Действие для нового сайта: обычно нужно противоположное «Всему остальному». */
   let draftAction = $state<ListAction | null>(null);
-  const newAction = $derived<ListAction>(draftAction ?? (routing.everythingElse === "proxy" ? "direct" : "proxy"));
+  const newAction = $derived<ListAction>(draftAction ?? (choice.routing.everythingElse === "proxy" ? "direct" : "proxy"));
   const siteActions: { value: ListAction; title: string; tone: "accent" | "ok" | "danger" }[] = [
     { value: "proxy", title: t("Через VPN", "Via VPN"), tone: "accent" },
     { value: "direct", title: t("Напрямую", "Direct"), tone: "ok" },
@@ -79,26 +75,26 @@
   <section class="card block">
     <h2>{t("Списки", "Lists")}</h2>
     <div class="options" role="radiogroup" aria-label={t("Списки блокировок", "Block lists")}>
-      <label class:selected={routing.listMode === "compact"}>
+      <label class:selected={choice.routing.listMode === "compact"}>
         <input
           type="radio"
           name="listMode"
           value="compact"
-          checked={routing.listMode === "compact"}
-          onchange={() => (routing = { ...routing, listMode: "compact" })}
+          checked={choice.routing.listMode === "compact"}
+          onchange={() => (choice.routing = { ...choice.routing, listMode: "compact" })}
         />
         <span class="title">{t("Компактные", "Compact")}</span>
         <span class="muted">
           {t("Отобранные списки itdoginfo, как в podkop: заблокированное в России, сервисы с гео-блоком, российские сайты для прямого доступа. Быстро и почти без ложных срабатываний.", "Curated itdoginfo lists, as in podkop: sites blocked in Russia, geo-blocked services, Russian sites for direct access. Fast and with almost no false positives.")}
         </span>
       </label>
-      <label class:selected={routing.listMode === "full"}>
+      <label class:selected={choice.routing.listMode === "full"}>
         <input
           type="radio"
           name="listMode"
           value="full"
-          checked={routing.listMode === "full"}
-          onchange={() => (routing = { ...routing, listMode: "full" })}
+          checked={choice.routing.listMode === "full"}
+          onchange={() => (choice.routing = { ...choice.routing, listMode: "full" })}
         />
         <span class="title">{t("Полный реестр", "Full registry")}</span>
         <span class="muted">
@@ -111,19 +107,19 @@
     <div class="segmented" role="radiogroup" aria-label={t("Трафик вне списков", "Traffic outside the lists")}>
       <button
         role="radio"
-        aria-checked={routing.everythingElse === "proxy"}
-        class:selected={routing.everythingElse === "proxy"}
-        onclick={() => (routing = { ...routing, everythingElse: "proxy" })}>{t("Через VPN, кроме России", "Via VPN, except Russia")}</button
+        aria-checked={choice.routing.everythingElse === "proxy"}
+        class:selected={choice.routing.everythingElse === "proxy"}
+        onclick={() => (choice.routing = { ...choice.routing, everythingElse: "proxy" })}>{t("Через VPN, кроме России", "Via VPN, except Russia")}</button
       >
       <button
         role="radio"
-        aria-checked={routing.everythingElse === "direct"}
-        class:selected={routing.everythingElse === "direct"}
-        onclick={() => (routing = { ...routing, everythingElse: "direct" })}>{t("Напрямую", "Direct")}</button
+        aria-checked={choice.routing.everythingElse === "direct"}
+        class:selected={choice.routing.everythingElse === "direct"}
+        onclick={() => (choice.routing = { ...choice.routing, everythingElse: "direct" })}>{t("Напрямую", "Direct")}</button
       >
     </div>
     <p class="caption">
-      {routing.everythingElse === "proxy"
+      {choice.routing.everythingElse === "proxy"
         ? t("Российские сайты и IP — напрямую, всё остальное — через VPN. Обновления Windows, Defender и OneDrive тоже идут напрямую, чтобы не тратить трафик подписки.", "Russian sites and IPs go direct, everything else via VPN. Windows Update, Defender and OneDrive also go direct to save your subscription's traffic.")
         : t("Через VPN идут только заблокированные сайты из списков; всё остальное — напрямую.", "Only blocked sites from the lists go via VPN; everything else goes direct.")}
     </p>
@@ -148,8 +144,8 @@
       placeholder={t("example.com, 1.2.3.4 или 10.0.0.0/24", "example.com, 1.2.3.4 or 10.0.0.0/24")}
       label={t("Сайт, IP или подсеть", "Site, IP or subnet")}
       check={checkRouteTarget}
-      onchange={(next) => (routing = { ...routing, custom: next })}
-      empty={routing.everythingElse === "proxy"
+      onchange={(next) => (choice.routing = { ...choice.routing, custom: next })}
+      empty={choice.routing.everythingElse === "proxy"
         ? t("Например, сайт, который не пускает с VPN, — напрямую.", "For example, a site that blocks VPN users — direct.")
         : t("Например, заблокированный сайт, которого нет в списках, — через VPN.", "For example, a blocked site that isn't in the lists — via VPN.")}
     />
@@ -159,7 +155,7 @@
     <div class="head">
       <h2>{t("Сервисы и категории", "Services and categories")}</h2>
       {#if changedCount > 0}
-        <button class="btn link" onclick={() => (routing = { ...routing, overrides: {} })}>
+        <button class="btn link" onclick={() => (choice.routing = { ...choice.routing, overrides: {} })}>
           {t(`Сбросить (${changedCount})`, `Reset (${changedCount})`)}
         </button>
       {/if}
@@ -174,7 +170,7 @@
         <h3>{g.title}</h3>
         <ul>
           {#each items as l (l.id)}
-            {@const own = routing.overrides[l.id]}
+            {@const own = choice.routing.overrides[l.id]}
             <li class:changed={own !== undefined}>
               <span class="name">
                 <span class="title">{l.title}</span>
@@ -202,7 +198,7 @@
     <div class="apply card appear" role="status">
       <Icon name="info" size={16} />
       <span>{t("Новые правила заработают после переподключения.", "New rules take effect after reconnecting.")}</span>
-      <button class="btn btn-primary" class:busy disabled={busy} onclick={onapply}>
+      <button class="btn btn-primary" class:busy disabled={busy} onclick={connect}>
         <Icon name="refresh" size={16} />{t("Переподключить", "Reconnect")}
       </button>
     </div>

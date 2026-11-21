@@ -4,60 +4,38 @@
   import Icon from "./Icon.svelte";
   import ServerName from "./ServerName.svelte";
   import { modeHint, statusView } from "./statusView";
+  import { formatBytes, formatElapsed, openLink, strategyTitle, type Mode } from "./api";
+  import { choice } from "./choiceStore.svelte";
   import {
-    formatBytes,
-    formatElapsed,
-    strategyTitle,
-    type Mode,
-    type ServerSummary,
-    type ServiceStatus,
-    type Session,
-  } from "./api";
+    cancelConnect,
+    conn,
+    connect,
+    disconnect,
+    serviceDown as serviceDownNow,
+    startService,
+  } from "./connectionStore.svelte";
+  import { selectedServer } from "./subscriptionsStore.svelte";
 
-  let {
-    server,
-    mode = $bindable(),
-    busy,
-    status,
-    session,
-    tunnelOk,
-    serviceDown = false,
-    starting = false,
-    mismatch = false,
-    telegram = false,
-    onconnect,
-    ondisconnect,
-    cancelable = false,
-    oncancel = () => {},
-    onwhy,
-    onstartservice,
-    onreinstall,
-  }: {
-    server: ServerSummary | null;
-    mode: Mode;
-    busy: boolean;
-    status: ServiceStatus | null;
-    /** Время и трафик с «Подключить» (служба отдаёт раз в несколько секунд). */
-    session: Session | null;
-    /** Идут ли данные через туннель (null — ещё не проверяли). */
-    tunnelOk: boolean | null;
-    /** Служба KVT не отвечает: вместо «Подключить» — «Запустить службу». */
-    serviceDown?: boolean;
-    /** Окно само запускает службу (при открытии или по кнопке). */
-    starting?: boolean;
-    /** Служба другой версии (прерванное обновление): кнопка ведёт на страницу загрузки. */
-    mismatch?: boolean;
-    /** Прокси для Telegram включён: в любом режиме Telegram Desktop идёт через него. */
-    telegram?: boolean;
-    onconnect: () => void;
-    ondisconnect: () => void;
-    /** Идёт подключение, которое можно прервать нажатием на ту же кнопку. */
-    cancelable?: boolean;
-    oncancel?: () => void;
-    onwhy: () => void;
-    onstartservice?: () => void;
-    onreinstall?: () => void;
-  } = $props();
+  // Состояние берётся из сторов окна: выбор — `choiceStore`, подключение —
+  // `connectionStore`, серверы — `subscriptionsStore`. У карточки остаётся один
+  // проп — переход на вкладку «Проверка» (навигация — дело окна).
+  let { onwhy }: { onwhy: () => void } = $props();
+
+  const server = $derived(selectedServer());
+  const mode = $derived(choice.mode);
+  const status = $derived(conn.status);
+  const busy = $derived(conn.busy);
+  /** Время и трафик с «Подключить» (служба отдаёт раз в несколько секунд). */
+  const session = $derived(conn.session);
+  /** Идут ли данные через туннель (null — ещё не проверяли). */
+  const tunnelOk = $derived(conn.tunnelOk);
+  const serviceDown = $derived(serviceDownNow());
+  const starting = $derived(conn.starting);
+  const mismatch = $derived(conn.mismatch);
+  /** Прокси для Telegram включён: в любом режиме Telegram Desktop идёт через него. */
+  const telegram = $derived(choice.zapret.telegram);
+  /** Идёт подключение, которое можно прервать нажатием на ту же кнопку. */
+  const cancelable = $derived(conn.connecting && !conn.cancelling);
 
   /** Работает только zapret, без VPN. */
   const zapretOnly = $derived(status?.state === "zapret" ? status : null);
@@ -173,9 +151,9 @@
   <!-- Одно место для кнопки во всех состояниях: она не прыгает и не меняет размер. -->
   <div class="action">
     {#if serviceDown && mismatch}
-      <button class="btn btn-primary" onclick={onreinstall}>{t("Страница загрузки", "Download page")}</button>
+      <button class="btn btn-primary" onclick={() => void openLink("releases")}>{t("Страница загрузки", "Download page")}</button>
     {:else if serviceDown && !connected}
-      <button class="btn btn-primary" disabled={busy || starting} onclick={onstartservice}>
+      <button class="btn btn-primary" disabled={busy || starting} onclick={startService}>
         {#if starting}<span class="spinner" aria-hidden="true"></span>{/if}
         {starting ? t("Запуск…", "Starting…") : t("Запустить службу", "Start service")}
       </button>
@@ -185,7 +163,7 @@
         disabled={cancelable ? false : busy || (!stops && !server && mode !== "zapret")}
         aria-label={actionLabel}
         title={actionLabel}
-        onclick={cancelable ? oncancel : stops ? ondisconnect : onconnect}
+        onclick={cancelable ? cancelConnect : stops ? disconnect : connect}
       >
         <!-- В момент подключения от кнопки расходится зелёная волна (один раз). -->
         {#if power !== "off" && power !== "pending"}
@@ -215,7 +193,7 @@
         aria-checked={mode === m.id}
         class:selected={mode === m.id}
         title={m.hint}
-        onclick={() => (mode = m.id)}
+        onclick={() => (choice.mode = m.id)}
       >
         {m.label}
       </button>

@@ -27,33 +27,32 @@
     dnsCatalog,
     dnsCheck,
     troubleshoot,
-    type DnsChoice,
     type Fix,
-    type Mode,
     type PathStatus,
     type Resolver,
   } from "./api";
+  import { choice } from "./choiceStore.svelte";
+  import { conn } from "./connectionStore.svelte";
 
+  // Статус, режим и DNS — из сторов окна. Пропсы — действия, которыми владеет окно:
+  // «починить» (навигация) и автозапуск проверки с главной.
   let {
-    connected,
-    vpnState,
-    mode,
-    dns = $bindable(),
     onfix,
     autorun,
     onautorun,
   }: {
-    connected: boolean;
-    /** Состояние службы (`status.state`): итог проверки устаревает, когда оно меняется. */
-    vpnState: string;
-    /** Выбранный режим: от него зависит набор сервисов. */
-    mode: Mode;
-    dns: DnsChoice;
     onfix: (fix: Fix) => void;
     /** «Почему не работает?» нажали с главной: запустить проверку сразу. */
     autorun: boolean;
     onautorun: () => void;
   } = $props();
+
+  const connected = $derived(conn.status?.state === "connected");
+  /** Состояние службы (`status.state`): итог проверки устаревает, когда оно меняется. */
+  const vpnState = $derived(conn.status?.state ?? "none");
+  /** Выбранный режим: от него зависит набор сервисов. */
+  const mode = $derived(choice.mode);
+  const dns = $derived(choice.dns);
 
   /** `service` — id сервиса с плитки: ответ про него; без него — общий поиск причины. */
   async function diagnose(service?: string) {
@@ -290,7 +289,7 @@
         <button
           class="btn"
           onclick={() => {
-            dns = { ...dns, local: recommended.id };
+            choice.dns = { ...choice.dns, local: recommended.id };
             st.dnsApplied = true;
           }}>{t("Использовать", "Use")}</button
         >

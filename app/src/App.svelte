@@ -3,7 +3,7 @@
   import { fade } from "svelte/transition";
   import Banner from "./lib/Banner.svelte";
   import NoticeStack from "./lib/NoticeStack.svelte";
-  import { push as pushNotice, dismissKey } from "./lib/notices.svelte";
+  import { push as pushNotice } from "./lib/notices.svelte";
   import { update, skipUpdate, watchUpdates } from "./lib/update.svelte";
   import NavRail, { type Page } from "./lib/NavRail.svelte";
   import StatusCard from "./lib/StatusCard.svelte";
@@ -22,40 +22,34 @@
   import { startAutoselect } from "./lib/zapretStore.svelte";
   import AddOverlay from "./lib/AddOverlay.svelte";
   import { watchEventNotices, watchStartupNotices } from "./lib/appNotices.svelte";
-  import { routingKeyOf, settingsKeyOf, telegramOf, zapretKeyOf } from "./lib/connectKeys";
-  import { ServerChecks } from "./lib/serverChecks.svelte";
+  import { choice, watchChoicePersisted } from "./lib/choiceStore.svelte";
   import {
-    addSubscription,
+    conn,
     connect,
     disconnect,
-    serviceStatus,
-    serviceSession,
-    startService,
-    serviceMismatch,
+    initConnection,
+    isActive,
+    watchReconnect,
+    watchStatus,
+    watchTunnel,
+  } from "./lib/connectionStore.svelte";
+  import {
+    checks,
+    hasServers,
+    initSubscriptions,
+    loadSnapshot,
+    reloadGroups,
+    subs,
+    watchExternalChoice,
+    watchSubscriptions,
+  } from "./lib/subscriptionsStore.svelte";
+  import {
+    addSubscription,
     openLink,
-    inApp,
-    setChoice,
-    snapshot,
-    onSubscriptionsChanged,
-    onChoiceChanged,
-    onTunnelState,
-    takePage,
     onNavigate,
-    type TrayPage,
-    tunnelState,
-    defaultRouting,
-    defaultDns,
-    defaultZapret,
-    type ZapretChoice,
-    type Choice,
-    type DnsChoice,
+    takePage,
     type Fix,
-    type Group,
-    type NetworkProfile,
-    type RoutingSettings,
-    type ServiceStatus,
-    type Session,
-    type Mode,
+    type TrayPage,
   } from "./lib/api";
 
   let page = $state<Page>(restoredPage());
@@ -71,18 +65,7 @@
     }
     return "home";
   }
-  let mode = $state<Mode>("vpn");
-  /** Все подписки и ручные ключи — группами в одном списке. */
-  let groups = $state<Group[]>([]);
-  /** Ключ выбранного сервера. */
-  let selected = $state<string | null>(null);
-  let busy = $state(false);
-  /** Идёт «Подключить», и его можно отменить; `cancelling` — отмена уже отправлена. */
-  let connecting = $state(false);
-  let cancelling = $state(false);
-  /** Ошибка на главной; `why` — ошибка подключения, к ней уместно «Почему не работает?». */
-  /** Ошибка добавления подписки — показывается рядом с формой, а не на главной. */
-  let addError = $state<string | null>(null);
+
   let mainEl = $state<HTMLElement | null>(null);
 
   // У каждой вкладки своя прокрутка: новая открывается сверху.
@@ -90,128 +73,45 @@
     void page;
     mainEl?.scrollTo({ top: 0 });
   });
-  /** Пинг и проверка серверов, обновление подписки, удаление ключей (serverChecks.svelte.ts). */
-  const checks = new ServerChecks({ groups: () => groups, failed: (e) => failed(e), reloadGroups });
+
   /** Открыта панель добавления (кнопка «+»). */
   let adding = $state(false);
+  /** Ошибка добавления подписки — показывается рядом с формой, а не на главной. */
+  let addError = $state<string | null>(null);
 
-  let killSwitch = $state(false);
-  let routing = $state<RoutingSettings>(defaultRouting());
-  let dns = $state<DnsChoice>(defaultDns());
-  let autoSwitch = $state(true);
-  let networks = $state<NetworkProfile[]>([]);
-  let zapret = $state<ZapretChoice>(defaultZapret());
-  let notifications = $state(true);
-  let connectOnStart = $state(false);
-  let checkUpdates = $state(true);
-  let miniPanel = $state(true);
-  /** До восстановления выбора считаем пройденным — подсказки не мелькают. */
-  let onboarded = $state(true);
-  let restored = $state(false);
+  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-  const allServers = $derived(groups.flatMap((g) => g.servers));
-  const server = $derived(allServers.find((s) => s.key === selected) ?? null);
-  const firstKey = () => groups.find((g) => g.servers.length > 0)?.servers[0]?.key ?? null;
-
-  function applyChoice(c: Choice) {
-    selected = c.server ?? firstKey();
-    mode = c.mode ?? "vpn";
-    killSwitch = c.killSwitch;
-    routing = { ...defaultRouting(), ...c.routing };
-    dns = { ...defaultDns(), ...c.dns };
-    autoSwitch = c.autoSwitch ?? true;
-    networks = c.networks ?? [];
-    zapret = { ...defaultZapret(), ...c.zapret };
-    notifications = c.notifications ?? true;
-    connectOnStart = c.connectOnStart ?? false;
-    checkUpdates = c.checkUpdates ?? true;
-    miniPanel = c.miniPanel ?? true;
-    onboarded = c.onboarded ?? false;
+  /** Ошибка действия: одна на окно (новая заменяет прежнюю), висит до «Понятно». */
+  function failed(e: unknown, why = false) {
+    showError(message(e), why);
   }
 
-  /** Rust хранит выбор целиком: отправляем все поля, иначе остальные сбросятся. */
-  function currentChoice(): Choice {
-    return {
-      server: selected,
-      mode,
-      killSwitch,
-      routing: $state.snapshot(routing),
-      dns: $state.snapshot(dns),
-      autoSwitch,
-      networks: $state.snapshot(networks),
-      zapret: $state.snapshot(zapret),
-      notifications,
-      connectOnStart,
-      checkUpdates,
-      miniPanel,
-      onboarded,
-    };
+  function showError(text: string, why: boolean) {
+    pushNotice({
+      key: "error",
+      text,
+      actions: why ? [{ label: t("Почему не работает?", "Why isn't it working?"), run: askWhy }] : [],
+      closeLabel: why ? t("Скрыть", "Hide") : t("Понятно", "Got it"),
+    });
   }
+
+  // Сторы: выбор — choiceStore, подключение — connectionStore, подписки — subscriptionsStore.
+  // Ошибки и «Почему не работает?» показывает окно: сторам передаются обработчики.
+  initConnection({ failed, showError });
+  initSubscriptions({ failed });
 
   // Окно могло быть закрыто (WebView выгружен) — восстанавливаем состояние из Rust.
-  $effect(() => {
-    void snapshot()
-      .then((snap) => {
-        groups = snap.groups;
-        if (snap.choice) applyChoice(snap.choice);
-        else {
-          selected = firstKey();
-          onboarded = false;
-        }
-        // Подписки уже есть (KVT пользовались до подсказок) — первый запуск позади.
-        if (groups.some((g) => g.servers.length > 0)) onboarded = true;
-        void checks.autoPing();
-      })
-      .finally(() => (restored = true));
-  });
+  void loadSnapshot();
 
-  // Сервер или режим сменились не из окна: автопереключение или профиль сети.
-  $effect(() =>
-    onChoiceChanged(() => {
-      void snapshot().then((snap) => {
-        groups = snap.groups;
-        if (!snap.choice) return;
-        applyChoice(snap.choice);
-        // Автопереключение уже подключилось к новому серверу, профиль сети сам
-        // переподключил с новым режимом, автоподбор zapret сам перезапустил службу
-        // с новой стратегией — второй раз из окна не нужно.
-        if (connectedWith)
-          connectedWith = {
-            server: snap.choice.server,
-            mode,
-            zapret: zapretKey(),
-            routing: routingKey(),
-            settings: settingsKey(),
-          };
-      });
-    }),
-  );
-
-  async function reloadGroups() {
-    const snap = await snapshot();
-    groups = snap.groups;
-    // Выбранный сервер исчез (подписку удалили или провайдер убрал сервер). Если были
-    // подключены к нему, Rust уже отключил VPN и сообщил об этом, — к первому
-    // серверу другой подписки не переподключаемся.
-    const exists = (key: string | null) => groups.some((g) => g.servers.some((s) => s.key === key));
-    if (!exists(selected)) {
-      // Ключ изменили (новая ссылка с другим адресом) — Rust уже перевёл выбор на
-      // новый ключ: берём его, а не первый сервер списка.
-      if (exists(snap.choice?.server ?? null)) {
-        const next = snap.choice?.server ?? null;
-        // Переподключение с новой ссылкой Rust делает сам — окно второй раз не нужно.
-        if (connectedWith && connectedWith.server === selected) connectedWith = { ...connectedWith, server: next };
-        selected = next;
-        return;
-      }
-      connectedWith = null;
-      status = await serviceStatus().catch(() => null);
-      selected = firstKey();
-    }
-  }
-
-  // Подписка добавлена, обновилась в фоне или удалена.
-  $effect(() => onSubscriptionsChanged(() => void reloadGroups()));
+  // Выбор хранится в Rust, опрос службы и переподключение — connectionStore; подписки и
+  // выбор, изменённый не из окна, — subscriptionsStore. Эффекты ставятся здесь: им нужен
+  // контекст окна.
+  watchChoicePersisted();
+  watchStatus();
+  watchTunnel();
+  watchReconnect();
+  watchExternalChoice();
+  watchSubscriptions();
 
   // Сообщения, которые появились до открытия окна (например, о повреждённых
   // настройках) или пришли из трея, когда уведомления Windows выключены.
@@ -220,15 +120,10 @@
   // Новая версия KVT: плашка на главной и точка у «Настроек» (update.svelte.ts).
   $effect(() => watchUpdates());
 
-  /** Идут ли данные через туннель: null — ещё не проверяли. */
-  let tunnelOk = $state<boolean | null>(null);
-  $effect(() => {
-    void tunnelState().then((ok) => (tunnelOk = ok));
-    return onTunnelState((ok) => (tunnelOk = ok));
-  });
+  const active = $derived(isActive(conn.status));
 
   // События службы (замена сервера, пропавшая сеть, вход в сеть) и автопроверка zapret.
-  watchEventNotices({ active: () => active, ondisconnect, openZapret: () => void (page = "zapret") });
+  watchEventNotices({ active: () => active, ondisconnect: () => disconnect(), openZapret: () => void (page = "zapret") });
 
   // «Почему не работает?» с главной: открыть раздел «Проверка» и сразу запустить.
   let autoDiagnose = $state(false);
@@ -258,20 +153,20 @@
     switch (fix.kind) {
       case "connect":
         page = "home";
-        await onconnect();
+        await connect();
         break;
       case "disconnect":
-        await ondisconnect();
+        await disconnect();
         break;
       case "switch_server":
-        selected = fix.key;
+        choice.selected = fix.key;
         page = "home";
-        await onconnect();
+        await connect();
         break;
       case "refresh_subscription": {
         // На главной видно и вращение «Обновить», и ошибку, если провайдер не ответил.
         page = "home";
-        const group = groups.find((g) => g.servers.some((s) => s.key === selected));
+        const group = subs.groups.find((g) => g.servers.some((s) => s.key === choice.selected));
         if (group?.byUrl) await checks.refresh(group.id);
         break;
       }
@@ -288,36 +183,16 @@
     }
   }
 
-  // Выбор сервера, режима и kill switch нужен Rust-части: по нему подключается трей.
-  $effect(() => {
-    const choice = currentChoice();
-    if (restored) void setChoice(choice);
-  });
-
-  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
-  /** Ошибка действия: одна на окно (новая заменяет прежнюю), висит до «Понятно». */
-  function failed(e: unknown, why = false) {
-    showError(message(e), why);
-  }
-
-  function showError(text: string, why: boolean) {
-    pushNotice({
-      key: "error",
-      text,
-      actions: why ? [{ label: t("Почему не работает?", "Why isn't it working?"), run: askWhy }] : [],
-      closeLabel: why ? t("Скрыть", "Hide") : t("Понятно", "Got it"),
-    });
-  }
-
   function closeAdd() {
-    if (busy) return;
+    if (conn.busy) return;
     adding = false;
     addError = null;
   }
 
   async function add(body: string) {
-    busy = true;
+    // Общий флаг «окно выполняет действие», как у подключения: пока добавляется
+    // подписка, опрос и переподключение не мешают.
+    conn.busy = true;
     addError = null;
     try {
       const result = await addSubscription(body);
@@ -336,153 +211,16 @@
       await reloadGroups();
       // При работающем VPN выбор не трогаем: иначе KVT сразу переподключился бы
       // к первому серверу новой подписки.
-      if (result.first && (!active || selected === null)) selected = result.first;
+      if (result.first && (!active || choice.selected === null)) choice.selected = result.first;
       adding = false;
       page = "home";
       void checks.check(result.group);
     } catch (e) {
       addError = message(e);
     } finally {
-      busy = false;
+      conn.busy = false;
     }
   }
-
-  let status = $state<ServiceStatus | null>(null);
-  /** Служба ответила хотя бы раз с открытия окна (до этого «не запущена» не показываем). */
-  let polled = $state(false);
-  const serviceDown = $derived(inApp && polled && status === null);
-  /** Служба ответила, но другой версии: вместо «Запустить службу» — переустановка. */
-  let mismatch = $state(false);
-  /** Окно запускает службу: «Запускаем службу…» вместо «не запущена». */
-  let starting = $state(false);
-  /** Сами запускали службу с открытия окна (один раз; дальше — кнопкой). */
-  let autoStarted = false;
-
-  async function onstartservice() {
-    if (starting) return;
-    starting = true;
-    dismissKey("error");
-    try {
-      await startService();
-      status = await serviceStatus().catch(() => null);
-    } catch (e) {
-      failed(e, false);
-    } finally {
-      starting = false;
-    }
-  }
-
-  /** Время и трафик сеанса — из того же ответа службы, что и статус. */
-  let session = $state<Session | null>(null);
-  /** Работает VPN или только zapret. */
-  const active = $derived(status?.state === "connected" || status?.state === "zapret");
-  // Ключи настроек: с чем подключены и что выбрано сейчас (connectKeys.ts).
-  const zapretKey = () => zapretKeyOf($state.snapshot(zapret));
-  const routingKey = () => routingKeyOf($state.snapshot(routing));
-  const settingsKey = () => settingsKeyOf(killSwitch, $state.snapshot(dns));
-  /** С каким сервером, режимом и настройками zapret сейчас подключены. */
-  let connectedWith = $state<{
-    server: string | null;
-    mode: Mode;
-    zapret: string;
-    routing: string;
-    settings: string;
-  } | null>(null);
-
-  async function onconnect() {
-    busy = true;
-    connecting = true;
-    cancelling = false;
-    dismissKey("error");
-    const target = { server: selected, mode, zapret: zapretKey(), routing: routingKey(), settings: settingsKey() };
-    try {
-      await setChoice(currentChoice());
-      status = await connect();
-      session = await serviceSession().catch(() => null);
-    } catch (e) {
-      // Отменили сами — служба ответила «Подключение отменено», это не ошибка.
-      if (!cancelling) failed(e, true);
-      status = await serviceStatus().catch(() => null);
-    } finally {
-      // Даже при ошибке запоминаем попытку: иначе переподключение пошло бы по кругу.
-      connectedWith = status?.state === "connected" || status?.state === "zapret" ? target : null;
-      connecting = false;
-      cancelling = false;
-      busy = false;
-    }
-  }
-
-  /** «Отключить» во время подключения: служба бросает запуск и всё останавливает. */
-  async function oncancel() {
-    if (!connecting || cancelling) return;
-    cancelling = true;
-    try {
-      await disconnect();
-      session = null;
-    } catch (e) {
-      failed(e, true);
-    }
-  }
-
-  async function ondisconnect() {
-    busy = true;
-    try {
-      status = await disconnect();
-      session = null;
-      connectedWith = null;
-    } catch (e) {
-      failed(e, true);
-    } finally {
-      busy = false;
-    }
-  }
-
-  // Другой сервер, режим или стратегия zapret при подключении — переподключаемся сразу, как в Happ.
-  $effect(() => {
-    if (!restored || busy || !active || !connectedWith) return;
-    const zapretChanged =
-      mode !== "vpn"
-        ? zapretKey() !== connectedWith.zapret
-        : telegramOf(zapretKey()) !== telegramOf(connectedWith.zapret);
-    const serverChanged = mode !== "zapret" && selected !== connectedWith.server;
-    if (!serverChanged && !zapretChanged && mode === connectedWith.mode) return;
-    if (selected === null && mode !== "zapret") return;
-    void onconnect();
-  });
-
-  // Локальный pipe — дешёвый запрос; так видно, если ядро упало само.
-  $effect(() => {
-    const refreshStatus = async () => {
-      if (busy) return;
-      const next = await serviceStatus().catch(() => null);
-      // Пока шёл опрос, пользователь нажал «Подключить»: старый ответ не должен
-      // перезаписать статус и сбросить connectedWith.
-      if (busy) return;
-      if (next?.state === "failed" && status?.state === "connected") {
-        showError(t(`Соединение прервано: ${next.reason}`, `Connection lost: ${next.reason}`), true);
-      }
-      const nextActive = next?.state === "connected" || next?.state === "zapret";
-      if (!nextActive) connectedWith = null;
-      // Подключились из трея или профиля сети — считаем, что с текущим выбором.
-      else if (!connectedWith && restored)
-        connectedWith = { server: selected, mode, zapret: zapretKey(), routing: routingKey(), settings: settingsKey() };
-      const nextMismatch = next === null && (await serviceMismatch().catch(() => false));
-      // Служба в отложенном автозапуске: после входа в Windows она поднимается
-      // минуты через две, а окно из автозагрузки открывается раньше. Не ждём —
-      // запускаем сами (пользователю это разрешено), иначе остаётся кнопка.
-      if (inApp && next === null && !nextMismatch && !autoStarted) {
-        autoStarted = true;
-        void onstartservice();
-      }
-      status = next;
-      polled = true;
-      mismatch = nextMismatch;
-      session = nextActive ? await serviceSession().catch(() => null) : null;
-    };
-    void refreshStatus();
-    const timer = setInterval(refreshStatus, 3000);
-    return () => clearInterval(timer);
-  });
 </script>
 
 {#if theme.pickme}
@@ -500,16 +238,10 @@
     {#if page === "home"}
       <h1>{t("Главная", "Home")}</h1>
 
-      {#if restored && !onboarded}
+      {#if choice.restored && !choice.onboarded}
         <Onboarding
-          hasServers={allServers.length > 0}
-          bind:mode
-          {active}
-          {busy}
           onadd={() => (adding = true)}
           onmigrate={() => (page = "subscriptions")}
-          {onconnect}
-          ondone={() => (onboarded = true)}
         />
       {/if}
 
@@ -529,31 +261,18 @@
            Узкое — всё в одну колонку. -->
       <div class="home-grid">
       <div class="side">
-      <StatusCard {server} bind:mode {busy} {status} {session} {tunnelOk} {serviceDown} {starting} {mismatch} telegram={zapret.telegram} {onstartservice} onreinstall={() => void openLink("releases")} {onconnect} {ondisconnect} cancelable={connecting && !cancelling} {oncancel} onwhy={askWhy} />
+      <StatusCard onwhy={askWhy} />
 
-      {#if mode !== "vpn"}
-        <ZapretCard bind:zapret vpnConnected={status?.state === "connected"} onopen={() => (page = "zapret")} />
+      {#if choice.mode !== "vpn"}
+        <ZapretCard onopen={() => (page = "zapret")} />
       {/if}
       </div>
 
       <div class="servers">
-      {#if allServers.length > 0}
-        <ServerList
-          {groups}
-          bind:selected
-          results={checks.results}
-          checking={checks.checking}
-          oncheck={checks.check}
-          outcomes={checks.outcomes}
-          fullChecking={checks.fullChecking}
-          onfullcheck={checks.runFullCheck}
-          refreshing={checks.refreshing}
-          onrefresh={checks.refresh}
-          onadd={() => (adding = true)}
-          onremove={checks.removeKey}
-        />
+      {#if hasServers()}
+        <ServerList onadd={() => (adding = true)} />
       {:else}
-        <AddSubscription onadd={add} {busy} />
+        <AddSubscription onadd={add} busy={conn.busy} />
         {#if addError && !adding}
           <Banner>{addError}</Banner>
         {/if}
@@ -565,37 +284,22 @@
       <Subscriptions onadd={() => (adding = true)} />
     {:else if page === "routing"}
       <h1>{t("Маршрутизация", "Routing")}</h1>
-      <Routing
-        bind:routing
-        connected={status?.state === "connected"}
-        pending={status?.state === "connected" && !!connectedWith && connectedWith.routing !== routingKey()}
-        {busy}
-        onapply={onconnect}
-      />
+      <Routing />
     {:else if page === "zapret"}
       <h1>Zapret</h1>
-      <ZapretPage bind:zapret bind:mode {status} {busy} {onconnect} />
+      <ZapretPage />
     {:else if page === "diagnostics"}
       <h1>{t("Проверка", "Check")}</h1>
       <Diagnostics
-        connected={status?.state === "connected"}
-        vpnState={status?.state ?? "none"}
-        {mode}
-        bind:dns
-        {onfix}
+        onfix={onfix}
         autorun={autoDiagnose}
         onautorun={() => (autoDiagnose = false)}
       />
     {:else if page === "settings"}
       <h1>{t("Настройки", "Settings")}</h1>
-      <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks bind:notifications bind:connectOnStart
-        bind:checkUpdates bind:miniPanel
-        connected={status?.state === "connected"}
-        pending={status?.state === "connected" && !!connectedWith && connectedWith.settings !== settingsKey()}
-        {busy}
-        onapply={onconnect}
+      <Settings
         onrestartonboarding={() => {
-          onboarded = false;
+          choice.onboarded = false;
           page = "home";
         }}
       />
@@ -610,7 +314,7 @@
 
 {#if adding}
   <!-- Панель добавления поверх текущего экрана: список остаётся на месте. -->
-  <AddOverlay {busy} {addError} onadd={add} onclose={closeAdd} />
+  <AddOverlay busy={conn.busy} {addError} onadd={add} onclose={closeAdd} />
 {/if}
 
 <style>

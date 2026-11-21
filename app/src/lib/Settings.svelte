@@ -4,6 +4,8 @@
   import Banner from "./Banner.svelte";
   import { update as newVersion, checkUpdateNow } from "./update.svelte";
   import { theme, setTheme, type ThemeChoice } from "./theme.svelte";
+  import { choice } from "./choiceStore.svelte";
+  import { conn, connect, settingsKey } from "./connectionStore.svelte";
   import {
     aboutInfo,
     openLink,
@@ -16,50 +18,27 @@
     currentNetwork,
     dnsCatalog,
     onNetworkChanged,
-    type DnsChoice,
-    type Mode,
     type NetworkProfile,
     type NetworkView,
     type OnJoin,
+    type Mode,
     type Resolver,
     getLanguage,
     setLanguage,
   } from "./api";
 
-  let {
-    killSwitch = $bindable(),
-    autoSwitch = $bindable(),
-    dns = $bindable(),
-    networks = $bindable(),
-    notifications = $bindable(),
-    connectOnStart = $bindable(),
-    checkUpdates = $bindable(),
-    miniPanel = $bindable(),
-    connected,
-    pending,
-    busy,
-    onapply,
-    onrestartonboarding,
-  }: {
-    killSwitch: boolean;
-    autoSwitch: boolean;
-    dns: DnsChoice;
-    networks: NetworkProfile[];
-    notifications: boolean;
-    connectOnStart: boolean;
-    checkUpdates: boolean;
-    /** Мини-панель у значка в трее вместо окна по левому клику. */
-    miniPanel: boolean;
-    /** Работает VPN (в режиме «VPN» или «Гибрид»). */
-    connected: boolean;
-    /** Kill switch или DNS изменены после подключения. */
-    pending: boolean;
-    busy: boolean;
-    /** Переподключить с новыми настройками. */
-    onapply: () => void;
-    /** Показать подсказки первого запуска снова. */
-    onrestartonboarding: () => void;
-  } = $props();
+  // Настройки читаются и пишутся прямо в стор выбора (`choiceStore`), статус и
+  // переподключение — `connectionStore`. Один проп — «Подсказки первого запуска»:
+  // окно владеет навигацией и подсказками.
+  let { onrestartonboarding }: { onrestartonboarding: () => void } = $props();
+
+  /** Работает VPN (в режиме «VPN» или «Гибрид»). */
+  const connected = $derived(conn.status?.state === "connected");
+  /** Kill switch или DNS изменены после подключения. */
+  const pending = $derived(
+    conn.status?.state === "connected" && !!conn.connectedWith && conn.connectedWith.settings !== settingsKey(),
+  );
+  const busy = $derived(conn.busy);
 
   let about = $state<About | null>(null);
   let flowseal = $state<string | null>(null);
@@ -132,16 +111,16 @@
     return onNetworkChanged((v) => (here = v));
   });
 
-  const known = $derived(here.network ? networks.some((p) => p.key === here.network?.key) : false);
+  const known = $derived(here.network ? choice.networks.some((p) => p.key === here.network?.key) : false);
 
   function remember() {
     const n = here.network;
     if (!n || known) return;
-    networks = [...networks, { key: n.key, name: n.label, onJoin: "nothing", mode: null }];
+    choice.networks = [...choice.networks, { key: n.key, name: n.label, onJoin: "nothing", mode: null }];
   }
 
   function update(key: string, patch: Partial<NetworkProfile>) {
-    networks = networks.map((p) => (p.key === key ? { ...p, ...patch } : p));
+    choice.networks = choice.networks.map((p) => (p.key === key ? { ...p, ...patch } : p));
   }
 
   /** Пустое название не сохраняем: поле возвращается к прежнему. */
@@ -155,7 +134,7 @@
   }
 
   function forget(key: string) {
-    networks = networks.filter((p) => p.key !== key);
+    choice.networks = choice.networks.filter((p) => p.key !== key);
   }
 
   const kinds = { wifi: "Wi-Fi", ethernet: t("Кабель", "Cable"), mobile: t("Мобильная сеть", "Mobile network"), other: t("Сеть", "Network") } as const;
@@ -222,7 +201,7 @@
       </p>
     </div>
     <label class="switch">
-      <input type="checkbox" role="switch" bind:checked={killSwitch} />
+      <input type="checkbox" role="switch" bind:checked={choice.killSwitch} />
       <span aria-hidden="true"></span>
       <span class="sr">Kill switch</span>
     </label>
@@ -239,7 +218,7 @@
       </p>
     </div>
     <label class="switch">
-      <input type="checkbox" role="switch" bind:checked={autoSwitch} />
+      <input type="checkbox" role="switch" bind:checked={choice.autoSwitch} />
       <span aria-hidden="true"></span>
       <span class="sr">{t("Автопереключение сервера", "Auto-switch server")}</span>
     </label>
@@ -281,7 +260,7 @@
       <p class="muted">{t("К выбранному серверу, в выбранном режиме — как кнопка «Подключить».", "To the selected server, in the selected mode — like the “Connect” button.")}</p>
     </div>
     <label class="switch">
-      <input type="checkbox" role="switch" bind:checked={connectOnStart} />
+      <input type="checkbox" role="switch" bind:checked={choice.connectOnStart} />
       <span aria-hidden="true"></span>
       <span class="sr">{t("Подключаться при запуске", "Connect on startup")}</span>
     </label>
@@ -294,7 +273,7 @@
       </p>
     </div>
     <label class="switch">
-      <input type="checkbox" role="switch" bind:checked={notifications} />
+      <input type="checkbox" role="switch" bind:checked={choice.notifications} />
       <span aria-hidden="true"></span>
       <span class="sr">{t("Уведомления Windows", "Windows notifications")}</span>
     </label>
@@ -305,7 +284,7 @@
       <p class="muted">{t("Мини-панель у значка в трее. Выключена — клик по значку открывает окно.", "A mini-panel by the tray icon. When off, clicking the icon opens the window.")}</p>
     </div>
     <label class="switch">
-      <input type="checkbox" role="switch" bind:checked={miniPanel} />
+      <input type="checkbox" role="switch" bind:checked={choice.miniPanel} />
       <span aria-hidden="true"></span>
       <span class="sr">{t("Мини-панель в трее", "Tray mini-panel")}</span>
     </label>
@@ -319,7 +298,7 @@
       <span>{t("Для сайтов, которые открываются напрямую", "For sites that open directly")}</span>
       <span class="caption">{t("Обычный DNS. Российский резолвер отдаёт ближайшие узлы российских CDN.", "Plain DNS. A Russian resolver returns the nearest nodes of Russian CDNs.")}</span>
     </label>
-    <select id="dns-local" value={dns.local} onchange={(e) => (dns = { ...dns, local: e.currentTarget.value })}>
+    <select id="dns-local" value={choice.dns.local} onchange={(e) => (choice.dns = { ...choice.dns, local: e.currentTarget.value })}>
       {#each resolvers as r (r.id)}
         <option value={r.id}>{r.title} · {r.udp}</option>
       {/each}
@@ -330,7 +309,7 @@
       <span>{t("Для всего остального", "For everything else")}</span>
       <span class="caption">{t("Зашифрованный DoH внутри туннеля: провайдер не видит, какие сайты вы открываете.", "Encrypted DoH inside the tunnel: your ISP can't see which sites you open.")}</span>
     </label>
-    <select id="dns-remote" value={dns.remote} onchange={(e) => (dns = { ...dns, remote: e.currentTarget.value })}>
+    <select id="dns-remote" value={choice.dns.remote} onchange={(e) => (choice.dns = { ...choice.dns, remote: e.currentTarget.value })}>
       {#each tunnelResolvers as r (r.id)}
         <option value={r.id}>{r.title} (DoH)</option>
       {/each}
@@ -357,9 +336,9 @@
     {/if}
   </div>
 
-  {#if networks.length > 0}
+  {#if choice.networks.length > 0}
     <ul class="profiles">
-      {#each networks as p (p.key)}
+      {#each choice.networks as p (p.key)}
         <li class:current={p.key === here.network?.key}>
           <input
             class="name"
@@ -485,7 +464,7 @@
       </p>
     </div>
     <label class="switch">
-      <input type="checkbox" role="switch" bind:checked={checkUpdates} />
+      <input type="checkbox" role="switch" bind:checked={choice.checkUpdates} />
       <span aria-hidden="true"></span>
       <span class="sr">{t("Сообщать о новой версии", "Notify about new versions")}</span>
     </label>
@@ -511,7 +490,7 @@
   <div class="apply card appear" role="status">
     <Icon name="info" size={16} />
     <span>{t("Kill switch и DNS заработают после переподключения.", "The kill switch and DNS take effect after reconnecting.")}</span>
-    <button class="btn btn-primary" class:busy disabled={busy} onclick={onapply}>
+    <button class="btn btn-primary" class:busy disabled={busy} onclick={connect}>
       <Icon name="refresh" size={16} />{t("Переподключить", "Reconnect")}
     </button>
   </div>

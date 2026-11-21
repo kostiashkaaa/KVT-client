@@ -1,32 +1,28 @@
 <script lang="ts">
   import { t } from "./i18n";
   import type { Mode } from "./api";
+  import { choice } from "./choiceStore.svelte";
+  import { conn, connect, isActive } from "./connectionStore.svelte";
+  import { hasServers as hasServersOf } from "./subscriptionsStore.svelte";
 
   // Первый запуск — три коротких шага поверх главной: подписка → режим → подключение.
-  // Пропускается одной кнопкой, повторяется из «Настроек».
+  // Пропускается одной кнопкой, повторяется из «Настроек». Режим, статус и список
+  // серверов — из сторов окна; пропсы — только переходы, которыми владеет окно.
   let {
-    hasServers,
-    mode = $bindable(),
-    active,
-    busy,
     onadd,
     onmigrate,
-    onconnect,
-    ondone,
   }: {
-    hasServers: boolean;
-    mode: Mode;
-    /** Работает VPN или zapret. */
-    active: boolean;
-    busy: boolean;
     /** Открыть добавление подписки. */
     onadd: () => void;
     /** Перенос из другого клиента («Подписки»). */
     onmigrate: () => void;
-    onconnect: () => void;
-    /** Пройдено или пропущено — больше не показывать. */
-    ondone: () => void;
   } = $props();
+
+  const hasServers = $derived(hasServersOf());
+  const mode = $derived(choice.mode);
+  /** Работает VPN или zapret. */
+  const active = $derived(isActive(conn.status));
+  const busy = $derived(conn.busy);
 
   // Режим Zapret работает без сервера, поэтому шаг 1 для него не нужен.
   let step = $state(1);
@@ -34,6 +30,11 @@
     if (step === 1 && hasServers) step = 2;
   });
   const finished = $derived(step === 3 && active);
+
+  /** Пройдено или пропущено — больше не показывать. */
+  function done() {
+    choice.onboarded = true;
+  }
 
   const modes: { id: Mode; title: string; text: string }[] = [
     { id: "vpn", title: "VPN", text: t("Заблокированное — через VPN-сервер, российские сайты — напрямую.", "Blocked sites go through the VPN server, Russian sites go direct.") },
@@ -51,7 +52,7 @@
       {t(`Шаг ${step} из 3`, `Step ${step} of 3`)}
     </p>
     {#if !finished}
-      <button class="skip" onclick={ondone}>{t("Пропустить", "Skip")}</button>
+      <button class="skip" onclick={done}>{t("Пропустить", "Skip")}</button>
     {/if}
   </div>
 
@@ -63,7 +64,7 @@
     <div class="actions">
       <button class="btn btn-primary" onclick={onadd}>{t("Вставить ссылку", "Paste link")}</button>
       <button class="btn" onclick={onmigrate}>{t("Перенести из другого клиента", "Import from another client")}</button>
-      <button class="btn link" onclick={() => ((mode = "zapret"), (step = 2))}>{t("У меня нет VPN — только zapret", "I have no VPN — just zapret")}</button>
+      <button class="btn link" onclick={() => ((choice.mode = "zapret"), (step = 2))}>{t("У меня нет VPN — только zapret", "I have no VPN — just zapret")}</button>
     </div>
   {:else if step === 2}
     <h2 id="onboarding-title">{t("Выберите режим", "Choose a mode")}</h2>
@@ -75,7 +76,7 @@
           aria-checked={mode === m.id}
           class:selected={mode === m.id}
           disabled={m.id !== "zapret" && !hasServers}
-          onclick={() => (mode = m.id)}
+          onclick={() => (choice.mode = m.id)}
         >
           <strong>{m.title}</strong>
           <span class="caption">{m.text}</span>
@@ -92,7 +93,7 @@
       {t("KVT поднимет защищённое соединение и проверит, что сайты открываются. Закрытое окно не выключает VPN: KVT остаётся в трее, оттуда же можно сменить сервер и режим.", "KVT will set up a secure connection and check that sites open. Closing the window doesn't turn off the VPN: KVT stays in the tray, where you can also change the server and mode.")}
     </p>
     <div class="actions">
-      <button class="btn btn-primary" disabled={busy} onclick={onconnect}>
+      <button class="btn btn-primary" disabled={busy} onclick={connect}>
         {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
         {busy ? t("Подключение…", "Connecting…") : t("Подключить", "Connect")}
       </button>
@@ -104,7 +105,7 @@
       {t("KVT подключён. Если что-то не открывается — «Почему не работает?» на главной найдёт причину. Подсказки можно показать снова в «Настройках».", "KVT is connected. If something doesn't open, “Why isn't it working?” on the home page will find the cause. You can show these tips again in Settings.")}
     </p>
     <div class="actions">
-      <button class="btn btn-primary" onclick={ondone}>{t("Понятно", "Got it")}</button>
+      <button class="btn btn-primary" onclick={done}>{t("Понятно", "Got it")}</button>
     </div>
   {/if}
 </section>
