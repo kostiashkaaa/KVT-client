@@ -15,6 +15,8 @@ kill switch. Rust (Tauri 2) + Svelte 5. Сборка, запуск службы,
   со службой (`service_client.rs`). Команды для окна — `generate_handler!` в `main.rs`.
 - `app/src` — интерфейс; весь вызов Rust идёт через `app/src/lib/api.ts` — вход, разделы
   в `app/src/lib/api/` (`bridge.ts` — `invoke`/`inTauri`, `preview.ts` — данные превью).
+  Две страницы: окно — `index.html` (`src/main.ts`), мини-панель из трея — `mini.html`
+  (`src/mini/`, в превью `/mini.html?demo`; Rust — `tray/panel/`). `proto.html` — прототип.
 - `presets/` — данные (сетевая политика, правила ошибок ядер, `services.json` — сервисы
   для плиток на вкладке «Проверка»), не код.
 - `ARCHITECTURE.md` — открытое устройство и «Чего не делаем». `docs/` — локальный план
@@ -87,6 +89,11 @@ kill switch. Rust (Tauri 2) + Svelte 5. Сборка, запуск службы,
   дорастает до 30 ГБ. Чистит `scripts\clean-target.ps1`, `dev.ps1` зовёт его сам.
 - Журналы: окно — `%LOCALAPPDATA%\dev.kvt.client\logs\kvt.log`, служба —
   `C:\ProgramData\KVT\logs\service.log`.
+- Дев-сборка в debug грузит страницы с `devUrl` (vite на 5173): запущенный напрямую
+  `target\debug\kvt.exe` без vite показывает пустые окна — «страница не загрузилась».
+- WebView скрытого окна при создании на миг получает фокус и тут же отдаёт его:
+  потерю фокуса до показа окна надо игнорировать, иначе окно (мини-панель) умирает,
+  не открывшись, и в журнале нет ни одной записи об этом.
 - `RoutingPlan::resolve_domain` не видит наборы правил (`itdog:…`, `rf:…` — бинарные
   файлы ядер): «только заблокированное» покажет YouTube напрямую, хотя он идёт через VPN.
   Для «куда пойдёт сервис» — `resolve_host` с членством из `presets/services.json`.
