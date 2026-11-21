@@ -220,6 +220,16 @@ impl RoutingPlan {
     /// Действие для домена с учётом только доменных правил. Нужно для
     /// диагностики («куда пойдёт youtube.com?») и для тестов инвариантов.
     pub fn resolve_domain(&self, domain: &str) -> Action {
+        self.resolve_host(domain, |_| false)
+    }
+
+    /// То же, но с наборами правил: `in_set(имя)` отвечает, входит ли домен в набор
+    /// (`itdog:youtube`, `rf:ru-blocked`). Сами наборы — бинарные файлы ядер, здесь их
+    /// не прочитать, поэтому членство задаёт вызывающий (для сервисов на главной —
+    /// `presets/services.json`). Без этого «только заблокированное» показало бы
+    /// YouTube напрямую, хотя он идёт через VPN по набору `russia_inside`, а выбор
+    /// пользователя «YouTube напрямую» (тоже набор) был бы не виден.
+    pub fn resolve_host(&self, domain: &str, in_set: impl Fn(&str) -> bool) -> Action {
         let domain = domain.trim_end_matches('.').to_ascii_lowercase();
         self.ordered()
             .into_iter()
@@ -227,6 +237,7 @@ impl RoutingPlan {
                 Matcher::DomainSuffix(s) => domain == *s || domain.ends_with(&format!(".{s}")),
                 Matcher::Domain(d) => domain == *d,
                 Matcher::DomainKeyword(k) => domain.contains(k.as_str()),
+                Matcher::RuleSet(name) => in_set(name),
                 _ => false,
             })
             .map(|r| r.action)

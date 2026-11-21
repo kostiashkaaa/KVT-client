@@ -1,0 +1,55 @@
+{
+  "_comment": "Сервисы на вкладке «Проверка» как данные. id — латиница, name — как пишется (названия не переводятся). probes — HTTPS-адреса, которые окно запрашивает по тому пути, по которому пойдёт трафик пользователя; ответ с любым кодом HTTP значит «открывается», читается до 64 КБ (дальше окна, где ТСПУ обрывает поток, 16–20 КБ), поэтому у YouTube, Discord, Instagram и ChatGPT берутся страницы и картинки больше 32 КБ (размеры замерены 2026-11-21: youtube.com ~965 КБ, i.ytimg.com/…maxresdefault.jpg ~65 КБ, discord.com ~160 КБ, instagram.com ~390 КБ, chatgpt.com ~750 КБ). У первого адреса из probes ещё берётся путь трафика («VPN», «zapret», «напрямую»). sets — наборы правил маршрутизации, в которые сервис входит (`itdog:…`, `rf:…`): сами наборы — бинарные файлы ядер, поэтому членство записано здесь; по ним `RoutingPlan::resolve_host` понимает, что «только заблокированное» всё равно ведёт YouTube через VPN, а выбор «YouTube напрямую» перекрывает пресет. modes — в каких режимах сервис показан по умолчанию (vpn, hybrid, zapret). zapret — списки Flowseal обрабатывают сервис в режиме «Zapret» (в «Гибриде» zapret получают только YouTube и Discord — `presets::zapret_youtube_discord`). telegram — сервис ходит через прокси tg-ws-proxy, когда он включён (прокси работает при любом подключении, Telegram Desktop по замыслу KVT всегда подключён к нему; в режиме «VPN» его соединения идут через туннель): проба берёт адрес, куда прокси открывает WebSocket (kws2.web.telegram.org, ответ 403 — это «достучались»). Данные проверяет тест `bundled_file_is_valid`; пробные адреса и пороги (kvt_core::services) подбирать опытом на реальных блокировках.",
+  "services": [
+    {
+      "id": "youtube",
+      "name": "YouTube",
+      "probes": [
+        "https://www.youtube.com/",
+        "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"
+      ],
+      "sets": ["itdog:youtube", "itdog:russia_inside", "rf:ru-blocked"],
+      "modes": ["vpn", "hybrid", "zapret"],
+      "zapret": true
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "probes": [
+        "https://discord.com/",
+        "https://cdn.discordapp.com/"
+      ],
+      "sets": ["itdog:discord", "itdog:russia_inside", "rf:ru-blocked"],
+      "modes": ["vpn", "hybrid", "zapret"],
+      "zapret": true
+    },
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "probes": [
+        "https://kws2.web.telegram.org/"
+      ],
+      "sets": ["itdog:telegram", "itdog:russia_inside", "rf:ru-blocked"],
+      "modes": ["vpn", "hybrid", "zapret"],
+      "telegram": true
+    },
+    {
+      "id": "instagram",
+      "name": "Instagram",
+      "probes": [
+        "https://www.instagram.com/"
+      ],
+      "sets": ["itdog:meta", "itdog:russia_inside", "rf:ru-blocked"],
+      "modes": ["vpn", "hybrid"]
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "probes": [
+        "https://chatgpt.com/"
+      ],
+      "sets": ["itdog:geoblock"],
+      "modes": ["vpn", "hybrid"]
+    }
+  ]
+}

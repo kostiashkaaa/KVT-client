@@ -409,3 +409,25 @@ fn provider_cannot_use_zapret() {
     });
     assert_eq!(plan.validate(), Err(RoutingError::ProviderZapret));
 }
+
+#[test]
+fn rule_sets_count_only_when_the_caller_says_the_domain_is_a_member() {
+    let mut plan = RoutingPlan::new(Action::Direct);
+    plan.push(Rule {
+        layer: Layer::Preset,
+        matcher: Matcher::RuleSet("itdog:russia_inside".into()),
+        action: Action::Proxy,
+    });
+    // Без членства набор не виден: так работает `resolve_domain`.
+    assert_eq!(plan.resolve_domain("youtube.com"), Action::Direct);
+    assert_eq!(plan.resolve_host("youtube.com", |_| false), Action::Direct);
+    let inside = |set: &str| set == "itdog:russia_inside";
+    assert_eq!(plan.resolve_host("youtube.com", inside), Action::Proxy);
+    // Правило слоя «Свои сайты» (User) важнее набора из пресета.
+    plan.push(Rule {
+        layer: Layer::User,
+        matcher: Matcher::DomainSuffix("youtube.com".into()),
+        action: Action::Direct,
+    });
+    assert_eq!(plan.resolve_host("www.youtube.com", inside), Action::Direct);
+}
