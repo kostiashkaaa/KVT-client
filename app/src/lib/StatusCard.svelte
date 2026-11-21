@@ -46,7 +46,7 @@
     starting?: boolean;
     /** Служба другой версии (прерванное обновление): кнопка ведёт на страницу загрузки. */
     mismatch?: boolean;
-    /** Прокси для Telegram включён: в «Гибриде» и «Zapret» Telegram идёт через него. */
+    /** Прокси для Telegram включён: в любом режиме Telegram Desktop идёт через него. */
     telegram?: boolean;
     onconnect: () => void;
     ondisconnect: () => void;
@@ -138,7 +138,13 @@
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
   const modes: { id: Mode; label: string; hint: string }[] = $derived([
-    { id: "vpn", label: "VPN", hint: t("Весь заблокированный трафик через VPN", "All blocked traffic via VPN") },
+    {
+      id: "vpn",
+      label: "VPN",
+      hint: telegram
+        ? t("Весь заблокированный трафик через VPN; Telegram — через прокси", "All blocked traffic via VPN; Telegram via the proxy")
+        : t("Весь заблокированный трафик через VPN", "All blocked traffic via VPN"),
+    },
     {
       id: "hybrid",
       label: t("Гибрид", "Hybrid"),
