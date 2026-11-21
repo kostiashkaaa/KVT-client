@@ -87,6 +87,10 @@ language.
   moves to the next working server in the subscription if it isn't.
 - **"Why isn't it working?"** A step-by-step check of the network, DNS, subscription and
   server that ends in a plain answer and a button to fix it.
+- **Service tiles.** The Check tab has one for each of YouTube, Discord, Telegram,
+  Instagram and ChatGPT. KVT opens them the way a browser would and shows the path each
+  one takes: the VPN, zapret, the proxy or a direct connection. If one doesn't open,
+  "Why?" tells you what to try.
 - **Runs from the tray.** Change the server, mode or kill switch from the tray menu.
   Connection time and traffic are shown on the home screen and in the tray.
 - **Moving from another client.** Subscriptions and keys from v2rayN, Hiddify and
