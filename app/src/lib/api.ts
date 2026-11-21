@@ -124,9 +124,11 @@ export {
   type TileState,
   type ServicesRunning,
   type ServiceTile,
+  type ServicePick,
   type ServicesSnapshot,
   servicesLast,
   servicesCheck,
+  servicesPick,
   onServices,
 } from "./api/services";
 export {

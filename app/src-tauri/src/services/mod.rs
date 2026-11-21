@@ -139,6 +139,20 @@ pub struct Tile {
     pub detail: String,
 }
 
+/// Сервис в списке «Какие сервисы показывать».
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Pick {
+    pub id: String,
+    pub name: String,
+    /// Сервис в наборе: отмечен пользователем, а без своего набора — входит в набор
+    /// режима по умолчанию. Режим может плитку и не показать (см. `offered`).
+    pub chosen: bool,
+    /// В выбранном режиме сервис вообще можно показать: без VPN Instagram и ChatGPT не
+    /// открыть, и плитки у них в режиме «Zapret» нет, как их ни отмечай.
+    pub offered: bool,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
@@ -148,34 +162,41 @@ pub struct Snapshot {
     /// Что работает сейчас: `off`, `vpn`, `hybrid` или `zapret`.
     pub running: &'static str,
     pub tiles: Vec<Tile>,
+    /// Все сервисы из файла данных: для выбора своего набора.
+    pub picks: Vec<Pick>,
+    /// Набор свой (отмечен пользователем), а не по умолчанию.
+    pub custom: bool,
+}
+
+impl Status {
+    /// Слово состояния для окна и диагностики.
+    fn word(self) -> &'static str {
+        match self {
+            Status::Unknown => "unknown",
+            Status::Waiting => "waiting",
+            Status::Done(Health::Works) => "works",
+            Status::Done(Health::Slow) => "slow",
+            Status::Done(Health::Down(_)) => "down",
+        }
+    }
 }
 
 impl Entry {
     fn tile(&self) -> Tile {
-        let (state, detail) = match self.status {
-            Status::Unknown => ("unknown", String::new()),
-            Status::Waiting => (
-                "waiting",
-                tr(
-                    "Слишком частые запросы к сайту — подождите минуту",
-                    "Too many requests to the site — wait a minute",
-                )
-                .to_owned(),
-            ),
-            Status::Done(health) => (
-                match health {
-                    Health::Works => "works",
-                    Health::Slow => "slow",
-                    Health::Down(_) => "down",
-                },
-                health.message().to_owned(),
-            ),
+        let detail = match self.status {
+            Status::Unknown => String::new(),
+            Status::Waiting => tr(
+                "Слишком частые запросы к сайту — подождите минуту",
+                "Too many requests to the site — wait a minute",
+            )
+            .to_owned(),
+            Status::Done(health) => health.message().to_owned(),
         };
         Tile {
             id: self.id.clone(),
             name: self.name.clone(),
             via: self.via,
-            state,
+            state: self.status.word(),
             detail,
         }
     }
@@ -193,6 +214,19 @@ fn now() -> u64 {
 #[tauri::command]
 pub async fn services_last(state: tauri::State<'_, crate::AppState>) -> Result<Snapshot, String> {
     Ok(run::view(&state).await)
+}
+
+/// Свой набор плиток (id сервисов) или `None` — набор по умолчанию. Сохраняется в
+/// настройках; плитки при другом наборе — другие, поэтому, если что-то подключено,
+/// сразу проверяются (прежний итог относился к другому набору).
+#[tauri::command]
+pub async fn services_pick(
+    app: tauri::AppHandle,
+    ids: Option<Vec<String>>,
+) -> Result<Snapshot, String> {
+    let picked = ids.as_deref().and_then(kvt_core::services::clean_picked);
+    crate::update_choice(&app, |c| c.services = picked)?;
+    Ok(check(&app, Trigger::Opened).await)
 }
 
 /// Проверить сервисы. `auto` — вкладка открылась: проверка нужна, только если итог

@@ -157,6 +157,7 @@ fn title(key: &str) -> String {
         "autostartOffered" => tr("автозапуск", "autostart"),
         "onboarded" => tr("подсказки первого запуска", "first-run tips"),
         "language" => tr("язык", "language"),
+        "services" => tr("набор сервисов", "services set"),
         other => other,
     }
     .into()

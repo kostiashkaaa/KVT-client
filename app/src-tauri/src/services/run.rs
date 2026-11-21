@@ -1,7 +1,7 @@
 //! Когда и что проверять: что сейчас работает на самом деле, какие сервисы показать,
 //! какие запросы разрешил `NetGovernor`.
 
-use super::{now, probe, Cache, Entry, Snapshot, Status, Stored, EVENT};
+use super::{now, probe, Cache, Entry, Pick, Snapshot, Status, Stored, EVENT};
 use crate::connection::{build_plan, Plan};
 use crate::{query_status, AppState};
 use kvt_core::governor::Decision;
@@ -42,6 +42,8 @@ struct Active {
     telegram: bool,
     /// Выбранный режим: от него зависит набор сервисов.
     mode: Mode,
+    /// Свой набор сервисов (`Choice.services`); `None` — по умолчанию для режима.
+    picked: Option<Vec<String>>,
 }
 
 impl Active {
@@ -62,14 +64,21 @@ impl Active {
         }
     }
 
-    /// При каких условиях сделан итог: другой режим, другое подключение или прокси
-    /// Telegram — другие плитки и другие пути.
+    /// При каких условиях сделан итог: другой режим, другое подключение, прокси
+    /// Telegram или набор сервисов — другие плитки и другие пути.
     fn key(&self) -> String {
-        format!("{}:{:?}:{}", self.word(), self.mode, self.telegram)
+        let shown: Vec<&str> = self.defs().iter().map(|d| d.id.as_str()).collect();
+        format!(
+            "{}:{:?}:{}:{}",
+            self.word(),
+            self.mode,
+            self.telegram,
+            shown.join(",")
+        )
     }
 
     fn defs(&self) -> Vec<&'static ServiceDef> {
-        services::for_mode(self.mode).collect()
+        services::select(self.mode, self.picked.as_deref())
     }
 
     fn entry(&self, def: &ServiceDef, status: Status) -> Entry {
@@ -80,14 +89,35 @@ impl Active {
             status,
         }
     }
+
+    /// Все сервисы для выбора набора. Без своего набора отмечено всё: набор режима —
+    /// это «все сервисы, что режим показывает», и сузить его в одном режиме значит
+    /// сузить только то, что в нём видно, а не потерять остальное в других режимах.
+    fn picks(&self) -> Vec<Pick> {
+        services::all()
+            .iter()
+            .map(|def| Pick {
+                id: def.id.clone(),
+                name: def.name.clone(),
+                chosen: self.picked.as_ref().is_none_or(|ids| ids.contains(&def.id)),
+                offered: def.modes.contains(&self.mode),
+            })
+            .collect()
+    }
 }
 
 async fn detect(state: &AppState) -> Active {
-    let (mode, telegram) = state
+    let (mode, telegram, picked) = state
         .choice
         .lock()
-        .map(|c| (Mode::parse(c.mode.as_deref()), c.zapret.telegram))
-        .unwrap_or((Mode::Vpn, false));
+        .map(|c| {
+            (
+                Mode::parse(c.mode.as_deref()),
+                c.zapret.telegram,
+                c.services.clone(),
+            )
+        })
+        .unwrap_or((Mode::Vpn, false, None));
     let (kind, plan) = match query_status().await.ok().flatten() {
         Some(ServiceStatus::Connected { .. }) => match connected_plan(state) {
             Some((plan, hybrid)) => (if hybrid { Kind::Hybrid } else { Kind::Vpn }, Some(plan)),
@@ -101,6 +131,7 @@ async fn detect(state: &AppState) -> Active {
         plan,
         telegram,
         mode,
+        picked,
     }
 }
 
@@ -136,6 +167,8 @@ fn snapshot(state: &AppState, active: &Active) -> Snapshot {
         checking: state.services.checking(),
         running: active.word(),
         tiles: entries.iter().map(Entry::tile).collect(),
+        picks: active.picks(),
+        custom: active.picked.is_some(),
     }
 }
 
@@ -182,7 +215,9 @@ pub(crate) async fn check(app: &AppHandle, trigger: Trigger) -> Snapshot {
         entries,
     });
     drop(guard);
-    let done = snapshot(&state, &active);
+    // Условия снимаем заново: пока шла проверка, выбор набора или режим могли смениться,
+    // и событие со старыми отметками откатило бы их в окне.
+    let done = snapshot(&state, &detect(&state).await);
     let _ = app.emit(EVENT, &done);
     done
 }
@@ -267,4 +302,60 @@ async fn probe_all(state: &AppState, active: &Active) -> Vec<Entry> {
             active.entry(def, status)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn active(mode: Mode, picked: Option<&[&str]>) -> Active {
+        Active {
+            kind: Kind::Off,
+            plan: None,
+            telegram: false,
+            mode,
+            picked: picked.map(|ids| ids.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    fn state_of(picks: &[Pick], id: &str) -> (bool, bool) {
+        let p = picks.iter().find(|p| p.id == id).unwrap();
+        (p.chosen, p.offered)
+    }
+
+    #[test]
+    fn without_an_own_set_everything_is_chosen_even_if_the_mode_hides_it() {
+        // «Zapret»: Instagram и ChatGPT отмечены, но недоступны. Сузить набор здесь —
+        // не потерять их в «VPN».
+        let picks = active(Mode::Zapret, None).picks();
+        assert_eq!(state_of(&picks, "instagram"), (true, false));
+        assert_eq!(state_of(&picks, "youtube"), (true, true));
+        assert!(picks.iter().all(|p| p.chosen));
+        assert!(active(Mode::Vpn, None)
+            .picks()
+            .iter()
+            .all(|p| p.chosen && p.offered));
+    }
+
+    #[test]
+    fn own_set_marks_only_its_services() {
+        let picks = active(Mode::Vpn, Some(&["youtube", "chatgpt"])).picks();
+        let chosen: Vec<&str> = picks
+            .iter()
+            .filter(|p| p.chosen)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(chosen, ["youtube", "chatgpt"]);
+    }
+
+    #[test]
+    fn the_key_follows_the_shown_set() {
+        let all = active(Mode::Vpn, None).key();
+        assert_ne!(all, active(Mode::Vpn, Some(&["youtube"])).key());
+        // Свой набор, который режиму ничего не оставил, — тот же набор, что по умолчанию.
+        assert_eq!(
+            active(Mode::Zapret, None).key(),
+            active(Mode::Zapret, Some(&["instagram"])).key()
+        );
+    }
 }

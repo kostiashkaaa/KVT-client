@@ -42,6 +42,73 @@ fn bundled_file_is_valid() {
     assert_eq!(for_mode(Mode::Hybrid).count(), 5);
 }
 
+// ── Свой набор ──
+
+fn ids(defs: Vec<&ServiceDef>) -> Vec<&str> {
+    defs.into_iter().map(|s| s.id.as_str()).collect()
+}
+
+fn picked(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn default_set_when_nothing_is_picked() {
+    assert_eq!(
+        ids(select(Mode::Vpn, None)),
+        ["youtube", "discord", "telegram", "instagram", "chatgpt"]
+    );
+    assert_eq!(
+        ids(select(Mode::Zapret, None)),
+        ["youtube", "discord", "telegram"]
+    );
+}
+
+#[test]
+fn own_set_keeps_file_order_and_ignores_unknown_ids() {
+    // Порядок — как в файле, а не как выбрал пользователь; чужие id отброшены.
+    let own = picked(&["chatgpt", "nonsense", "youtube"]);
+    assert_eq!(ids(select(Mode::Vpn, Some(&own))), ["youtube", "chatgpt"]);
+    assert_eq!(
+        ids(select(Mode::Hybrid, Some(&own))),
+        ["youtube", "chatgpt"]
+    );
+}
+
+#[test]
+fn own_set_is_narrowed_by_the_mode() {
+    // ChatGPT без VPN не открыть: в режиме «Zapret» его плитки нет, остальное — как выбрано.
+    let own = picked(&["discord", "chatgpt"]);
+    assert_eq!(ids(select(Mode::Zapret, Some(&own))), ["discord"]);
+}
+
+#[test]
+fn empty_own_set_falls_back_to_the_default() {
+    // Пустой набор и набор, которому режим ничего не оставил, плиток не обнуляют.
+    assert_eq!(select(Mode::Vpn, Some(&[])).len(), 5);
+    let only_instagram = picked(&["instagram"]);
+    assert_eq!(
+        ids(select(Mode::Zapret, Some(&only_instagram))),
+        ["youtube", "discord", "telegram"]
+    );
+    let unknown = picked(&["nonsense"]);
+    assert_eq!(select(Mode::Vpn, Some(&unknown)).len(), 5);
+}
+
+#[test]
+fn saved_set_is_cleaned() {
+    assert_eq!(
+        clean_picked(&picked(&["chatgpt", "youtube", "youtube", "nonsense"])),
+        Some(picked(&["youtube", "chatgpt"]))
+    );
+    // Пусто или одни чужие id — набор по умолчанию.
+    assert_eq!(clean_picked(&[]), None);
+    assert_eq!(clean_picked(&picked(&["nonsense"])), None);
+    // Отмечены все — это и есть набор по умолчанию, «свой» не остаётся.
+    let every: Vec<String> = all().iter().map(|s| s.id.clone()).collect();
+    assert_eq!(clean_picked(&every), None);
+}
+
 #[test]
 fn probes_are_checked() {
     let probe = |url: &str| Probe::try_from(url.to_string());

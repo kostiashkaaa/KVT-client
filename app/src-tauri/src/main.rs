@@ -166,6 +166,7 @@ fn main() {
             troubleshoot::troubleshoot,
             services::services_last,
             services::services_check,
+            services::services_pick,
             netprofile::current_network,
             zapret::zapret_strategies,
             tgproxy::tg_proxy_status,

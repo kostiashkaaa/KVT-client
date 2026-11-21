@@ -2,7 +2,13 @@
 // страницы — вкладку можно сменить и вернуться, итог остаётся (и приходит событием,
 // если проверка завершилась, пока окно было на другой вкладке).
 
-import { onServices, servicesCheck, servicesLast, type ServicesSnapshot } from "../api";
+import {
+  onServices,
+  servicesCheck,
+  servicesLast,
+  servicesPick,
+  type ServicesSnapshot,
+} from "../api";
 
 export const services = $state({
   snapshot: null as ServicesSnapshot | null,
@@ -38,6 +44,21 @@ export async function checkNow() {
   services.error = null;
   try {
     services.snapshot = await servicesCheck(false);
+  } catch (e) {
+    services.error = message(e);
+  } finally {
+    services.pending = false;
+  }
+}
+
+/** Свой набор плиток (`null` — по умолчанию). Rust сохраняет его и, если что-то
+ *  подключено, сразу проверяет новый набор. */
+export async function pickServices(ids: string[] | null) {
+  if (services.pending) return;
+  services.pending = true;
+  services.error = null;
+  try {
+    services.snapshot = await servicesPick(ids);
   } catch (e) {
     services.error = message(e);
   } finally {

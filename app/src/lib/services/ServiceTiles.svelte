@@ -2,8 +2,8 @@
   import { t } from "../i18n";
   import Icon from "../Icon.svelte";
   import type { Mode } from "../api";
-  import { caption, stateText, viaHint, viaLabel } from "./format";
-  import { checkNow, checkOnOpen, listenServices, reload, services } from "./store.svelte";
+  import { caption, isLastShown, stateText, toggledPick, viaHint, viaLabel } from "./format";
+  import { checkNow, checkOnOpen, listenServices, pickServices, reload, services } from "./store.svelte";
 
   let {
     mode,
@@ -35,6 +35,8 @@
 
   const snap = $derived(services.snapshot);
   const busy = $derived(services.pending || (snap?.checking ?? false));
+  /** Открыт выбор «Какие сервисы показывать». */
+  let choosing = $state(false);
 </script>
 
 {#if snap}
@@ -58,7 +60,32 @@
         <Icon name="refresh" size={16} />{busy ? t("Проверяю…", "Checking…") : t("Проверить", "Check")}
       </button>
     </div>
-    <p class="caption" aria-live="polite">{caption(snap)}</p>
+    <div class="bar">
+      <p class="caption" aria-live="polite">{caption(snap)}</p>
+      <button class="link" aria-expanded={choosing} onclick={() => (choosing = !choosing)}>
+        {snap.custom ? t("Набор сервисов · свой", "Services · custom") : t("Набор сервисов", "Choose services")}
+      </button>
+    </div>
+
+    {#if choosing}
+      <fieldset class="picks" disabled={services.pending}>
+        <legend class="sr">{t("Какие сервисы показывать", "Which services to show")}</legend>
+        {#each snap.picks as p (p.id)}
+          <label class="check" class:off={!p.offered} title={p.offered ? undefined : t("В этом режиме сервис не открыть: нужен VPN", "This service can't be opened in this mode: it needs a VPN")}>
+            <input
+              type="checkbox"
+              checked={p.chosen}
+              disabled={!p.offered || isLastShown(snap.picks, p.id)}
+              onchange={() => void pickServices(toggledPick(snap.picks, p.id))}
+            />
+            {p.name}
+          </label>
+        {/each}
+        {#if snap.custom}
+          <button class="link" onclick={() => void pickServices(null)}>{t("По умолчанию", "Reset to default")}</button>
+        {/if}
+      </fieldset>
+    {/if}
 
     <ul class="grid">
       {#each snap.tiles as tile (tile.id)}
@@ -109,6 +136,57 @@
   .caption,
   .error {
     margin: 0;
+  }
+
+  .bar {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .link {
+    flex: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .link:focus-visible {
+    box-shadow: var(--focus);
+    border-radius: 2px;
+    outline: none;
+  }
+
+  .picks {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-4);
+    min-width: 0;
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--stroke);
+    border-radius: var(--radius-s);
+    background: var(--bg);
+  }
+
+  .check {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    cursor: pointer;
+  }
+
+  .check.off {
+    color: var(--text-3);
+    cursor: default;
   }
 
   .error {

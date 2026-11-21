@@ -107,6 +107,7 @@ pub(super) fn set_choice(
         choice.recent = current.recent.clone();
         choice.autostart_offered = current.autostart_offered;
         choice.language = current.language;
+        choice.services = current.services.clone();
         if let Some(key) = choice
             .server
             .clone()

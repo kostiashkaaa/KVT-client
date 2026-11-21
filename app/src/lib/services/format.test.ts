@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { ServicesSnapshot } from "../api";
+import type { ServicePick, ServicesSnapshot } from "../api";
 import { setLang } from "../i18n";
-import { ago, caption, stateText, viaHint, viaLabel } from "./format";
+import { ago, caption, isLastShown, stateText, toggledPick, viaHint, viaLabel } from "./format";
 
 afterEach(() => setLang("ru"));
 
@@ -46,12 +46,50 @@ describe("подписи плиток", () => {
   });
 });
 
+describe("свой набор", () => {
+  const pick = (id: string, chosen: boolean, offered = true): ServicePick => ({
+    id,
+    name: id,
+    chosen,
+    offered,
+  });
+  const picks = [pick("youtube", true), pick("discord", true), pick("instagram", false, false)];
+
+  it("переключение снимает и ставит отметку, остальные не трогает", () => {
+    expect(toggledPick(picks, "youtube")).toEqual(["discord"]);
+    // Недоступный в режиме сервис не отмечается из окна, но если он уже в наборе — остаётся.
+    const kept = [pick("youtube", true), pick("instagram", true, false)];
+    expect(toggledPick(kept, "youtube")).toEqual(["instagram"]);
+    expect(toggledPick(picks, "discord")).toEqual(["youtube"]);
+  });
+
+  it("набор по умолчанию в «Zapret»: сужение не теряет Instagram и ChatGPT", () => {
+    // Без своего набора отмечено всё; два сервиса «Zapret» не показывает, но они остаются.
+    const zapret = [
+      pick("youtube", true),
+      pick("discord", true),
+      pick("instagram", true, false),
+      pick("chatgpt", true, false),
+    ];
+    expect(toggledPick(zapret, "discord")).toEqual(["youtube", "instagram", "chatgpt"]);
+  });
+
+  it("последнюю показанную плитку снять нельзя", () => {
+    expect(isLastShown(picks, "youtube")).toBe(false);
+    const one = [pick("youtube", true), pick("discord", false), pick("instagram", true, false)];
+    expect(isLastShown(one, "youtube")).toBe(true);
+    expect(isLastShown(one, "discord")).toBe(false);
+  });
+});
+
 describe("caption", () => {
   const snap = (over: Partial<ServicesSnapshot>): ServicesSnapshot => ({
     at: null,
     checking: false,
     running: "vpn",
     tiles: [],
+    picks: [],
+    custom: false,
     ...over,
   });
 

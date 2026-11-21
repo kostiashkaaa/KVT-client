@@ -233,6 +233,25 @@ export function previewAdd(body: string): Added {
 // ничего не подключено, а кнопка «Проверить» показывает все три вердикта. Тексты
 // считаются при вызове: язык ставится до монтирования, а не при загрузке модуля.
 let servicesChecked = false;
+/** Свой набор плиток в превью (id); `null` — по умолчанию. */
+let servicesPicked: string[] | null = null;
+
+/** Сервисы плиток в превью: id и название (названия — торговые марки, не переводятся). */
+const SERVICES = [
+  { id: "youtube", name: "YouTube" },
+  { id: "discord", name: "Discord" },
+  { id: "telegram", name: "Telegram" },
+  { id: "instagram", name: "Instagram" },
+  { id: "chatgpt", name: "ChatGPT" },
+] as const;
+
+/** Выбор своего набора в превью: сохраняется до перезагрузки страницы. */
+export function previewServicesPick(ids: string[] | null): ServicesSnapshot {
+  const known = SERVICES.filter((s) => ids?.includes(s.id)).map((s) => s.id as string);
+  // Как в Rust (`clean_picked`): пусто или отмечено всё — набор по умолчанию.
+  servicesPicked = known.length > 0 && known.length < SERVICES.length ? known : null;
+  return previewServices();
+}
 
 /** Превью сервисов; `check` — нажали «Проверить». */
 export function previewServices(opts: { check?: boolean } = {}): ServicesSnapshot {
@@ -257,33 +276,24 @@ export function previewServices(opts: { check?: boolean } = {}): ServicesSnapsho
             ? t("Соединение обрывается — похоже на блокировку", "The connection drops — looks like a block")
             : "",
   });
-  if (demo) {
-    return {
-      at,
-      checking: false,
-      running: "vpn",
-      tiles: [
-        tile("youtube", "YouTube", "vpn", "works"),
-        tile("discord", "Discord", "vpn", "works"),
-        tile("telegram", "Telegram", "vpn", "works"),
-        tile("instagram", "Instagram", "vpn", "works"),
-        tile("chatgpt", "ChatGPT", "vpn", "works"),
-      ],
-    };
-  }
   const states = servicesChecked
     ? (["down", "slow", "works", "down", "works"] as const)
     : (["unknown", "unknown", "unknown", "unknown", "unknown"] as const);
+  // В `?demo` VPN подключён и всё открывается; иначе ничего не подключено.
+  const tiles = SERVICES.map((s, i) =>
+    tile(s.id, s.name, demo ? "vpn" : "direct", demo ? "works" : (states[i] ?? "unknown")),
+  ).filter((tl) => servicesPicked === null || servicesPicked.includes(tl.id));
   return {
-    at: servicesChecked ? at : null,
+    at: demo || servicesChecked ? at : null,
     checking: false,
-    running: "off",
-    tiles: [
-      tile("youtube", "YouTube", "direct", states[0]),
-      tile("discord", "Discord", "direct", states[1]),
-      tile("telegram", "Telegram", "direct", states[2]),
-      tile("instagram", "Instagram", "direct", states[3]),
-      tile("chatgpt", "ChatGPT", "direct", states[4]),
-    ],
+    running: demo ? "vpn" : "off",
+    tiles,
+    picks: SERVICES.map((s) => ({
+      id: s.id,
+      name: s.name,
+      chosen: servicesPicked === null || servicesPicked.includes(s.id),
+      offered: true,
+    })),
+    custom: servicesPicked !== null,
   };
 }

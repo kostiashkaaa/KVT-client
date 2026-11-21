@@ -38,6 +38,9 @@ pub(super) struct Choice {
     pub(crate) autostart_offered: bool,
     /// Язык интерфейса. Окно поле не присылает — `set_choice` сохраняет прежнее.
     pub(crate) language: lang::LangChoice,
+    /// Свой набор плиток сервисов (id); `None` — набор по умолчанию для режима. Окно
+    /// поле не присылает: меняет его `services_pick`, а `set_choice` сохраняет прежнее.
+    pub(crate) services: Option<Vec<String>>,
 }
 
 /// Сколько серверов помнит «Недавние» в трее.
@@ -71,6 +74,7 @@ impl Default for Choice {
             onboarded: false,
             autostart_offered: false,
             language: lang::LangChoice::Auto,
+            services: None,
         }
     }
 }

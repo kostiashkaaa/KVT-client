@@ -1,5 +1,5 @@
 import { inTauri, invoke, listen } from "./bridge";
-import { previewServices } from "./preview";
+import { previewServices, previewServicesPick } from "./preview";
 
 // ── Сервисы на вкладке «Проверка» (YouTube, Discord, Telegram…) ──
 
@@ -21,12 +21,26 @@ export interface ServiceTile {
   detail: string;
 }
 
+/** Сервис в списке «Какие сервисы показывать». */
+export interface ServicePick {
+  id: string;
+  name: string;
+  /** Сервис в наборе: отмечен пользователем, а без своего набора — входит в набор режима. */
+  chosen: boolean;
+  /** В выбранном режиме сервис можно показать (без VPN Instagram и ChatGPT не открыть). */
+  offered: boolean;
+}
+
 export interface ServicesSnapshot {
   /** Когда проверено (секунды Unix); null — не проверяли. */
   at: number | null;
   checking: boolean;
   running: ServicesRunning;
   tiles: ServiceTile[];
+  /** Все сервисы: для выбора своего набора. */
+  picks: ServicePick[];
+  /** Набор свой (отмечен пользователем), а не по умолчанию. */
+  custom: boolean;
 }
 
 /** Итог последней проверки (или плитки «не проверено»). Сетевых запросов не шлёт. */
@@ -40,6 +54,14 @@ export async function servicesLast(): Promise<ServicesSnapshot> {
 export async function servicesCheck(auto: boolean): Promise<ServicesSnapshot> {
   if (!inTauri) return previewServices({ check: !auto });
   return invoke<ServicesSnapshot>("services_check", { auto });
+}
+
+/** Свой набор плиток (id сервисов); `null` — набор по умолчанию. Сохраняется в настройках
+ *  Rust, поэтому в `Choice` окна его нет. Если что-то подключено, новый набор сразу
+ *  проверяется. */
+export async function servicesPick(ids: string[] | null): Promise<ServicesSnapshot> {
+  if (!inTauri) return previewServicesPick(ids);
+  return invoke<ServicesSnapshot>("services_pick", { ids });
 }
 
 /** Итог изменился или проверка началась (после подключения, по кнопке). */

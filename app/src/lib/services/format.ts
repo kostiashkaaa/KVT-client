@@ -2,7 +2,7 @@
 // до монтирования окна), без обращения к Rust.
 
 import { t } from "../i18n";
-import type { ServiceVia, ServicesSnapshot, TileState } from "../api";
+import type { ServicePick, ServiceVia, ServicesSnapshot, TileState } from "../api";
 
 /** Коротко, как на плитке: «VPN», «zapret», «напрямую». */
 export function viaLabel(via: ServiceVia): string {
@@ -53,6 +53,20 @@ export function stateText(state: TileState): string {
     case "unknown":
       return t("не проверено", "not checked");
   }
+}
+
+/** Свой набор после переключения отметки `id`: id всех отмеченных сервисов. Отмеченные,
+ *  но недоступные в этом режиме (Instagram без VPN) остаются в наборе — вернётся VPN,
+ *  вернётся и плитка. */
+export function toggledPick(picks: ServicePick[], id: string): string[] {
+  return picks.filter((p) => (p.id === id ? !p.chosen : p.chosen)).map((p) => p.id);
+}
+
+/** Единственный отмеченный сервис, который этот режим показывает: снять его — оставить
+ *  карточку без плиток. */
+export function isLastShown(picks: ServicePick[], id: string): boolean {
+  const left = picks.filter((p) => p.chosen && p.offered);
+  return left.length === 1 && left[0]?.id === id;
 }
 
 /** «только что», «3 мин назад», «2 ч назад»; `at` — секунды Unix. */

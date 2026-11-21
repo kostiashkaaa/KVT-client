@@ -169,10 +169,38 @@ pub fn all() -> &'static [ServiceDef] {
     SERVICES.get_or_init(|| parse(SERVICES_JSON).unwrap_or_default())
 }
 
-/// Набор по умолчанию для режима. `TODO(этап 0.9.8)`: свой набор сервисов — только в
-/// «Расширенных» (поле в `Choice`).
+/// Набор по умолчанию для режима.
 pub fn for_mode(mode: Mode) -> impl Iterator<Item = &'static ServiceDef> {
     all().iter().filter(move |s| s.modes.contains(&mode))
+}
+
+/// Какие сервисы показывать: `picked` — свой набор пользователя (id), `None` — набор
+/// по умолчанию. Свой набор уже режима: сервис, который в этом режиме не открыть
+/// (Instagram и ChatGPT без VPN), не показывается, чтобы плитка не краснела зря.
+/// Порядок — как в файле данных. Неизвестные id отбрасываются; если ничего не
+/// осталось (файл данных поменялся, режим другой), берётся набор по умолчанию.
+pub fn select(mode: Mode, picked: Option<&[String]>) -> Vec<&'static ServiceDef> {
+    let chosen: Vec<&ServiceDef> = match picked {
+        Some(ids) => for_mode(mode).filter(|s| ids.contains(&s.id)).collect(),
+        None => Vec::new(),
+    };
+    if chosen.is_empty() {
+        for_mode(mode).collect()
+    } else {
+        chosen
+    }
+}
+
+/// Оставляет в своём наборе только известные сервисы (без повторов), в порядке файла
+/// данных. Пусто или отмечено всё — `None`: набор по умолчанию (иначе после «вернул все
+/// отметки» в окне осталось бы «свой набор», который ничем не отличается).
+pub fn clean_picked(ids: &[String]) -> Option<Vec<String>> {
+    let kept: Vec<String> = all()
+        .iter()
+        .filter(|s| ids.contains(&s.id))
+        .map(|s| s.id.clone())
+        .collect();
+    (!kept.is_empty() && kept.len() < all().len()).then_some(kept)
 }
 
 /// Каким путём идёт трафик сервиса.
