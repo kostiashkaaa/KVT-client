@@ -236,6 +236,18 @@ async fn latest(force: bool, state: &AppState) -> Result<Release, ZapretError> {
             }
         }
     }
+    // Запрос к GitHub — под теми же лимитами `NetGovernor`, что остальные запросы
+    // окна (С-8 аудита): иначе обновление обходило бы паузы против заморозок ТСПУ.
+    // `force` обходит только кэш ответа, а не допуск.
+    let host = kvt_core::netlog::host_of(kvt_core::zapret::RELEASES_API);
+    crate::fetch::acquire_for(
+        &state.governor,
+        &host,
+        kvt_core::netlog::Purpose::Update,
+        Duration::from_secs(30),
+    )
+    .await
+    .map_err(|e| ZapretError::Release(e.to_string()))?;
     let client = reqwest::Client::builder()
         .https_only(true)
         .timeout(Duration::from_secs(20))

@@ -66,6 +66,10 @@ pub struct Hints<'a> {
     /// другому клиенту провайдер отдаёт другой формат.
     pub validators: Option<&'a Validators>,
     pub hwid: Hwid<'a>,
+    /// Лимиты `NetGovernor` для повторного допуска на перенаправлениях: подписка
+    /// может повести на другой хост, и его тоже спрашиваем не чаще нормы.
+    /// `None` (тесты) — без допуска.
+    pub governor: Option<&'a Mutex<NetGovernor>>,
 }
 
 /// Ответ на один запрос.
@@ -395,12 +399,12 @@ async fn fetch_inner(url: &Url, hints: &Hints<'_>) -> Result<Loaded, FetchError>
     };
     for (key, agent) in agent_order(hints.client, hints.agent) {
         let conditional = hints.validators.filter(|_| hints.agent == Some(key));
-        let mut reply = fetch_as(&client, url, &agent, conditional, hwid).await;
+        let mut reply = fetch_as(&client, url, &agent, conditional, hwid, hints.governor).await;
         if let (Ok(Reply::HwidRequired), Hwid::OnRequest(id)) = (&reply, hints.hwid) {
             // Провайдер сам сказал, что без ID не отдаст: повтор с ним, и дальше
             // по очереди — тоже с ним.
             hwid = Some(id);
-            reply = fetch_as(&client, url, &agent, conditional, hwid).await;
+            reply = fetch_as(&client, url, &agent, conditional, hwid, hints.governor).await;
         }
         match reply {
             Ok(Reply::NotModified(meta)) => return Ok(Loaded::NotModified(meta)),
@@ -451,15 +455,19 @@ async fn fetch_as(
     agent: &str,
     conditional: Option<&Validators>,
     hwid: Option<&str>,
+    governor: Option<&Mutex<NetGovernor>>,
 ) -> Result<Reply, FetchError> {
     let mut target = url.clone();
     let mut send_hwid = hwid;
+    // Метки версии — тоже только своему хосту: чужому они ни к чему, а провайдеру
+    // о нас говорит лишнее (Н-2 аудита).
+    let mut send_conditional = conditional;
     let mut answer = None;
     for _ in 0..=MAX_REDIRECTS {
         let mut request = client
             .get(target.clone())
             .header(reqwest::header::USER_AGENT, agent);
-        if let Some(v) = conditional {
+        if let Some(v) = send_conditional {
             if let Some(etag) = &v.etag {
                 request = request.header(reqwest::header::IF_NONE_MATCH, etag);
             }
@@ -486,9 +494,30 @@ async fn fetch_as(
             answer = Some(resp);
             break;
         };
-        // ID устройства — только хосту подписки, как reqwest поступает с Authorization.
+        // Перенаправление — только на https с адресом, как и исходная ссылка.
+        if next.scheme() != "https" || next.host_str().is_none() {
+            return Err(if next.scheme() != "https" {
+                FetchError::NotHttps
+            } else {
+                FetchError::NoHost
+            });
+        }
+        // ID устройства и метки версии — только хосту подписки, как reqwest
+        // поступает с Authorization.
         if !same_host(&next, url) {
             send_hwid = None;
+            send_conditional = None;
+            // Новый хост — повторный допуск `NetGovernor` (С-11 аудита): без него
+            // редирект обходил бы лимиты на соединения к одному серверу.
+            if let Some(governor) = governor {
+                acquire_for(
+                    governor,
+                    next.host_str().unwrap_or_default(),
+                    Purpose::Subscription,
+                    Duration::from_secs(30),
+                )
+                .await?;
+            }
         }
         target = next;
     }
@@ -511,8 +540,9 @@ async fn fetch_as(
         _ => {}
     }
     let meta = parse_headers(pairs());
-    // 304 принимаем, только если сами спрашивали «изменилась ли».
-    if conditional.is_some() && resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+    // 304 принимаем, только если сами спрашивали «изменилась ли» (метки могли
+    // сняться на чужом хосте перенаправления).
+    if send_conditional.is_some() && resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(Reply::NotModified(meta));
     }
     if !resp.status().is_success() {

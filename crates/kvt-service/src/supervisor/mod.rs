@@ -83,6 +83,19 @@ impl Shared {
     pub fn forget_kill_switch(&self) {
         clear_marker(&self.paths.run.join(KILL_SWITCH_MARKER));
     }
+
+    /// Дописать SID владельца в отметку kill switch, если она стоит: после сбоя
+    /// службы (`restore_kill_switch`) закрытым интернетом управляет включивший.
+    /// Отметки нет — ничего не писать: её появление включило бы kill switch после
+    /// падения без него.
+    pub fn mark_kill_switch_owner(&self, sid: &str) {
+        let marker = self.paths.run.join(KILL_SWITCH_MARKER);
+        if std::fs::metadata(&marker).is_ok() {
+            if let Err(e) = std::fs::write(&marker, sid) {
+                tracing::warn!(error = %e, "SID владельца kill switch не записан");
+            }
+        }
+    }
 }
 
 /// Сработавшее правило ошибок ядра, которое ещё не обработано.
@@ -132,6 +145,9 @@ pub struct Supervisor {
     /// До какого момента открыт выход тестовому ядру (`open_probe`): окно могло
     /// закрыться, не сказав `ProbeClose`.
     probe_until: Option<Instant>,
+    /// SID пользователя, чей kill switch восстановлен после сбоя службы
+    /// (`restore_kill_switch`): управлять закрытым интернетом может он.
+    restored_owner: Option<String>,
 }
 
 /// Код правила из `presets/core-errors.json`: ядро не может задать адаптеру IPv6.
@@ -153,7 +169,14 @@ impl Supervisor {
             checked: CheckedConfigs::default(),
             retry_after_exit: false,
             probe_until: None,
+            restored_owner: None,
         }
+    }
+
+    /// SID пользователя, чей kill switch восстановлен после сбоя службы, — для
+    /// `Owner::restored` в pipe: пока интернет закрыт, управлять им может он.
+    pub fn restored_owner(&self) -> Option<String> {
+        self.restored_owner.clone()
     }
 
     pub fn recent_log(&self, n: usize) -> Vec<String> {
@@ -191,7 +214,10 @@ impl Supervisor {
         } else {
             None
         };
-        let result = self.start_inner(plan).await;
+        // Прежние фильтры (смена сервера, переподключение, восстановление после сбоя)
+        // уже закрывают окно запуска — переходной версии не нужно.
+        let held = previous.is_some();
+        let result = self.start_inner(plan, held).await;
         if result.is_err() {
             // Ядро не поднялось — zapret без него в гибриде не нужен.
             self.set_zapret(None);
@@ -207,13 +233,20 @@ impl Supervisor {
         result
     }
 
-    async fn start_inner(&mut self, plan: &ConnectPlan) -> Result<(), ConnectError> {
+    async fn start_inner(&mut self, plan: &ConnectPlan, held: bool) -> Result<(), ConnectError> {
         // Адреса имён сервера — через DoH, не DNS провайдера: их получают ядро (само
         // имя не резолвит), маскировщик журналов и (в гибриде) исключения winws.
         hide_server_addresses(&plan.server);
         let endpoints = plan.server.endpoints();
-        let hosts =
-            crate::net::server_ips(&endpoints, plan.server.port, plan.dns.remote_id()).await;
+        // `kill_switch_active`: при восстановленной защите (сбой службы) системный
+        // DNS не спрашивается вовсе — имя сервера не должно уходить провайдеру.
+        let hosts = crate::net::server_ips(
+            &endpoints,
+            plan.server.port,
+            plan.dns.remote_id(),
+            self.kill_switch_active(),
+        )
+        .await;
         kvt_core::redact::add_servers(
             hosts
                 .iter()
@@ -320,6 +353,19 @@ impl Supervisor {
         if let Ok(mut issues) = self.issues.lock() {
             *issues = None;
         }
+        // Kill switch — с этого момента, а не после подъёма туннеля: рукопожатие ядра
+        // и ожидание адаптера длятся секунды, и всё это время трафик приложений
+        // иначе идёт напрямую через провайдера. Списки и DoH уже позади (их качает
+        // сама служба, и она в разрешённых). `held` — смена сервера или переподключение:
+        // прежние фильтры уже держат окно. После адаптера на место переходной встанет
+        // полная версия — с разрешением интерфейса TUN, без щели между ними.
+        if plan.kill_switch && !held {
+            if let Err(e) = self.enable_kill_switch(None) {
+                // Защиту обещали, но включить не смогли — не начинаем подключение.
+                tracing::error!(error = %e, "kill switch не включился");
+                return Err(ConnectError::KillSwitch(Box::new(e)));
+            }
+        }
         let result = self
             .check_and_spawn(&spec, &config_file.0, fingerprint)
             .await;
@@ -335,20 +381,23 @@ impl Supervisor {
         let luid = match self.wait_tun().await {
             Ok(luid) => luid,
             Err(e) => {
-                self.stop_running().await;
+                // Туннель не поднялся: остановить ядро, но интернет не открывать —
+                // kill switch держит его с момента «Подключить» (fail-closed).
+                self.stop_processes().await;
                 return Err(e);
             }
         };
         if let Err(e) = self.enable_dns_guard(luid, !ipv6) {
             // Как и с kill switch: не оставляем соединение, у которого DNS уходит мимо.
-            self.stop_running().await;
+            // Защита при этом не снимается.
+            self.stop_processes().await;
             tracing::error!(error = %e, "DNS мимо туннеля не закрыт");
             return Err(ConnectError::DnsGuard(Box::new(e)));
         }
         if plan.kill_switch {
-            if let Err(e) = self.enable_kill_switch(luid) {
+            if let Err(e) = self.enable_kill_switch(Some(luid)) {
                 // Защиту обещали, но включить не смогли — не оставляем «полузащищённое» соединение.
-                self.stop_running().await;
+                self.stop_processes().await;
                 tracing::error!(error = %e, "kill switch не включился");
                 return Err(ConnectError::KillSwitch(Box::new(e)));
             }
@@ -559,6 +608,17 @@ impl Supervisor {
     /// Остановка внутри запуска. Прежний kill switch при переподключении держит
     /// `connect`, и его отметка остаётся.
     async fn stop_running(&mut self) {
+        self.stop_processes().await;
+        if self.kill_switch.take().is_some() {
+            self.mark_kill_switch(false);
+            tracing::info!("kill switch выключен");
+        }
+    }
+
+    /// Остановить ядро и zapret, не трогая kill switch. Неудача на пути подключения
+    /// не открывает интернет: с включённым kill switch он закрыт с момента
+    /// «Подключить» и остаётся закрытым до «Отключить» или другой команды окна.
+    async fn stop_processes(&mut self) {
         if let Some(mut running) = self.running.take() {
             let _ = running.child.kill().await;
             tracing::info!("ядро остановлено");
@@ -566,10 +626,6 @@ impl Supervisor {
         if self.zapret.is_some() {
             self.set_zapret(None);
             tracing::info!("zapret остановлен");
-        }
-        if self.kill_switch.take().is_some() {
-            self.mark_kill_switch(false);
-            tracing::info!("kill switch выключен");
         }
         // Правило ошибок прежнего ядра не должно переподключить то, что остановлено.
         if let Ok(mut issues) = self.issues.lock() {

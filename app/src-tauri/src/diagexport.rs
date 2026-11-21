@@ -97,8 +97,10 @@ async fn collect(state: &AppState) -> Vec<DiagFile> {
          - kvt.log — журнал приложения;\r\n\
          - service.log — журнал службы;\r\n\
          - core.log — последние строки VPN-ядра;\r\n\
-         - tgproxy.log — журнал прокси для Telegram (без секрета);\r\n\
-         - netlog.json — журнал сетевых запросов KVT (только хосты).\r\n",
+         - tgproxy.log — журнал прокси для Telegram (без секрета).\r\n\
+         \r\n\
+         Журнал сетевых запросов («Журнал» в окне, имена хостов) в диагностику не\r\n\
+         входит: он раскрывает, куда ходил этот компьютер.\r\n",
         version = env!("CARGO_PKG_VERSION"),
         time = timestamp(now),
         os = os_version(),
@@ -143,8 +145,8 @@ async fn collect(state: &AppState) -> Vec<DiagFile> {
         "services": crate::services::export(state).await,
     });
 
-    let journal = crate::journal::net_log().await.ok();
-
+    // Журнал сетевых запросов не экспортируется: имена хостов раскрывают, куда
+    // ходил этот компьютер (хост подписки, SNI серверов) — правило проекта.
     vec![
         file("README.txt", readme),
         file("status.json", pretty(&status_json)),
@@ -154,12 +156,6 @@ async fn collect(state: &AppState) -> Vec<DiagFile> {
         file("service.log", service_log),
         file("core.log", core_log),
         file("tgproxy.log", crate::tgproxy::log_tail()),
-        file(
-            "netlog.json",
-            journal
-                .map(|j| pretty(&serde_json::to_value(j).unwrap_or_default()))
-                .unwrap_or_default(),
-        ),
     ]
 }
 

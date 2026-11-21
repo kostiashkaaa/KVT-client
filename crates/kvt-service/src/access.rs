@@ -7,8 +7,9 @@
 //! администратор. Иначе второй пользователь отключил бы чужой VPN и kill switch,
 //! открыл бы выход мимо туннеля (`ProbeOpen`) или прочёл журнал сетевых запросов.
 //!
-//! Владелец помнится только в памяти: после перезапуска службы (сбой с kill switch)
-//! его нет, и «Подключить»/«Отключить» снова может любой пользователь.
+//! Владелец помнится в памяти и восстанавливается после перезапуска службы
+//! (сбой с kill switch) из отметки на диске: туда при подключении дописывается
+//! SID включившего — каталог `run` доступен только SYSTEM и администраторам.
 
 use crate::win::User;
 use kvt_core::ipc::{Request, Response, ServiceStatus};
@@ -19,6 +20,11 @@ use std::sync::Mutex;
 pub struct Owner(Mutex<Option<String>>);
 
 impl Owner {
+    /// Владелец, восстановленный после сбоя службы: SID из отметки kill switch.
+    pub fn restored(sid: Option<String>) -> Self {
+        Self(Mutex::new(sid))
+    }
+
     /// Пускать ли команду `client` при статусе `status`. Запуск от того, кого
     /// пустили, делает его владельцем.
     pub fn admit(&self, client: &User, status: &ServiceStatus, request: &Request) -> bool {
@@ -149,5 +155,22 @@ mod tests {
         assert!(!owner.admit(&bob, &blocked, &Request::Disconnect));
         // Служба перезапустилась после сбоя: владельца нет.
         assert!(Owner::default().admit(&bob, &blocked, &Request::Disconnect));
+    }
+
+    /// После перезапуска службы (сбой с kill switch) владельцем остаётся тот, кто
+    /// его включил: SID восстановлен из отметки kill switch (С-2 аудита).
+    #[test]
+    fn restored_owner_keeps_guarding_after_service_restart() {
+        let blocked = ServiceStatus::Failed {
+            reason: String::new(),
+            blocked: true,
+        };
+        let (alice, bob) = (user("S-1-5-21-1", false), user("S-1-5-21-2", false));
+        let owner = Owner::restored(Some(alice.sid.clone()));
+        assert!(!owner.admit(&bob, &blocked, &Request::Disconnect));
+        assert!(owner.admit(&alice, &blocked, &Request::Disconnect));
+        // И новую сессию тоже может начать только он.
+        assert!(!owner.admit(&bob, &blocked, &start()));
+        assert!(owner.admit(&alice, &blocked, &start()));
     }
 }

@@ -357,10 +357,17 @@ const CONNECT_DOH_BUDGET: Duration = Duration::from_secs(5);
 /// Адреса имён VPN-сервера (`Server::endpoints`; IP из ссылки не входят) для ядра,
 /// маскировщика журналов и исключений zapret. Через DoH (`doh` — первый резолвер)
 /// мимо туннеля, с адреса физического адаптера: прежний туннель при переподключении
-/// может быть мёртв, а kill switch службу пропускает. DoH не ответил — прежние
-/// адреса имени; их нет — системный DNS (до 5 с) с предупреждением в журнале: без
-/// адреса не подключиться, хотя этот запрос и видит провайдер.
-pub async fn server_ips(names: &[String], port: u16, doh: &str) -> Vec<(String, Vec<IpAddr>)> {
+/// может быть мёртв, а kill switch службу пропускает. DoH не ответил — один
+/// повторный запрос, и только потом прежние адреса имени; их нет и kill switch
+/// включён — системный DNS не спрашивается: имя VPN-сервера не должно уходить
+/// провайдеру, понятнее отказать подключению (С-7 аудита). Без kill switch —
+/// системный DNS (до 5 с) с предупреждением в журнале: без адреса не подключиться.
+pub async fn server_ips(
+    names: &[String],
+    port: u16,
+    doh: &str,
+    kill_switch: bool,
+) -> Vec<(String, Vec<IpAddr>)> {
     let names: Vec<String> = names
         .iter()
         .filter(|n| n.trim_matches(['[', ']']).parse::<IpAddr>().is_err())
@@ -384,7 +391,21 @@ pub async fn server_ips(names: &[String], port: u16, doh: &str) -> Vec<(String, 
             Some(Lookup::Found(ips)) => ips.clone(),
             // DoH ответил «такого имени нет» — системный DNS не спрашиваем.
             Some(Lookup::NotFound) => known_ips(&name),
-            _ => fallback(&name, port).await,
+            _ => {
+                // DoH не успел или не ответил — один повторный запрос прежде, чем
+                // что-либо ещё: возможна единичная заминка на пути к резолверу.
+                let retry_names = [name.clone()];
+                let again =
+                    kvt_core::dns::names::resolve(&retry_names, &doh, local, Origin::Service);
+                let again = tokio::time::timeout(CONNECT_DOH_BUDGET, again)
+                    .await
+                    .unwrap_or_default();
+                match again.get(&name) {
+                    Some(Lookup::Found(ips)) => ips.clone(),
+                    Some(Lookup::NotFound) => known_ips(&name),
+                    _ => fallback(&name, port, kill_switch).await,
+                }
+            }
         };
         if ips.is_empty() {
             continue;
@@ -398,11 +419,18 @@ pub async fn server_ips(names: &[String], port: u16, doh: &str) -> Vec<(String, 
     out
 }
 
-async fn fallback(host: &str, port: u16) -> Vec<IpAddr> {
+async fn fallback(host: &str, port: u16, kill_switch: bool) -> Vec<IpAddr> {
     let known = known_ips(host);
     if !known.is_empty() {
         tracing::info!("DoH не ответил — взяты прежние адреса сервера");
         return known;
+    }
+    if kill_switch {
+        tracing::warn!(
+            "DoH не ответил — при включённом kill switch системный DNS не спрашивается: \
+             имени сервера не видно провайдеру, но адреса нет"
+        );
+        return Vec::new();
     }
     tracing::warn!("DoH не ответил — адрес сервера спрошен у системного DNS");
     let start = Instant::now();

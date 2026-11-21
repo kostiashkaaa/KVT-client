@@ -160,7 +160,7 @@ async fn add_url(state: &AppState, raw: &str, patient: bool) -> Result<Added, Su
     let plan = Plan::of(state, |s| {
         s.url.as_ref().map(Secret::expose) == Some(url.as_str())
     })?;
-    let fetched = fetch::fetch(&url, &plan.hints(host, None)?.hints()).await?;
+    let fetched = fetch::fetch(&url, &plan.hints(host, None)?.hints(&state.governor)).await?;
     ensure_servers(&fetched.body)?;
     let body = fetched.body.clone();
     let id = with_store(state, |s| {
@@ -332,7 +332,7 @@ pub(crate) async fn import_url(
         let host = url.host_str().unwrap_or_default();
         fetch::acquire(&state.governor, host)?;
         let plan = Plan::of(state, |_| false)?;
-        let fetched = fetch::fetch(&url, &plan.hints(host, None)?.hints()).await?;
+        let fetched = fetch::fetch(&url, &plan.hints(host, None)?.hints(&state.governor)).await?;
         ensure_servers(&fetched.body)?;
         Ok::<_, SubsError>(fetched)
     }

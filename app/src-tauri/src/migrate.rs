@@ -1,8 +1,9 @@
 //! Перенос из других клиентов (преобразование записей — `kvt_core::migrate`).
 //!
 //! Данные чужих клиентов только читаются. Базы SQLite перед чтением копируются
-//! во временную папку: клиент может быть запущен и держать базу открытой, а
-//! свежие изменения могут лежать в журнале `-wal` рядом с ней.
+//! в каталог данных приложения (не `%TEMP%`: копия с ключами не должна остаться
+//! во временной папке после аварии): клиент может быть запущен и держать базу
+//! открытой, а свежие изменения могут лежать в журнале `-wal` рядом с ней.
 //!
 //! Ссылки подписок и ключи остаются в Rust: в интерфейс уходит только
 //! [`kvt_core::migrate::Preview`] — названия, адреса серверов подписок и протоколы.
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 /// Сколько каталогов обходим при поиске (защита от очень больших дисков).
 const MAX_DIRS: usize = 20_000;
@@ -150,7 +151,8 @@ fn discover() -> Vec<(Client, PathBuf)> {
 
 // ── SQLite ──
 
-/// Копия базы (и её журналов) во временной папке, удаляется вместе с объектом.
+/// Копия базы (и её журналов) в каталоге данных приложения, удаляется вместе с
+/// объектом; остаток после аварии убирает следующий запуск (`clean_copies`).
 struct DbCopy {
     dir: PathBuf,
     conn: Connection,
@@ -159,6 +161,31 @@ struct DbCopy {
 impl Drop for DbCopy {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Каталог данных приложения; приложение запущено — он есть, в тестах — нет.
+fn data_dir() -> Option<std::path::PathBuf> {
+    crate::APP
+        .get()
+        .and_then(|app| app.path().app_local_data_dir().ok())
+}
+
+/// Убирает копии баз прошлых запусков: авария могла оставить их на диске.
+fn clean_copies(root: &std::path::Path) {
+    let leftovers = std::fs::read_dir(root)
+        .map(|dir| {
+            dir.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("kvt-migrate-"))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for path in leftovers {
+        let _ = std::fs::remove_dir_all(path);
     }
 }
 
@@ -194,7 +221,12 @@ impl ReadError {
 }
 
 fn open_copy(db: &Path) -> Result<DbCopy, ReadError> {
-    let dir = std::env::temp_dir().join(format!(
+    // Каталог данных приложения, не `%TEMP%`: копия с ключами и ссылками чужого
+    // клиента не должна оставаться во временной папке после аварии (С-13 аудита);
+    // остатки прошлых запусков убираем сразу.
+    let root = data_dir().unwrap_or_else(std::env::temp_dir);
+    clean_copies(&root);
+    let dir = root.join(format!(
         "kvt-migrate-{}-{}",
         std::process::id(),
         kvt_core::netlog::now_ms()

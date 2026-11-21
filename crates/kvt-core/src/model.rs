@@ -192,6 +192,22 @@ impl Server {
                 "the provider's mux isn't applied — it only works in the Xray core and not with Vision or XHTTP",
             ));
         }
+        // `insecure` из ссылки провайдера отключает проверку сертификата: активный
+        // посредник (ТСПУ, провайдер) может перехватить рукопожатие и весь трафик.
+        // С `pinSHA256` предупреждение ниже уже говорит, что сертификат не проверяется.
+        let pin_warned = matches!(
+            &self.protocol,
+            Protocol::Hysteria2 {
+                pin_sha256: Some(_),
+                ..
+            }
+        );
+        if !pin_warned && matches!(&self.security, Security::Tls(t) if t.allow_insecure) {
+            out.push(crate::i18n::tr(
+                "сертификат сервера не проверяется (insecure в ссылке) — посредник между вами и сервером может подсмотреть трафик",
+                "the server certificate isn't verified (insecure in the link) — someone between you and the server can snoop the traffic",
+            ));
+        }
         if let Protocol::Hysteria2 {
             pin_sha256: Some(_),
             ..

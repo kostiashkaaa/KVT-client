@@ -27,11 +27,12 @@ use serde::Serialize;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tauri::Manager;
 use tauri::{AppHandle, Emitter, State};
 
 /// Файл со скоростного теста Cloudflare. Обычный HTTP: запрос идёт внутри туннеля
@@ -311,14 +312,17 @@ impl From<ProberError> for String {
 }
 
 impl CoreProber {
-    /// Тестовые ядра из каталога программы, рабочие файлы — во временном каталоге.
+    /// Тестовые ядра из каталога программы. Рабочие файлы — в каталоге данных
+    /// приложения, не в `%TEMP%`: конфиг с ключом сервера не должен оставаться
+    /// там после аварии (С-12 аудита); остатки прошлых запусков убираем сразу.
     /// `source` — адрес физического адаптера, если VPN подключён.
     pub(crate) fn new(
         state: &AppState,
         source: Option<std::net::Ipv4Addr>,
     ) -> Result<Self, ProberError> {
-        let work = std::env::temp_dir().join("kvt-probe");
+        let work = work_dir();
         std::fs::create_dir_all(&work).map_err(|e| ProberError::Io(e.to_string()))?;
+        clean_work(&work);
         Ok(Self {
             cores: cores_dir()?,
             work,
@@ -326,6 +330,35 @@ impl CoreProber {
             doh: state.doh_first(),
             governor: Arc::clone(&state.governor),
         })
+    }
+}
+
+/// Каталог для конфигов тестовых ядер. Приложение запущено — это его каталог
+/// данных; без него (тесты) — прежний временный каталог.
+fn work_dir() -> PathBuf {
+    crate::APP
+        .get()
+        .and_then(|app| app.path().app_local_data_dir().ok())
+        .map(|d| d.join("probe"))
+        .unwrap_or_else(|| std::env::temp_dir().join("kvt-probe"))
+}
+
+/// Убирает конфиги `probe-*.json` прошлых запусков: авария могла оставить их
+/// с ключами серверов.
+fn clean_work(work: &Path) {
+    let leftovers = std::fs::read_dir(work)
+        .map(|dir| {
+            dir.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("probe-") && n.ends_with(".json"))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for path in leftovers {
+        let _ = std::fs::remove_file(path);
     }
 }
 

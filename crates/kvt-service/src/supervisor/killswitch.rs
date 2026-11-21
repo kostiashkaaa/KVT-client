@@ -50,14 +50,23 @@ impl Supervisor {
     /// Kill switch пропускает оба ядра, а не только подключённое: «Проверить» при VPN
     /// запускает тестовое ядро того типа, который нужен серверу, и без этого сервер на
     /// другом ядре выглядел бы мёртвым. Оба файла лежат рядом со службой.
-    pub(super) fn enable_kill_switch(&mut self, luid: u64) -> Result<(), ConnectError> {
+    /// `tun_luid` — интерфейс туннеля: трафик приложений через него разрешён. `None` —
+    /// переходная версия до подъёма туннеля; полная встанет на её место, подслои у
+    /// сессий разные — без щели.
+    pub(super) fn enable_kill_switch(&mut self, tun_luid: Option<u64>) -> Result<(), ConnectError> {
         let apps = self.trusted_apps()?;
         let apps: Vec<&Path> = apps.iter().map(PathBuf::as_path).collect();
         // «Гибрид»: пакеты, которые winws отправляет заново, Windows приписывает ядру
         // системы — kill switch должен их пропускать (см. `wfp::KillSwitch::enable`).
         let hybrid = self.zapret.is_some();
-        let ks = KillSwitch::enable(&apps, Some(luid), hybrid).map_err(ConnectError::wfp)?;
-        tracing::info!("kill switch включён");
+        let ks = KillSwitch::enable(&apps, tun_luid, hybrid).map_err(ConnectError::wfp)?;
+        if tun_luid.is_some() {
+            tracing::info!("kill switch включён");
+        } else {
+            tracing::info!(
+                "kill switch включён до запуска ядра — интернет закрыт, пока поднимается туннель"
+            );
+        }
         self.kill_switch = Some(ks);
         self.mark_kill_switch(true);
         Ok(())
@@ -85,6 +94,8 @@ impl Supervisor {
     /// включённым kill switch. Интернет снова закрывается до решения окна
     /// («Подключить» или «Отключить»). Отметка с прошлой загрузки Windows (выключили
     /// питание) не действует: после перезагрузки закрытого интернета никто не ждёт.
+    /// Владелец отметки (SID включившего kill switch) возвращается в `Owner`:
+    /// закрытым интернетом управляет он или администратор, не любой пользователь.
     pub fn restore_kill_switch(&mut self) -> bool {
         // Каталог только для SYSTEM и администраторов: чужой каталог `private_dir`
         // убирает в сторону вместе с отметкой.
@@ -100,6 +111,9 @@ impl Supervisor {
             self.mark_kill_switch(false);
             return false;
         }
+        let sid = std::fs::read_to_string(&marker).unwrap_or_default();
+        let sid = sid.trim();
+        self.restored_owner = (!sid.is_empty()).then(|| sid.to_owned());
         let enabled = self.trusted_apps().and_then(|apps| {
             let apps: Vec<&Path> = apps.iter().map(PathBuf::as_path).collect();
             KillSwitch::enable(&apps, None, false).map_err(ConnectError::wfp)
@@ -122,9 +136,10 @@ impl Supervisor {
     }
 
     /// Полная проверка серверов из окна при kill switch: тестовому ядру (оно работает
-    /// от пользователя) открывается выход мимо туннеля к `ips`. Адреса локальной сети
-    /// и loopback kill switch и так пропускает, служебные (0.0.0.0, multicast) не
-    /// нужны. Без kill switch открывать нечего.
+    /// от пользователя) открывается выход мимо туннеля к `ips`. Служебные адреса
+    /// (0.0.0.0, multicast), loopback и частные сети не открываются: kill switch их
+    /// и так пропускает, а VPN-сервер в частных сетях не живёт. Без kill switch
+    /// открывать нечего.
     pub fn open_probe(&mut self, ips: &[std::net::IpAddr]) -> Result<(), ConnectError> {
         let Some(ks) = self.kill_switch.as_mut() else {
             return Ok(());
@@ -132,7 +147,7 @@ impl Supervisor {
         let ips: Vec<std::net::IpAddr> = ips
             .iter()
             .copied()
-            .filter(|ip| !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast())
+            .filter(|ip| global_address(*ip))
             .collect();
         if ks.probe_len() + ips.len() > kvt_core::ipc::MAX_PROBE_ADDRS {
             return Err(ConnectError::TooManyProbeAddresses);
@@ -170,6 +185,71 @@ impl Supervisor {
         {
             tracing::warn!("проверка серверов не закрыла адреса — закрыты по времени");
             self.close_probe();
+        }
+    }
+}
+
+/// Адрес из публичных сетей: частные (`is_private`), link-local, unique local и
+/// служебные (0.0.0.0, multicast, broadcast) тестовому ядру не открываются —
+/// kill switch пропускает их сам, а VPN-сервер в частных сетях не живёт.
+fn global_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !v4.is_unspecified()
+                && !v4.is_loopback()
+                && !v4.is_multicast()
+                && !v4.is_broadcast()
+                && !v4.is_private()
+                && !v4.is_link_local()
+        }
+        std::net::IpAddr::V6(v6) => {
+            !v6.is_unspecified()
+                && !v6.is_loopback()
+                && !v6.is_multicast()
+                && !v6.is_unicast_link_local()
+                && !v6.is_unique_local()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::global_address;
+
+    #[test]
+    fn only_public_addresses_are_opened_to_the_probe() {
+        let ok = [
+            "203.0.113.7",
+            "198.51.100.2",
+            "2001:db8::1",
+            "2a00:1450:4002:41a::71",
+        ];
+        let refused = [
+            "0.0.0.0",
+            "127.0.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "10.0.0.5",
+            "172.16.1.2",
+            "192.168.1.2",
+            "169.254.7.7",
+            "::",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+            "ff02::1",
+        ];
+        for ip in ok {
+            assert!(
+                global_address(ip.parse().expect("адрес")),
+                "{ip} должен открываться"
+            );
+        }
+        for ip in refused {
+            assert!(
+                !global_address(ip.parse().expect("адрес")),
+                "{ip} не должен открываться"
+            );
         }
     }
 }

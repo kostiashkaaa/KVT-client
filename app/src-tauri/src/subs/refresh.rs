@@ -43,7 +43,7 @@ pub(super) async fn refresh_one(state: &AppState, id: &str, how: Refresh) -> Res
             fetch::acquire_patiently(&state.governor, host, BATCH_WAIT).await?;
         }
         let request = plan.hints(host, plan.agent.as_deref())?;
-        let loaded = fetch::load(&url, &request.hints()).await?;
+        let loaded = fetch::load(&url, &request.hints(&state.governor)).await?;
         if let fetch::Loaded::Fresh(fetched) = &loaded {
             ensure_servers(&fetched.body)?;
         }
@@ -156,8 +156,11 @@ impl Plan {
     }
 }
 
-impl Request<'_> {
-    pub(super) fn hints(&self) -> fetch::Hints<'_> {
+impl<'a> Request<'a> {
+    pub(super) fn hints(
+        &'a self,
+        governor: &'a std::sync::Mutex<kvt_core::governor::NetGovernor>,
+    ) -> fetch::Hints<'a> {
         let options = &self.plan.options;
         let client = match (options.client.as_deref(), options.user_agent.as_deref()) {
             (Some(fetch::CUSTOM), Some(agent)) => fetch::Client::Custom(agent),
@@ -175,6 +178,8 @@ impl Request<'_> {
             agent: self.agent,
             validators: self.plan.validators.as_ref(),
             hwid,
+            // Повторный допуск на перенаправлениях подписки (С-11 аудита).
+            governor: Some(governor),
         }
     }
 }

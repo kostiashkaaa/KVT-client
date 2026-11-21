@@ -112,12 +112,21 @@ impl State {
         self.supervisor.reconnect_pending()
     }
 
+    /// Закрыть адреса, открытые тестовому ядру, если их срок вышел: вызывается и
+    /// фоновым таймером (`pipe::serve`), а не только командой «Статус».
+    pub fn expire_probe(&mut self) {
+        self.supervisor.expire_probe();
+    }
+
     /// Всё остановлено по «Отключить», прервавшему запуск или переподключение.
     async fn abort(&mut self) {
         tracing::info!("подключение отменено");
         self.supervisor.stop().await;
         self.status = ServiceStatus::Disconnected;
         self.session = None;
+        // Сеанс кончился — журнал его запросов больше не нужен, а после
+        // «Отключить» статус не занят и читать журнал мог бы любой пользователь.
+        kvt_core::netlog::clear();
     }
 }
 
@@ -290,6 +299,9 @@ pub async fn handle(state: &mut State, request: Request) -> Response {
             state.supervisor.stop().await;
             state.status = ServiceStatus::Disconnected;
             state.session = None;
+            // Журнал запросов сеанса (хосты подписок, SNI серверов) не должен
+            // оставаться читаемым любому локальному пользователю после остановки.
+            kvt_core::netlog::clear();
             Response::Ok
         }
         // Остальное обслуживает `stateless`.
@@ -433,6 +445,8 @@ pub async fn install_zapret(
     state.supervisor.stop().await;
     state.status = ServiceStatus::Disconnected;
     state.session = None;
+    // Обновление останавливает сеанс, как «Отключить», — журнал ему больше не нужен.
+    kvt_core::netlog::clear();
     // Распаковка, копирование и tasklist идут секунды — не на потоке обработки:
     // блокировку состояния держим, но служба продолжает отвечать на остальное.
     let result = match prepared {

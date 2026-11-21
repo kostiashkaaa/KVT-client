@@ -52,6 +52,14 @@ pub enum ParseError {
     },
     #[error("{}", crate::trf!("не поддерживается: {}", "not supported: {}", .0))]
     Unsupported(&'static str),
+    #[error(
+        "{}",
+        crate::i18n::tr(
+            "слишком много подключений — разобрана только часть",
+            "too many connections — only part was parsed"
+        )
+    )]
+    TooMany,
 }
 
 /// Результат разбора одной строки подписки.
@@ -148,8 +156,14 @@ fn parse_chunk(
         .then(|| sing_box_json::parse(text).or_else(|| xray_json::parse(text)))
         .flatten();
     if let Some(entries) = entries {
+        // Тот же предел, что у списка ссылок: один JSON-конфиг не обходит
+        // `MAX_SUBSCRIPTION_LINES` десятками тысяч outbound'ов.
+        let budget = MAX_SUBSCRIPTION_LINES.saturating_sub(offset);
         let count = entries.len();
-        for (idx, entry) in entries.into_iter().enumerate() {
+        if count > budget {
+            out.errors.push((offset + 1, ParseError::TooMany));
+        }
+        for (idx, entry) in entries.into_iter().take(budget).enumerate() {
             add_entry(out, seen, offset + idx + 1, entry);
         }
         return count;
@@ -652,6 +666,33 @@ mod tests {
         // Одинаковый сервер в двух вставках — один.
         let twice = format!("{VLESS_REALITY}\n{CHUNK_SEPARATOR}\n{b64}");
         assert_eq!(parse_subscription_body(&twice).servers.len(), 1);
+    }
+
+    /// JSON-конфиги не обходят предел строк подписки: суммарно не больше
+    /// `MAX_SUBSCRIPTION_LINES`, лишнее режется с ошибкой (С-10 аудита).
+    #[test]
+    fn json_outbounds_are_capped_like_lines() {
+        let outbound = |n: usize| {
+            format!(
+                r#"{{"type":"trojan","tag":"t{n}","server":"198.51.100.2","server_port":443,"password":"p{n}"}}"#
+            )
+        };
+        let config = |from: usize, to: usize| {
+            let list: Vec<String> = (from..to).map(outbound).collect();
+            format!("{{\"outbounds\":[{}]}}", list.join(","))
+        };
+        let body = format!(
+            "{}{CHUNK_SEPARATOR}{}",
+            config(0, 6000),
+            config(6000, 12_000)
+        );
+        let c = parse_subscription_body(&body);
+        assert_eq!(c.servers.len(), MAX_SUBSCRIPTION_LINES);
+        assert!(
+            c.errors.iter().any(|(_, e)| *e == ParseError::TooMany),
+            "{:?}",
+            c.errors
+        );
     }
 
     #[test]

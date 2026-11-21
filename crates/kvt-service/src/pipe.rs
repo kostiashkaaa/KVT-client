@@ -25,7 +25,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::NamedPipeServer;
 use tokio::sync::{watch, Mutex};
 
-pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
+pub async fn serve(
+    state: State,
+    restored_owner: Option<String>,
+    mut shutdown: watch::Receiver<bool>,
+) -> anyhow::Result<()> {
     let shared = state.shared();
     let state = Arc::new(Mutex::new(state));
     let allowed_dir = std::env::current_exe()?
@@ -48,7 +52,27 @@ pub async fn serve(state: State, mut shutdown: watch::Receiver<bool>) -> anyhow:
     }));
     let cancel: Cancel = Arc::new(watch::channel(0).0);
     let reconnecting = Arc::new(AtomicBool::new(false));
-    let owner = Arc::new(Owner::default());
+    // SID из отметки kill switch (сбой службы): пока интернет закрыт, управлять им
+    // может включивший, а не любой локальный пользователь.
+    let owner = Arc::new(Owner::restored(restored_owner));
+    // Адреса, открытые тестовому ядру, закрываются по времени и без команды
+    // «Статус»: окно могло закрыться, не сказав `ProbeClose` (сбой, диспетчер задач).
+    {
+        let state = Arc::clone(&state);
+        let mut stop = shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                        if let Ok(mut guard) = state.try_lock() {
+                            guard.expire_probe();
+                        }
+                    }
+                    _ = stop.changed() => break,
+                }
+            }
+        });
+    }
     // Первый экземпляр: имя уже занято — значит, работает другая служба KVT.
     let mut server = win::create_pipe(PIPE_NAME, true).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -370,6 +394,11 @@ async fn locked(ctx: &Context, request: Request) -> Response {
     } else {
         handler::handle(&mut guard, request).await
     };
+    if starts {
+        // SID включившего — в отметку kill switch, если она встала: после сбоя
+        // службы (`restore_kill_switch`) закрытым интернетом управляет включивший.
+        ctx.shared.mark_kill_switch_owner(&ctx.user.sid);
+    }
     set_snapshot(&ctx.snapshot, guard.status_response());
     response
 }

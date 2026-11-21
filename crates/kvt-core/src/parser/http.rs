@@ -102,6 +102,18 @@ mod tests {
     }
 
     #[test]
+    fn insecure_is_warned_about() {
+        let s = parse("https://u:p@proxy.example.com/?insecure=1").unwrap();
+        assert!(
+            s.warnings().iter().any(|w| w.contains("не проверяется")),
+            "{:?}",
+            s.warnings()
+        );
+        let s = parse("https://u:p@proxy.example.com/").unwrap();
+        assert!(s.warnings().is_empty(), "{:?}", s.warnings());
+    }
+
+    #[test]
     fn sites_and_subscriptions_are_not_proxies() {
         for link in [
             "https://t.me/channel",

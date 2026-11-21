@@ -261,8 +261,11 @@ async fn serve(shutdown: tokio::sync::watch::Receiver<bool>) -> anyhow::Result<(
     let mut supervisor = supervisor::Supervisor::new(paths);
     // Раньше pipe: пока окно не подключилось, интернет уже закрыт.
     supervisor.restore_kill_switch();
+    // SID владельца восстановленного kill switch — в pipe: закрытым интернетом
+    // управляет включивший, а не любой локальный пользователь.
+    let restored_owner = supervisor.restored_owner();
     let state = handler::State::new(supervisor);
-    pipe::serve(state, shutdown).await
+    pipe::serve(state, restored_owner, shutdown).await
 }
 
 #[cfg(windows)]

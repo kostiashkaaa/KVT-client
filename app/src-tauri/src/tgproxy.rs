@@ -515,6 +515,9 @@ async fn start(app: &AppHandle) -> Result<Running, TgProxyError> {
     if let Ok(mut p) = LOG_PATH.lock() {
         *p = Some(log.clone());
     }
+    // Остаток с прошлого запуска: пока прокси не работает, секрета в файле быть
+    // не должно.
+    sanitize_log();
     let domains = domains();
     let args = tgproxy::args(&domains, &log.to_string_lossy());
     let mut cmd = tokio::process::Command::new(&exe);
@@ -553,6 +556,31 @@ async fn stop(inner: &mut Inner) {
     if let Some(mut r) = inner.running.take() {
         let _ = r.child.kill().await;
         tracing::info!("прокси Telegram остановлен");
+    }
+    // Прокси печатает секрет в свой журнал; пока он не работает — маскируем файл
+    // (С-14 аудита): открытого секрета на диске не остаётся.
+    sanitize_log();
+}
+
+/// Маскирует секрет в журнале прокси (и в `.log.1`) на диске — не только при
+/// чтении в окно. Вызывается при остановке прокси и перед его запуском: остаток
+/// с прошлого запуска не должен лежать открытым, пока прокси не работает.
+fn sanitize_log() {
+    let Some(path) = LOG_PATH.lock().ok().and_then(|p| p.clone()) else {
+        return;
+    };
+    for path in [path.clone(), path.with_extension("log.1")] {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let masked: String = text.lines().map(mask_secret).collect::<Vec<_>>().join("\n");
+        if masked != text {
+            if let Err(e) = std::fs::write(&path, &masked) {
+                tracing::warn!(error = %e, "журнал прокси не очищен от секрета");
+            } else {
+                tracing::info!("секрет прокси убран из журнала на диске");
+            }
+        }
     }
 }
 
