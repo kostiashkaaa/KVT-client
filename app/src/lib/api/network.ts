@@ -61,7 +61,8 @@ export const defaultDns = (): DnsChoice => ({
   remote: "cloudflare",
 });
 
-const previewResolvers: Resolver[] = [
+// Данные превью — функция, а не константа: t() читает язык при вызове (на уровне модуля он ещё не выбран).
+const previewResolvers = (): Resolver[] => [
   { id: "yandex", title: t("Яндекс", "Yandex"), udp: "77.88.8.8", tunnel: false },
   { id: "cloudflare", title: "Cloudflare", udp: "1.1.1.1", tunnel: true },
   { id: "google", title: "Google", udp: "8.8.8.8", tunnel: true },
@@ -70,7 +71,7 @@ const previewResolvers: Resolver[] = [
 ];
 
 export async function dnsCatalog(): Promise<Resolver[]> {
-  if (!inTauri) return previewResolvers;
+  if (!inTauri) return previewResolvers();
   return invoke<Resolver[]>("dns_catalog");
 }
 
@@ -79,7 +80,7 @@ export async function dnsCheck(): Promise<DnsReport> {
     await new Promise((r) => setTimeout(r, 900));
     const works = (ms: number): PathStatus => ({ state: "works", ms });
     return {
-      resolvers: previewResolvers.map((r, i) => ({
+      resolvers: previewResolvers().map((r, i) => ({
         id: r.id,
         title: r.title,
         udp:

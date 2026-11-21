@@ -22,7 +22,9 @@ export interface MigrationReport {
   servers: number;
 }
 
-const previewMigration: MigrationPreview[] = [
+// Данные превью — функции, а не константы: t() читает язык при вызове, а на уровне модуля
+// он ещё не выбран (main.ts ставит его после загрузки модулей).
+const previewMigration = (): MigrationPreview[] => [
   {
     client: "v2rayn",
     title: "v2rayN",
@@ -52,7 +54,7 @@ const previewMigration: MigrationPreview[] = [
 export async function migrateScan(): Promise<MigrationPreview[]> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 1200));
-    return previewMigration;
+    return previewMigration();
   }
   return invoke<MigrationPreview[]>("migrate_scan");
 }

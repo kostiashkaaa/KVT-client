@@ -97,7 +97,9 @@ export interface ZapretProgress {
   max: number;
 }
 
-const previewStrategies: ZapretStrategy[] = [
+// Функция, а не константа: strategyTitle() зовёт t(), который читает язык при вызове
+// (на уровне модуля он ещё не выбран).
+const previewStrategies = (): ZapretStrategy[] => [
   "general",
   "general (ALT)",
   "general (ALT2)",
@@ -113,7 +115,7 @@ const previewStrategies: ZapretStrategy[] = [
 }));
 
 export async function zapretStrategies(): Promise<ZapretStrategy[]> {
-  if (!inTauri) return previewStrategies;
+  if (!inTauri) return previewStrategies();
   return invoke<ZapretStrategy[]>("zapret_strategies");
 }
 
@@ -134,12 +136,13 @@ export async function zapretAutoselect(
 ): Promise<ZapretPick> {
   if (!inTauri) {
     previewCancel = false;
-    const total = previewStrategies.length;
+    const strategies = previewStrategies();
+    const total = strategies.length;
     onProgress({ index: 0, total, title: t("Без zapret", "Without zapret"), score: null, max: 13 });
     await new Promise((r) => setTimeout(r, 500));
     onProgress({ index: 0, total, title: t("Без zapret", "Without zapret"), score: 4, max: 13 });
     const tried: ZapretPick["tried"] = [];
-    for (const [i, s] of previewStrategies.slice(0, 4).entries()) {
+    for (const [i, s] of strategies.slice(0, 4).entries()) {
       if (previewCancel) {
         return {
           best: null,

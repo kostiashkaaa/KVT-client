@@ -98,8 +98,9 @@ export interface ManualKey {
   transport: string;
 }
 
-/** Превью: у первой подписки — пропущенные строки, у второй — неудачное обновление. */
-const previewExtras: Record<string, Partial<SubscriptionItem>> = {
+/** Превью: у первой подписки — пропущенные строки, у второй — неудачное обновление.
+ *  Функция, а не константа: t() читает язык при вызове (на уровне модуля он ещё не выбран). */
+const previewExtras = (): Record<string, Partial<SubscriptionItem>> => ({
   a: {
     supportUrl: "https://t.me/support",
     webPageUrl: "https://example.com",
@@ -123,7 +124,7 @@ const previewExtras: Record<string, Partial<SubscriptionItem>> = {
       t("Не удалось подключиться к серверу подписки — возможно, он заблокирован. Включите VPN и повторите", "Couldn't connect to the subscription server — it may be blocked. Turn on the VPN and try again"),
     failedAt: Math.floor(Date.now() / 1000) - 2 * 3600,
   },
-};
+});
 
 /** Как фильтр в Rust (`NameFilter::allows`) — для превью. */
 function previewAllows(o: SubscriptionOptions, s: ServerSummary): boolean {
@@ -136,8 +137,9 @@ const previewOptions: Record<string, SubscriptionOptions> = {};
 
 export async function listSubscriptions(): Promise<SubscriptionItem[]> {
   if (!inTauri) {
+    const extras = previewExtras();
     return previewData().map((g) => {
-      const options = previewOptions[g.id] ?? previewExtras[g.id]?.options ?? defaultOptions;
+      const options = previewOptions[g.id] ?? extras[g.id]?.options ?? defaultOptions;
       const visible = g.servers.filter((s) => previewAllows(options, s));
       return {
       id: g.id,
@@ -167,7 +169,7 @@ export async function listSubscriptions(): Promise<SubscriptionItem[]> {
       skipped: [],
       duplicates: 0,
       warnings: [],
-      ...previewExtras[g.id],
+      ...extras[g.id],
       hidden: g.servers.length - visible.length,
       options,
       keys: g.byUrl
