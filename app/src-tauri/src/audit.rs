@@ -14,6 +14,19 @@ use std::time::{Duration, Instant};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const INTERNET_SETTINGS: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
+/// Системные программы — только по абсолютному пути: запуск по имени нашёл бы
+/// файл раньше всего рядом с `kvt.exe`, а каталог разработки доступен на запись.
+/// PowerShell лежит не в `System32`, а в `WindowsPowerShell\v1.0`.
+fn system_exe(name: &str) -> PathBuf {
+    let root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    match name {
+        "powershell.exe" => root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
+        _ => root.join("System32").join(name),
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditReport {
@@ -99,7 +112,7 @@ impl From<FixError> for String {
 }
 
 fn facts() -> Result<audit::Facts, FixError> {
-    let out = Command::new("powershell.exe")
+    let out = Command::new(system_exe("powershell.exe"))
         .args(audit::powershell_args())
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -110,7 +123,7 @@ fn facts() -> Result<audit::Facts, FixError> {
 }
 
 fn run(program: &str, args: &[&str]) -> Result<(), FixError> {
-    let status = Command::new(program)
+    let status = Command::new(system_exe(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -224,7 +237,7 @@ fn fix_here(fix: &Fix) -> Result<(), FixError> {
 
 /// Имя образа процесса по PID (`tasklist /FO CSV`), `None` — процесса нет.
 fn image_name(pid: u32) -> Option<String> {
-    let out = Command::new("tasklist.exe")
+    let out = Command::new(system_exe("tasklist.exe"))
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .creation_flags(CREATE_NO_WINDOW)
         .output()

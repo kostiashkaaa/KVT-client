@@ -85,7 +85,16 @@ fn from_json(v: &Value, fragment: Option<String>) -> Result<Server, ParseError> 
         "адрес",
         "address",
     )))?;
-    let address = address.trim_matches(['[', ']']).to_owned();
+    // `text` уже режет пустые строки, но «[]» и прочие скобочные пустышки
+    // превращаются в пустой адрес только здесь — в списке серверов им не место.
+    let address = address.trim_matches(['[', ']']);
+    if address.is_empty() {
+        return Err(ParseError::InvalidField {
+            field: crate::i18n::tr("адрес", "address"),
+            reason: crate::i18n::tr("пустой", "empty"),
+        });
+    }
+    let address = address.to_owned();
     let port: u16 = text(v, "port")
         .ok_or(ParseError::MissingField(crate::i18n::tr("порт", "port")))?
         .parse()
@@ -251,5 +260,11 @@ mod tests {
         assert!(parse("vmess://not-base64-and-not-url").is_err());
         let bad_id = link(r#"{"add":"a.b","port":"1","id":"x"}"#);
         assert!(parse(&bad_id).is_err());
+        // «[]» — пустой адрес после снятия скобок, а не сервер.
+        let brackets = link(&format!(r#"{{"add":"[]","port":"1","id":"{ID}"}}"#));
+        assert!(matches!(
+            parse(&brackets),
+            Err(ParseError::InvalidField { .. })
+        ));
     }
 }

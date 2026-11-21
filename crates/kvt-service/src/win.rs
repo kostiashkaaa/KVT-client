@@ -580,6 +580,25 @@ impl Drop for Job {
     }
 }
 
+/// Каталог Windows (`SystemRoot`).
+fn windows_root() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+}
+
+/// Системная программа из `System32` по имени файла. Запуск по одному имени нашёл
+/// бы программу раньше всего рядом с исполняемым файлом KVT — а каталог разработки
+/// доступен пользователю на запись.
+pub fn system_exe(name: &str) -> PathBuf {
+    windows_root().join("System32").join(name)
+}
+
+/// PowerShell: лежит не в `System32`, а в `WindowsPowerShell\v1.0`.
+pub fn powershell_exe() -> PathBuf {
+    windows_root().join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,5 +724,24 @@ mod tests {
             Some(5),
             "второй экземпляр должен быть запрещён"
         );
+    }
+
+    /// Системные программы — только по абсолютному пути, и файл на месте.
+    #[test]
+    fn system_exes_are_absolute_and_exist() {
+        for name in ["netsh.exe", "tasklist.exe", "schtasks.exe"] {
+            let path = system_exe(name);
+            assert!(
+                path.is_absolute() && path.to_string_lossy().contains("System32"),
+                "{name}: {}",
+                path.display()
+            );
+            assert!(
+                path.is_file(),
+                "{name} должен существовать: {}",
+                path.display()
+            );
+        }
+        assert!(powershell_exe().is_file(), "powershell.exe на месте");
     }
 }

@@ -130,6 +130,19 @@ impl State {
     }
 }
 
+/// Ответ о несовпадении версий окна и службы. `pipe` отдаёт его же на любую
+/// команду, пришедшую до принятого «Hello»: версия протокола сверяется только
+/// в приветствии.
+pub fn version_error() -> Response {
+    Response::Error {
+        message: kvt_core::i18n::tr(
+            "Окно KVT и служба разных версий. Переустановите KVT — они обновятся вместе.",
+            "The KVT window and service are different versions. Reinstall KVT so they update together.",
+        )
+        .into(),
+    }
+}
+
 /// Ответ на Hello: сверка версии протокола, состояние не нужно.
 pub fn hello(request: &Request) -> Response {
     match request {
@@ -144,13 +157,7 @@ pub fn hello(request: &Request) -> Response {
                 service_version: env!("CARGO_PKG_VERSION").to_owned(),
             }
         }
-        _ => Response::Error {
-            message: kvt_core::i18n::tr(
-                "Окно KVT и служба разных версий. Переустановите KVT — они обновятся вместе.",
-                "The KVT window and service are different versions. Reinstall KVT so they update together.",
-            )
-            .into(),
-        },
+        _ => version_error(),
     }
 }
 

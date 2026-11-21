@@ -17,7 +17,7 @@ use crate::access::{self, Owner};
 use crate::handler::{self, State};
 use crate::supervisor::Shared;
 use crate::win;
-use kvt_core::ipc::{self, Request, Response, ServiceStatus, PIPE_NAME};
+use kvt_core::ipc::{self, Request, Response, ServiceStatus, PIPE_NAME, PROTOCOL_VERSION};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -205,6 +205,13 @@ fn is_trusted_client(image: &Path, allowed_dir: &Path) -> bool {
     same_dir && is_app
 }
 
+/// Обслуживается ли команда: до принятого «Hello» — только само приветствие
+/// (версия протокола сверяется в нём, иное окно получит понятный отказ, а не
+/// поломанное общение).
+fn served(request: &Request, greeted: bool) -> bool {
+    greeted || matches!(request, Request::Hello { .. })
+}
+
 fn normalize(p: &Path) -> PathBuf {
     PathBuf::from(p.to_string_lossy().to_lowercase())
 }
@@ -281,6 +288,9 @@ impl Context {
 }
 
 async fn handle_client(mut pipe: NamedPipeServer, ctx: Context) -> anyhow::Result<()> {
+    // Версия протокола сверяется только в «Hello»: до принятого приветствия
+    // прочие команды не обслуживаются — окно и служба могли разойтись версиями.
+    let mut greeted = false;
     loop {
         let mut header = [0u8; 4];
         if pipe.read_exact(&mut header).await.is_err() {
@@ -291,16 +301,35 @@ async fn handle_client(mut pipe: NamedPipeServer, ctx: Context) -> anyhow::Resul
         pipe.read_exact(&mut body).await?;
 
         let response = match ipc::decode::<Request>(&body) {
+            Ok(request) if !served(&request, greeted) => {
+                tracing::warn!(
+                    "команда до приветствия отклонена: версии окна и службы могли разойтись"
+                );
+                handler::version_error()
+            }
             Ok(request) if !ctx.owner.admit(&ctx.user, &ctx.last_status(), &request) => {
                 tracing::warn!("команда другого пользователя Windows отклонена: VPN включил не он");
                 access::refusal()
             }
-            Ok(request) => match handler::stateless(&ctx.shared, request).await {
-                Ok(response) => response,
-                Err(Request::Status) => status(&ctx).await,
-                Err(Request::ZapretUpdate) => zapret_update(&ctx).await,
-                Err(request) => locked(&ctx, request).await,
-            },
+            Ok(request) => {
+                // Отметиться может только принятое приветствие: несовпавшая версия
+                // должна продолжать получать отказ.
+                if matches!(
+                    &request,
+                    Request::Hello {
+                        protocol_version: PROTOCOL_VERSION,
+                        ..
+                    }
+                ) {
+                    greeted = true;
+                }
+                match handler::stateless(&ctx.shared, request).await {
+                    Ok(response) => response,
+                    Err(Request::Status) => status(&ctx).await,
+                    Err(Request::ZapretUpdate) => zapret_update(&ctx).await,
+                    Err(request) => locked(&ctx, request).await,
+                }
+            }
             Err(_) => Response::Error {
                 message: kvt_core::i18n::tr("неизвестная команда", "unknown command").into(),
             },
@@ -426,5 +455,18 @@ mod tests {
             Path::new(r"C:\Program Files\KVT\evil.exe"),
             dir
         ));
+    }
+
+    /// Версия протокола сверяется только в «Hello»: до принятого приветствия
+    /// прочие команды не обслуживаются, после — обслуживаются любые.
+    #[test]
+    fn commands_before_hello_are_refused() {
+        let hello = Request::Hello {
+            protocol_version: 0,
+            lang: kvt_core::i18n::Lang::default(),
+        };
+        assert!(served(&hello, false), "Hello должен приниматься первым");
+        assert!(!served(&Request::NetLog, false), "команда до Hello — отказ");
+        assert!(served(&Request::NetLog, true), "после Hello — обслуживание");
     }
 }

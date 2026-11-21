@@ -65,8 +65,11 @@ fn own() -> OwnDirs {
 }
 
 /// Запускает системную программу и ждёт её; ошибка — с кодом выхода.
+/// Программы — только по абсолютному пути из `System32` (`win::system_exe`):
+/// запуск по имени нашёл бы файл рядом со службой (каталог разработки доступен
+/// пользователю на запись).
 fn run(program: &str, args: &[&str]) -> Result<(), FixError> {
-    let status = Command::new(program)
+    let status = Command::new(crate::win::system_exe(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -85,7 +88,7 @@ fn run(program: &str, args: &[&str]) -> Result<(), FixError> {
 }
 
 fn facts() -> Result<audit::Facts, FixError> {
-    let out = Command::new("powershell.exe")
+    let out = Command::new(crate::win::powershell_exe())
         .args(audit::powershell_args())
         .stdin(Stdio::null())
         .stderr(Stdio::null())

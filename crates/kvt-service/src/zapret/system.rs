@@ -71,8 +71,9 @@ fn service_running(name: &str) -> bool {
 }
 
 /// PID процессов по имени образа (`tasklist`, независимо от языка Windows).
+/// Абсолютный путь: запуск по имени нашёл бы файл рядом со службой.
 fn pids(image: &str) -> Vec<u32> {
-    let out = std::process::Command::new("tasklist")
+    let out = std::process::Command::new(crate::win::system_exe("tasklist.exe"))
         .args(["/FI", &format!("IMAGENAME eq {image}"), "/FO", "CSV", "/NH"])
         .creation_flags(CREATE_NO_WINDOW)
         .output()

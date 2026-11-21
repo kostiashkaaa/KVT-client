@@ -74,8 +74,9 @@ fn prepare_lists(
 }
 
 /// То же, что делает Flowseal при каждом запуске; у нас — только с разрешения.
+/// Абсолютный путь: запуск по имени нашёл бы файл рядом со службой.
 fn enable_tcp_timestamps() {
-    let _ = std::process::Command::new("netsh")
+    let _ = std::process::Command::new(crate::win::system_exe("netsh.exe"))
         .args(["interface", "tcp", "set", "global", "timestamps=enabled"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

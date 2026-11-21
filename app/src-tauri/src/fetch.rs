@@ -109,6 +109,15 @@ pub enum FetchError {
         tr("В ссылке нет адреса сервера", "The link has no server address")
     )]
     NoHost,
+    /// Адрес указывает на этот компьютер или локальную сеть.
+    #[error(
+        "{}",
+        tr(
+            "Ссылка подписки указывает на этот компьютер или локальную сеть",
+            "The subscription link points to this computer or a local network"
+        )
+    )]
+    LocalNetwork,
     /// Лимит `NetGovernor` к серверу подписки: секунды до повтора.
     #[error("{}", trf!(
         "Слишком частые запросы к серверу подписки — повторите через {} с",
@@ -210,10 +219,35 @@ pub fn validate_url(raw: &str) -> Result<Url, FetchError> {
     if url.scheme() != "https" {
         return Err(FetchError::NotHttps);
     }
-    if url.host_str().is_none() {
-        return Err(FetchError::NoHost);
+    // Подписка с этого компьютера или из локальной сети — не запрашиваем:
+    // наружу окно такие адреса не спрашивает.
+    match url.host() {
+        Some(url::Host::Ipv4(v4)) if local_v4(v4) => return Err(FetchError::LocalNetwork),
+        Some(url::Host::Ipv6(v6)) if local_v6(v6) => return Err(FetchError::LocalNetwork),
+        Some(url::Host::Domain(d)) if is_localhost(d) => return Err(FetchError::LocalNetwork),
+        None => return Err(FetchError::NoHost),
+        _ => {}
     }
     Ok(url)
+}
+
+/// Адрес этого компьютера или локальной сети (по записи в самой ссылке,
+/// до всякого DNS): подписки там не бывает, а просить окно сходить туда нечего.
+fn local_v4(v4: std::net::Ipv4Addr) -> bool {
+    v4.is_loopback() || v4.is_link_local() || v4.is_private() || v4.is_unspecified()
+}
+
+fn local_v6(v6: std::net::Ipv6Addr) -> bool {
+    v6.is_loopback()
+        || v6.is_unicast_link_local()
+        || v6.is_unique_local()
+        || v6.is_unspecified()
+        // IPv4-отображённые адреса — это те же адреса IPv4.
+        || v6.to_ipv4_mapped().is_some_and(local_v4)
+}
+
+fn is_localhost(domain: &str) -> bool {
+    domain.eq_ignore_ascii_case("localhost") || domain.to_ascii_lowercase().ends_with(".localhost")
 }
 
 /// Проверка лимитов NetGovernor до сетевого запроса.
@@ -670,6 +704,32 @@ mod tests {
         assert_eq!(validate_url("vless://x@y:1"), Err(FetchError::NotHttps));
         assert_eq!(validate_url("https://"), Err(FetchError::BrokenLink));
         assert_eq!(validate_url("not a link"), Err(FetchError::BrokenLink));
+    }
+
+    /// Подписка с этого компьютера или из локальной сети не запрашивается,
+    /// включая развёрнутые ссылки «добавить в Happ».
+    #[test]
+    fn local_addresses_are_refused() {
+        let refused = [
+            "https://localhost/abc",
+            "https://sub.LOCALHOST/abc",
+            "https://127.0.0.1/abc",
+            "https://10.0.0.5/abc",
+            "https://172.16.1.2/abc",
+            "https://192.168.1.2/abc",
+            "https://169.254.7.7/abc",
+            "https://[::1]/abc",
+            "https://[fe80::1]/abc",
+            "https://[fc00::1]/abc",
+            "https://[::ffff:127.0.0.1]/abc",
+            "happ://add/https://127.0.0.1/abc",
+        ];
+        for link in refused {
+            assert_eq!(validate_url(link), Err(FetchError::LocalNetwork), "{link}");
+        }
+        // Обычный адрес и IP из публичных сетей — проходят.
+        assert!(validate_url("https://sub.example.com/abc").is_ok());
+        assert!(validate_url("https://203.0.113.7/abc").is_ok());
     }
 
     #[test]
