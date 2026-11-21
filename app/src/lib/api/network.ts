@@ -1,7 +1,7 @@
 import { t } from "../i18n";
 import { inTauri, invoke, listen } from "./bridge";
 import { type Mode, connect, disconnect } from "./connection";
-import { demo } from "./preview";
+import { demo, previewServiceName } from "./preview";
 
 // ── Этап 3: проверка DNS, «Почему не работает?», профили сетей, автопереключение ──
 
@@ -129,9 +129,35 @@ export interface Diagnosis {
   fix: Fix | null;
 }
 
-export async function troubleshoot(): Promise<Diagnosis> {
+/** «Почему не работает?». `service` — id сервиса с плитки (✗ → «Почему?»): ответ про
+ *  него; без него — общий поиск причины. */
+export async function troubleshoot(service?: string): Promise<Diagnosis> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 1200));
+    const name = service ? previewServiceName(service) : undefined;
+    if (name) {
+      // В обычном превью ничего не подключено, сервис открывался напрямую.
+      return {
+        tone: "error",
+        title: t(`${name} не открывается`, `${name} doesn't open`),
+        detail: t(
+          `Сейчас ничего не подключено, и ${name} открывался напрямую — провайдер его блокирует или замедляет. Подключитесь и проверьте снова.`,
+          `Nothing is connected right now, and ${name} was opened directly — your ISP blocks or throttles it. Connect and check again.`,
+        ),
+        steps: [
+          { title: t("Сеть", "Network"), state: "ok", detail: t("Подключение к сети есть", "Network connection is up") },
+          { title: t("Служба KVT", "KVT service"), state: "ok", detail: t("Служба работает", "The service is running") },
+          { title: t("Подписка", "Subscription"), state: "ok", detail: t("Подписка действует", "The subscription is active") },
+          { title: t("Интернет без VPN", "Internet without VPN"), state: "ok", detail: t("Интернет работает", "The internet works") },
+          {
+            title: t("Сервис", "Service"),
+            state: "fail",
+            detail: t(`${name}: соединение обрывается — похоже на блокировку`, `${name}: the connection drops — looks like a block`),
+          },
+        ],
+        fix: { kind: "connect" },
+      };
+    }
     // В `?demo` — названия серверов из demo-списка.
     const current = demo ? t("Нидерланды", "Netherlands") : "NL Amsterdam";
     const next = demo ? t("Германия", "Germany") : "Германия ⚡";
@@ -159,7 +185,7 @@ export async function troubleshoot(): Promise<Diagnosis> {
       fix: { kind: "switch_server", key: demo ? "demo-1" : "a-1", name: next },
     };
   }
-  return invoke<Diagnosis>("troubleshoot");
+  return invoke<Diagnosis>("troubleshoot", { service: service ?? null });
 }
 
 export type OnJoin = "nothing" | "connect" | "disconnect";

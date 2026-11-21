@@ -55,13 +55,14 @@
     onautorun: () => void;
   } = $props();
 
-  async function diagnose() {
+  /** `service` — id сервиса с плитки: ответ про него; без него — общий поиск причины. */
+  async function diagnose(service?: string) {
     if (st.diagnosing) return;
     st.diagnosing = true;
     st.diagnoseError = null;
     const before = vpnState;
     try {
-      st.diagnosis = await troubleshoot();
+      st.diagnosis = await troubleshoot(service);
       st.diagnosedIn = before;
     } catch (e) {
       st.diagnoseError = e instanceof Error ? e.message : String(e);
@@ -70,12 +71,11 @@
     }
   }
 
-  /** ✗ на плитке сервиса: искать причину прямо здесь, карточка ниже.
-   *  TODO(этап 0.9.8): передать сервис в `troubleshoot` (`conclude_for` в Rust) —
-   *  пока это общий поиск причины. */
-  function whyService() {
+  /** ✗ на плитке сервиса: искать причину прямо здесь, карточка ниже; Rust отвечает про
+   *  этот сервис (`conclude_for`). */
+  function whyService(service: string) {
     document.getElementById("why-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    void diagnose();
+    void diagnose(service);
   }
 
   $effect(() => {
@@ -167,7 +167,7 @@
         {t("По шагам проверяет сеть, службу KVT, подписку, сервер и туннель и говорит, что не так. К серверу — не больше одного соединения.", "Checks the network, the KVT service, the subscription, the server and the tunnel step by step and tells you what's wrong. At most one connection to the server.")}
       </p>
     </div>
-    <button class="btn btn-primary" class:busy={st.diagnosing} disabled={st.diagnosing} onclick={diagnose}>
+    <button class="btn btn-primary" class:busy={st.diagnosing} disabled={st.diagnosing} onclick={() => diagnose()}>
       <Icon name="help" size={16} />{st.diagnosis ? t("Проверить снова", "Check again") : t("Найти причину", "Find the cause")}
     </button>
   </div>

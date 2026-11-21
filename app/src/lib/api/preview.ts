@@ -245,6 +245,11 @@ const SERVICES = [
   { id: "chatgpt", name: "ChatGPT" },
 ] as const;
 
+/** Название сервиса по id — для превью «Почему не работает?» про сервис. */
+export function previewServiceName(id: string): string | undefined {
+  return SERVICES.find((s) => s.id === id)?.name;
+}
+
 /** Выбор своего набора в превью: сохраняется до перезагрузки страницы. */
 export function previewServicesPick(ids: string[] | null): ServicesSnapshot {
   const known = SERVICES.filter((s) => ids?.includes(s.id)).map((s) => s.id as string);

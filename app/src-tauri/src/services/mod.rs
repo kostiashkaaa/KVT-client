@@ -26,7 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod probe;
 mod run;
 
-pub(crate) use run::{check, spawn_after_connect, Trigger};
+pub(crate) use run::{check, export, fact, spawn_after_connect, Trigger};
 
 /// Событие окну: итог изменился или проверка началась.
 pub const EVENT: &str = "services";
@@ -200,6 +200,20 @@ impl Entry {
             detail,
         }
     }
+
+    /// Строка для диагностики: коды без текстов на языке окна, адресов нет.
+    fn export(&self) -> serde_json::Value {
+        let cause = match self.status {
+            Status::Done(Health::Down(cause)) => Some(cause.code()),
+            _ => None,
+        };
+        serde_json::json!({
+            "id": self.id,
+            "via": self.via,
+            "state": self.status.word(),
+            "cause": cause,
+        })
+    }
 }
 
 fn now() -> u64 {
@@ -321,6 +335,21 @@ mod tests {
         let down = tile(Status::Done(Health::Down(Cause::Cut)));
         assert_eq!(down.state, "down");
         assert!(!down.detail.is_empty());
+    }
+
+    #[test]
+    fn diagnostics_get_codes_without_texts_or_addresses() {
+        let down = entry(Status::Done(Health::Down(Cause::Cut))).export();
+        assert_eq!(down["state"], "down");
+        assert_eq!(down["cause"], "cut");
+        assert_eq!(down["via"], "vpn");
+        assert_eq!(down["id"], "youtube");
+        // Причина есть только у «не работает»; тексты на языке окна и адреса не нужны.
+        assert!(entry(Status::Done(Health::Works)).export()["cause"].is_null());
+        assert!(entry(Status::Waiting).export()["cause"].is_null());
+        for key in ["detail", "url", "host", "name"] {
+            assert!(down.get(key).is_none(), "лишнее поле {key}");
+        }
     }
 
     #[test]

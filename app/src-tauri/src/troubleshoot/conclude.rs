@@ -38,13 +38,13 @@ impl Out {
     }
 }
 
-fn switch(f: &Facts) -> Option<Fix> {
+pub(super) fn switch(f: &Facts) -> Option<Fix> {
     f.alternative
         .clone()
         .map(|(key, name)| Fix::SwitchServer { key, name })
 }
 
-fn switch_hint(f: &Facts) -> String {
+pub(super) fn switch_hint(f: &Facts) -> String {
     match &f.alternative {
         Some((_, name)) => trf!(
             " Можно переключиться на «{name}».",

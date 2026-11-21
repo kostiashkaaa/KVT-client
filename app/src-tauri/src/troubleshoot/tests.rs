@@ -27,7 +27,9 @@ fn english_texts() {
     assert!(d.detail.contains("You can switch to “DE”"), "{}", d.detail);
 }
 
-fn base() -> Facts {
+/// Всё в порядке, ничего не подключено, у подписки есть замена серверу (`k3`, «DE»).
+/// Общий для тестов выводов про сервис (`service`).
+pub(super) fn base() -> Facts {
     Facts {
         network: true,
         service: Some(ServiceStatus::Disconnected),
@@ -39,7 +41,21 @@ fn base() -> Facts {
         tunnel: None,
         alternative: Some(("k3".into(), "DE".into())),
         captive: false,
+        focus: None,
     }
+}
+
+#[test]
+fn diagnose_picks_the_answer_by_focus() {
+    // Без сервиса — общий вывод, с сервисом — про него.
+    let mut f = base();
+    assert_eq!(diagnose(&f), conclude(&f));
+    f.focus = Some(ServiceFact {
+        name: "Discord".into(),
+        via: kvt_core::services::Via::Direct,
+        health: kvt_core::services::Health::Down(kvt_core::services::Cause::Cut),
+    });
+    assert_eq!(diagnose(&f).title, "Discord не открывается");
 }
 
 #[test]

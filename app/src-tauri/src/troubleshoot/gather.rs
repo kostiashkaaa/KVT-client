@@ -1,12 +1,13 @@
 //! Сбор фактов: статус службы, подписка, TCP-пинг сервера, проба через тестовое ядро или
 //! туннель (с лимитами NetGovernor).
 
-use super::{Facts, ProbeFact, SubFacts};
+use super::{Facts, ProbeFact, ServiceFact, SubFacts};
 use crate::health::{self};
 use crate::prober::CoreProber;
 use crate::{display_name, query_status, watchdog, AppState};
 use kvt_core::ipc::ServiceStatus;
 use kvt_core::probe::{classify, Verdict};
+use kvt_core::services::{Health, Via};
 use kvt_core::tester::{sni_key, Outcome, Prober, QuickResult};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -75,13 +76,16 @@ async fn probe(state: &AppState, key: &str, server: &kvt_core::Server) -> Option
     Some(ProbeFact::Done(verdict))
 }
 
-pub(super) async fn gather(state: &AppState) -> Facts {
+/// `focus` — сервис, из-за которого запустили проверку: попадает в факты как есть, а
+/// замена серверу ищется и тогда, когда плох сервис за туннелем.
+pub(super) async fn gather(state: &AppState, focus: Option<ServiceFact>) -> Facts {
     let mut f = Facts {
         network: tokio::task::spawn_blocking(crate::netinfo::current)
             .await
             .ok()
             .flatten()
             .is_some(),
+        focus,
         ..Default::default()
     };
     if !f.network {
@@ -145,7 +149,12 @@ pub(super) async fn gather(state: &AppState) -> Facts {
 
     let bad_probe = matches!(&f.probe, Some(ProbeFact::Done(v)) if *v != Verdict::Works);
     let bad_tunnel = matches!(f.tunnel, Some(Err(_)));
-    if server_down || bad_probe || bad_tunnel {
+    // Сервис за туннелем или прокси не открывается: другой сервер подписки может помочь.
+    let bad_service = f
+        .focus
+        .as_ref()
+        .is_some_and(|s| s.health != Health::Works && matches!(s.via, Via::Vpn | Via::Proxy));
+    if server_down || bad_probe || bad_tunnel || bad_service {
         if let Some(key) = watchdog::alternatives(state, Some(&entry)).await.first() {
             f.alternative = Some((key.clone(), watchdog::server_name(state, key)));
         }

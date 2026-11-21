@@ -3,6 +3,7 @@
 
 use super::{now, probe, Cache, Entry, Pick, Snapshot, Status, Stored, EVENT};
 use crate::connection::{build_plan, Plan};
+use crate::troubleshoot::ServiceFact;
 use crate::{query_status, AppState};
 use kvt_core::governor::Decision;
 use kvt_core::ipc::ServiceStatus;
@@ -174,6 +175,37 @@ fn snapshot(state: &AppState, active: &Active) -> Snapshot {
 
 pub(super) async fn view(state: &AppState) -> Snapshot {
     snapshot(state, &detect(state).await)
+}
+
+/// Что известно о сервисе при нынешних условиях — для «Почему не работает?» (✗ на
+/// плитке). Не проверяли или итог сделан при других условиях — `None`: про сервис
+/// сказать нечего, и ответ будет общим.
+pub(crate) async fn fact(state: &AppState, id: &str) -> Option<ServiceFact> {
+    let active = detect(state).await;
+    let stored = state.services.stored(&active.key())?;
+    let entry = stored.entries.iter().find(|e| e.id == id)?;
+    match entry.status {
+        Status::Done(health) => Some(ServiceFact {
+            name: entry.name.clone(),
+            via: entry.via,
+            health,
+        }),
+        Status::Unknown | Status::Waiting => None,
+    }
+}
+
+/// Итог для диагностики (`checks.json`): что работало, в каком режиме и что показал
+/// каждый сервис — id, путь, состояние и причина кодами. Адресов проб и текстов нет.
+pub(crate) async fn export(state: &AppState) -> serde_json::Value {
+    let active = detect(state).await;
+    let stored = state.services.stored(&active.key());
+    serde_json::json!({
+        "running": active.word(),
+        "mode": active.mode,
+        "telegramProxy": active.telegram,
+        "checkedAt": stored.as_ref().map(|s| s.at),
+        "services": stored.map(|s| s.entries.iter().map(Entry::export).collect::<Vec<_>>()),
+    })
 }
 
 /// Только одна проверка за раз.

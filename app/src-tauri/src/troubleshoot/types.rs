@@ -3,6 +3,7 @@
 use crate::health::Trace;
 use kvt_core::ipc::ServiceStatus;
 use kvt_core::probe::Verdict;
+use kvt_core::services::{Health, Via};
 use kvt_core::tester::QuickResult;
 use serde::Serialize;
 
@@ -68,6 +69,15 @@ pub enum ProbeFact {
     Postponed,
 }
 
+/// Сервис, про который спросили «Почему не работает?» (✗ на плитке): что показала его
+/// проба и каким путём он идёт. Берётся из итога плиток — новых запросов нет.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceFact {
+    pub name: String,
+    pub via: Via,
+    pub health: Health,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
     pub network: bool,
@@ -86,4 +96,6 @@ pub struct Facts {
     pub alternative: Option<(String, String)>,
     /// Сеть просит войти (проверяется, только если через туннель данные не идут).
     pub captive: bool,
+    /// Сервис, из-за которого запустили проверку; `None` — общий поиск причины.
+    pub focus: Option<ServiceFact>,
 }

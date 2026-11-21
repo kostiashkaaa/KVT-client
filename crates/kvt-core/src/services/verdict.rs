@@ -49,6 +49,17 @@ pub enum Cause {
     Cut,
 }
 
+impl Cause {
+    /// Код для диагностики (без языка): `dns`, `unreachable`, `cut`.
+    pub fn code(self) -> &'static str {
+        match self {
+            Cause::Dns => "dns",
+            Cause::Unreachable => "unreachable",
+            Cause::Cut => "cut",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Health {
     Works,

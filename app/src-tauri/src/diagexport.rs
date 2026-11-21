@@ -92,7 +92,7 @@ async fn collect(state: &AppState) -> Vec<DiagFile> {
          Ключи, пароли, UUID, ссылки подписок и адреса серверов скрыты.\r\n\
          Файлы:\r\n\
          - status.json — состояние подключения, выбранный режим и настройки;\r\n\
-         - checks.json — итоги «Почему не работает?», проверок DNS, zapret и серверов;\r\n\
+         - checks.json — итоги «Почему не работает?», проверок DNS, zapret, серверов и сервисов;\r\n\
          - config.json — конфиг VPN-ядра, который соберёт служба для текущего выбора;\r\n\
          - kvt.log — журнал приложения;\r\n\
          - service.log — журнал службы;\r\n\
@@ -139,6 +139,8 @@ async fn collect(state: &AppState) -> Vec<DiagFile> {
         "dns": state.dns_report.lock().ok().and_then(|d| d.as_ref().map(|(_, r)| r.clone())),
         "zapret": state.zapret_last.lock().ok().and_then(|z| z.clone()),
         "serverChecks": verdicts,
+        // Плитки сервисов: id, путь, состояние, причина кодами — адресов проб нет.
+        "services": crate::services::export(state).await,
     });
 
     let journal = crate::journal::net_log().await.ok();
