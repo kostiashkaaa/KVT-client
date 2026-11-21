@@ -85,6 +85,16 @@ async function shoot(browser, lang) {
   await page.waitForTimeout(3000); // шаги проверки в превью идут по очереди
   await save("why", "why-card");
 
+  // Мини-панель из трея: отдельная страница, снимаем саму панель (без рамки превью).
+  const mini = await context.newPage();
+  await mini.setViewportSize({ width: 400, height: 640 });
+  await mini.goto(`${base}/mini.html?demo`);
+  await mini.locator(".panel.revealed").waitFor({ timeout: 10_000 });
+  await mini.getByText(l.connected, { exact: true }).waitFor({ timeout: 10_000 });
+  await mini.waitForTimeout(800); // ряд сервисов и сеанс
+  await mini.locator(".panel").screenshot({ path: path.join(out, `mini-${lang}.png`) });
+  await mini.close();
+
   await context.close();
 }
 

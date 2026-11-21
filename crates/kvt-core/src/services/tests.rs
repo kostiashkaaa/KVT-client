@@ -214,9 +214,14 @@ fn only_blocked_mode_still_routes_blocked_services_through_vpn() {
     };
     let plan = plan(&settings, false);
     assert_eq!(plan.resolve_domain("www.youtube.com"), Action::Direct);
-    for id in ["youtube", "discord", "telegram", "instagram", "chatgpt"] {
+    for id in ["youtube", "discord", "instagram", "chatgpt"] {
         assert_eq!(via_plan(id, &plan, false), Via::Vpn, "{id}");
     }
+    // Telegram не входит в `russia_inside` (сверено со списком 2026-11-22,
+    // `sing-box rule-set decompile`) — в компактном списке он не заблокирован и
+    // идёт напрямую. С включённым прокси подпись всё равно «прокси»; в полном
+    // списке (`rf:ru-blocked`) — через VPN, это проверяет тест ниже.
+    assert_eq!(via_plan("telegram", &plan, false), Via::Direct);
 }
 
 #[test]

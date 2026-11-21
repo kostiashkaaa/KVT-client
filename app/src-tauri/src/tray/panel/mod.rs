@@ -176,19 +176,23 @@ fn open(app: &AppHandle, icon: Area) {
     tray.panel.focused.store(false, Ordering::SeqCst);
     tray.panel.ready.store(false, Ordering::SeqCst);
 
-    let built = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("mini.html".into()))
-        .title("KVT")
-        .inner_size(WIDTH, FIRST_HEIGHT)
-        .decorations(false)
-        .shadow(true)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .skip_taskbar(true)
-        .always_on_top(true)
-        .visible(false)
-        .focused(true)
-        .build();
+    let built = crate::mica::prepare_panel(WebviewWindowBuilder::new(
+        app,
+        LABEL,
+        WebviewUrl::App("mini.html".into()),
+    ))
+    .title("KVT")
+    .inner_size(WIDTH, FIRST_HEIGHT)
+    .decorations(false)
+    .shadow(true)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .visible(false)
+    .focused(true)
+    .build();
     match built {
         Ok(window) => {
             watch(app, &window);

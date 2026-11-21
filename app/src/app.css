@@ -33,6 +33,8 @@
      плотным, когда подложка под Mica становится прозрачной. */
   --window: var(--bg);
   --rail: var(--sidebar);
+  /* Подложка мини-панели: как карточки, но прозрачная под Acrylic. */
+  --panel: var(--surface);
   --stroke: light-dark(#e0e0e0, #3a3a3a);
   --stroke-strong: light-dark(#c8c8c8, #4a4a4a);
   --text: light-dark(#1b1b1b, #ffffff);
@@ -77,6 +79,7 @@
   :root[data-mica]:not([data-theme="pickme"]) {
     --window: transparent;
     --rail: transparent;
+    --panel: transparent;
   }
 }
 

@@ -32,20 +32,44 @@ fn supports(build: u32) -> bool {
     build >= FIRST_WINDOWS_11_BUILD
 }
 
+/// Номер сборки, если материал есть. Логирует и возвращает `None` на Windows 10.
+fn windows11(what: &str) -> Option<u32> {
+    let build = windows_version::OsVersion::current().build;
+    if !supports(build) {
+        tracing::info!(build, "окно без {what}: нужна Windows 11");
+        return None;
+    }
+    tracing::info!(build, "окно с {what}");
+    Some(build)
+}
+
 /// Окно под Mica: прозрачное, с материалом и флагом для страницы. На Windows 10 и
 /// старше — без изменений.
 pub fn prepare<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
 ) -> WebviewWindowBuilder<'a, R, M> {
-    let build = windows_version::OsVersion::current().build;
-    if !supports(build) {
-        tracing::info!(build, "окно без Mica: нужна Windows 11");
+    if windows11("Mica").is_none() {
         return builder;
     }
-    tracing::info!(build, "окно с Mica");
     builder
         .transparent(true)
         .effects(EffectsBuilder::new().effect(Effect::Mica).build())
+        .initialization_script(MARK)
+}
+
+/// Мини-панель под Acrylic: её не перетаскивают, цена эффекта (перерисовка при
+/// изменении фона) не страшна — как у всплывающих панелей самой Windows. Флаг тот
+/// же, что у Mica: страница делает подложку прозрачной по нему (`--panel` в
+/// app.css), карточки панели остаются плотными. На Windows 10 — без изменений.
+pub fn prepare_panel<'a, R: Runtime, M: Manager<R>>(
+    builder: WebviewWindowBuilder<'a, R, M>,
+) -> WebviewWindowBuilder<'a, R, M> {
+    if windows11("Acrylic").is_none() {
+        return builder;
+    }
+    builder
+        .transparent(true)
+        .effects(EffectsBuilder::new().effect(Effect::Acrylic).build())
         .initialization_script(MARK)
 }
 
@@ -61,11 +85,15 @@ mod tests {
         assert!(supports(26200));
     }
 
-    /// Флаг, который ставит скрипт, и тот, что ждёт CSS, не должны разойтись.
+    /// Флаг, который ставит скрипт, и тот, что ждёт CSS, не должны разойтись — ни у
+    /// главного окна, ни у мини-панели (подложка `--panel`).
     #[test]
     fn css_waits_for_the_flag_the_script_sets() {
         let css = include_str!("../../src/app.css");
+        let panel = include_str!("../../src/mini/Panel.svelte");
         assert!(MARK.contains("\"data-mica\""));
         assert!(css.contains(":root[data-mica]"));
+        assert!(css.contains("--panel: transparent"));
+        assert!(panel.contains("var(--panel)"));
     }
 }

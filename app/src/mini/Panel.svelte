@@ -88,11 +88,12 @@
 
 <style>
   /* Окно панели без рамки: подложку и скругление даёт система, страница заполняет окно.
-     Плотная подложка --surface; Mica и Acrylic — позже, как у главного окна. */
+     Подложка --panel: на Windows 11 под ней Acrylic и она прозрачная (флаг data-mica
+     ставит Rust), карточки панели остаются плотными; на Windows 10 — как --surface. */
   :global(html),
   :global(body) {
     overflow: hidden;
-    background: var(--surface);
+    background: var(--panel);
   }
 
   .panel {
@@ -100,7 +101,7 @@
     flex-direction: column;
     gap: var(--space-3);
     padding: var(--space-4) var(--space-4) var(--space-2);
-    background: var(--surface);
+    background: var(--panel);
     /* Всплытие при показе окна: до него страница ждёт в скрытом окне. */
     opacity: 0;
     transform: translateY(10px);
