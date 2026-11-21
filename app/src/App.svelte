@@ -20,12 +20,14 @@
   import PickmeSky from "./lib/PickmeSky.svelte";
   import { theme } from "./lib/theme.svelte";
   import { startAutoselect } from "./lib/zapretStore.svelte";
+  import AddOverlay from "./lib/AddOverlay.svelte";
+  import { watchEventNotices, watchStartupNotices } from "./lib/appNotices.svelte";
+  import { routingKeyOf, settingsKeyOf, telegramOf, zapretKeyOf } from "./lib/connectKeys";
+  import { ServerChecks } from "./lib/serverChecks.svelte";
   import {
     addSubscription,
     connect,
     disconnect,
-    quickCheck,
-    fullCheck,
     serviceStatus,
     serviceSession,
     startService,
@@ -36,17 +38,11 @@
     snapshot,
     onSubscriptionsChanged,
     onChoiceChanged,
-    onWatchdog,
-    onZapretAuto,
     onTunnelState,
-    takeNotices,
     takePage,
-    onNotices,
     onNavigate,
     type TrayPage,
     tunnelState,
-    refreshSubscription,
-    removeServer,
     defaultRouting,
     defaultDns,
     defaultZapret,
@@ -56,13 +52,10 @@
     type Fix,
     type Group,
     type NetworkProfile,
-    type Outcome,
-    type WatchdogEvent,
     type RoutingSettings,
     type ServiceStatus,
     type Session,
     type Mode,
-    type QuickResult,
   } from "./lib/api";
 
   let page = $state<Page>(restoredPage());
@@ -97,11 +90,8 @@
     void page;
     mainEl?.scrollTo({ top: 0 });
   });
-  let results = $state<Record<string, QuickResult>>({});
-  let checking = $state<string | null>(null);
-  let outcomes = $state<Record<string, Outcome>>({});
-  let fullChecking = $state<string | null>(null);
-  let refreshing = $state<string | null>(null);
+  /** Пинг и проверка серверов, обновление подписки, удаление ключей (serverChecks.svelte.ts). */
+  const checks = new ServerChecks({ groups: () => groups, failed: (e) => failed(e), reloadGroups });
   /** Открыта панель добавления (кнопка «+»). */
   let adding = $state(false);
 
@@ -167,28 +157,10 @@
         }
         // Подписки уже есть (KVT пользовались до подсказок) — первый запуск позади.
         if (groups.some((g) => g.servers.length > 0)) onboarded = true;
-        void autoPing();
+        void checks.autoPing();
       })
       .finally(() => (restored = true));
   });
-
-  /** Пинг при открытии окна: колонка задержки сразу заполнена, а не «—».
-   *  Только TCP без TLS (DPI не замечает) и только для небольших списков. */
-  const AUTO_PING_MAX = 200;
-  async function autoPing() {
-    if (groups.reduce((n, g) => n + g.servers.length, 0) > AUTO_PING_MAX) return;
-    for (const g of groups) {
-      if (g.servers.length === 0 || checking !== null || fullChecking !== null) continue;
-      checking = g.id;
-      try {
-        results = { ...results, ...(await quickCheck(g.id)) };
-      } catch {
-        /* служба не ответила — пользователь нажмёт «Пинг» сам */
-      } finally {
-        checking = null;
-      }
-    }
-  }
 
   // Сервер или режим сменились не из окна: автопереключение или профиль сети.
   $effect(() =>
@@ -240,14 +212,7 @@
 
   // Сообщения, которые появились до открытия окна (например, о повреждённых
   // настройках) или пришли из трея, когда уведомления Windows выключены.
-  $effect(() => {
-    const take = () =>
-      void takeNotices().then((list) => {
-        for (const text of list) pushNotice({ text, key: `startup:${text}` });
-      });
-    take();
-    return onNotices(take);
-  });
+  watchStartupNotices();
 
   // Новая версия KVT: плашка на главной и точка у «Настроек» (update.svelte.ts).
   $effect(() => watchUpdates());
@@ -259,60 +224,8 @@
     return onTunnelState((ok) => (tunnelOk = ok));
   });
 
-  function watchdogText(e: WatchdogEvent): string {
-    switch (e.kind) {
-      case "captive_portal":
-        return t("Сеть просит войти (как Wi-Fi в гостинице или кафе), а VPN не даёт открыть страницу входа. Отключите VPN, войдите в сеть и подключитесь снова.", "The network asks you to sign in (like hotel or café Wi-Fi), and the VPN keeps the sign-in page from opening. Disconnect the VPN, sign in to the network and connect again.");
-      case "server_removed":
-        return t(`Сервер «${e.server}» больше не в подписках — VPN отключён. Выберите другой сервер и подключитесь.`, `Server “${e.server}” is no longer in your subscriptions — the VPN is disconnected. Pick another server and connect.`);
-      case "server_replaced":
-        return t(`Сервера «${e.from}» больше нет в подписке — KVT переключился на «${e.to}».`, `Server “${e.from}” is no longer in the subscription — KVT switched to “${e.to}”.`);
-      case "switched":
-        return t(`Через «${e.from}» перестали идти данные — KVT переключился на «${e.to}».`, `Data stopped going through “${e.from}” — KVT switched to “${e.to}”.`);
-      case "no_network":
-        return t("Пропала сеть. VPN снова заработает, когда она появится.", "The network is gone. The VPN will work again once it's back.");
-      case "no_alternative":
-        return t(`Через «${e.server}» перестали идти данные, а рабочей замены в подписках нет.`, `Data stopped going through “${e.server}”, and there's no working replacement in your subscriptions.`);
-      case "gave_up":
-        return t("Серверы слишком часто перестают работать — автопереключение приостановлено на полчаса.", "Servers fail too often — auto-switch is paused for half an hour.");
-    }
-  }
-
-  $effect(() =>
-    onWatchdog((e) => {
-      const text = watchdogText(e);
-      // Замена сервера и пропавшая сеть — сведения, исчезают сами; остальное ждёт «Понятно».
-      const info = e.kind === "switched" || e.kind === "server_replaced" || e.kind === "no_network";
-      pushNotice({
-        key: "watchdog",
-        text,
-        tone: info ? "info" : "warn",
-        actions:
-          e.kind === "captive_portal" && active
-            ? [{ label: t("Отключить VPN", "Disconnect VPN"), primary: true, run: () => ondisconnect() }]
-            : [],
-      });
-    }),
-  );
-
-  // Автопроверка zapret: сама подобрала стратегию или просит внимания.
-  $effect(() =>
-    onZapretAuto((e) => {
-      if (e.kind === "picked") {
-        pushNotice({
-          key: "zapret-auto",
-          tone: "info",
-          text: t(`zapret перестал справляться — KVT подобрал стратегию ${e.title} (${e.passed} из ${e.max}).`, `zapret stopped working — KVT picked strategy ${e.title} (${e.passed} of ${e.max}).`),
-        });
-      } else {
-        pushNotice({
-          key: "zapret-auto",
-          text: t(`zapret справляется хуже: ${e.passed} из ${e.max} проверок.`, `zapret works worse: ${e.passed} of ${e.max} checks.`),
-          actions: [{ label: t("Открыть Zapret", "Open Zapret"), run: () => void (page = "zapret") }],
-        });
-      }
-    }),
-  );
+  // События службы (замена сервера, пропавшая сеть, вход в сеть) и автопроверка zapret.
+  watchEventNotices({ active: () => active, ondisconnect, openZapret: () => void (page = "zapret") });
 
   // «Почему не работает?» с главной: открыть раздел «Проверка» и сразу запустить.
   let autoDiagnose = $state(false);
@@ -356,7 +269,7 @@
         // На главной видно и вращение «Обновить», и ошибку, если провайдер не ответил.
         page = "home";
         const group = groups.find((g) => g.servers.some((s) => s.key === selected));
-        if (group?.byUrl) await refresh(group.id);
+        if (group?.byUrl) await checks.refresh(group.id);
         break;
       }
       case "add_subscription":
@@ -394,60 +307,6 @@
     });
   }
 
-  async function check(group: string) {
-    checking = group;
-    // Итог прошлой «Проверить» закрывал бы свежий пинг: цифры не менялись бы.
-    const keys = new Set(groups.find((g) => g.id === group)?.servers.map((s) => s.key));
-    outcomes = Object.fromEntries(Object.entries(outcomes).filter(([k]) => !keys.has(k)));
-    try {
-      results = { ...results, ...(await quickCheck(group)) };
-    } catch (e) {
-      failed(e);
-    } finally {
-      checking = null;
-    }
-  }
-
-  async function runFullCheck(group: string) {
-    fullChecking = group;
-    dismissKey("error");
-    const keys = new Set(groups.find((g) => g.id === group)?.servers.map((s) => s.key));
-    outcomes = Object.fromEntries(Object.entries(outcomes).filter(([k]) => !keys.has(k)));
-    try {
-      await fullCheck(group, (key, o) => {
-        outcomes[key] = o;
-      });
-    } catch (e) {
-      failed(e);
-    } finally {
-      fullChecking = null;
-    }
-  }
-
-  async function refresh(group: string) {
-    refreshing = group;
-    dismissKey("error");
-    try {
-      await refreshSubscription(group);
-      await reloadGroups();
-    } catch (e) {
-      failed(e);
-    } finally {
-      refreshing = null;
-    }
-  }
-
-  /** Ключ из группы «Добавлено вручную». Если VPN шёл через него, Rust уже отключил
-   *  VPN и сообщил об этом; `reloadGroups` выберет другой сервер. */
-  async function removeKey(key: string) {
-    try {
-      await removeServer(key);
-      await reloadGroups();
-    } catch (e) {
-      failed(e);
-    }
-  }
-
   function closeAdd() {
     if (busy) return;
     adding = false;
@@ -477,7 +336,7 @@
       if (result.first && (!active || selected === null)) selected = result.first;
       adding = false;
       page = "home";
-      void check(result.group);
+      void checks.check(result.group);
     } catch (e) {
       addError = message(e);
     } finally {
@@ -514,25 +373,10 @@
   let session = $state<Session | null>(null);
   /** Работает VPN или только zapret. */
   const active = $derived(status?.state === "connected" || status?.state === "zapret");
-  /** Настройки zapret, с которыми запущена служба (стратегия, фильтр). Автопроверка
-   *  на запуск не влияет: её переключатели не должны перезапускать zapret и VPN. */
-  const zapretKey = () => {
-    const { autoCheck: _check, autoPick: _pick, ...plan } = $state.snapshot(zapret);
-    return JSON.stringify(plan);
-  };
-  /** Настройки маршрутизации без учёта порядка выбора списков. */
-  const routingKey = () =>
-    JSON.stringify({
-      ...$state.snapshot(routing),
-      overrides: Object.entries(routing.overrides).sort(([a], [b]) => a.localeCompare(b)),
-    });
-  /** Kill switch и DNS: служба применяет их только при подключении. */
-  const settingsKey = () => JSON.stringify({ killSwitch, dns: $state.snapshot(dns) });
-  /** В режиме «VPN» из настроек zapret на подключение влияет только прокси Telegram. */
-  const telegramOf = (key: string) => {
-    const z = JSON.parse(key) as ZapretChoice;
-    return `${z.telegram}:${z.telegramRoute}`;
-  };
+  // Ключи настроек: с чем подключены и что выбрано сейчас (connectKeys.ts).
+  const zapretKey = () => zapretKeyOf($state.snapshot(zapret));
+  const routingKey = () => routingKeyOf($state.snapshot(routing));
+  const settingsKey = () => settingsKeyOf(killSwitch, $state.snapshot(dns));
   /** С каким сервером, режимом и настройками zapret сейчас подключены. */
   let connectedWith = $state<{
     server: string | null;
@@ -694,16 +538,16 @@
         <ServerList
           {groups}
           bind:selected
-          {results}
-          {checking}
-          oncheck={check}
-          {outcomes}
-          {fullChecking}
-          onfullcheck={runFullCheck}
-          {refreshing}
-          onrefresh={refresh}
+          results={checks.results}
+          checking={checks.checking}
+          oncheck={checks.check}
+          outcomes={checks.outcomes}
+          fullChecking={checks.fullChecking}
+          onfullcheck={checks.runFullCheck}
+          refreshing={checks.refreshing}
+          onrefresh={checks.refresh}
           onadd={() => (adding = true)}
-          onremove={removeKey}
+          onremove={checks.removeKey}
         />
       {:else}
         <AddSubscription onadd={add} {busy} />
@@ -762,25 +606,7 @@
 
 {#if adding}
   <!-- Панель добавления поверх текущего экрана: список остаётся на месте. -->
-  <div
-    class="overlay"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="add-title"
-    tabindex="-1"
-    transition:fade={{ duration: 150 }}
-    onclick={(e) => {
-      if (e.target === e.currentTarget) closeAdd();
-    }}
-    onkeydown={(e) => {
-      if (e.key === "Escape") closeAdd();
-    }}
-  >
-    <AddSubscription onadd={add} {busy} oncancel={closeAdd} />
-    {#if addError}
-      <div class="overlay-error"><Banner>{addError}</Banner></div>
-    {/if}
-  </div>
+  <AddOverlay {busy} {addError} onadd={add} onclose={closeAdd} />
 {/if}
 
 <style>
@@ -877,22 +703,6 @@
     }
   }
 
-  .overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 10;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-3);
-    padding: var(--space-4);
-    background: rgb(0 0 0 / 0.45);
-  }
-
-  .overlay-error {
-    width: min(560px, calc(100vw - 32px));
-  }
   @media (max-width: 900px) {
     main {
       --page-pad-top: var(--space-4);
