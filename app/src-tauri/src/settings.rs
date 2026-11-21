@@ -158,6 +158,7 @@ fn title(key: &str) -> String {
         "onboarded" => tr("подсказки первого запуска", "first-run tips"),
         "language" => tr("язык", "language"),
         "services" => tr("набор сервисов", "services set"),
+        "miniPanel" => tr("мини-панель в трее", "tray mini-panel"),
         other => other,
     }
     .into()

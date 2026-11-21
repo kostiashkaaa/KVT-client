@@ -44,12 +44,14 @@ use icon::Tone;
 
 mod actions;
 mod menu;
+mod panel;
 mod text;
 mod window;
 
 // Что зовут окно, служба уведомлений и main.rs — доступно как `tray::…`.
 use actions::*;
 use menu::*;
+pub use panel::*;
 pub(crate) use text::*;
 pub use window::*;
 
@@ -94,6 +96,8 @@ pub(crate) struct Tray {
     status: Mutex<Option<ServiceStatus>>,
     /// Перестройки идут по одной.
     building: Mutex<()>,
+    /// Мини-панель у значка (`panel`).
+    panel: panel::PanelState,
 }
 
 impl Tray {
@@ -115,15 +119,24 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .tooltip("KVT")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
+        .on_tray_icon_event(|tray, event| match event {
+            // Левый клик — мини-панель (или окно, если панель выключена), правый — меню.
+            TrayIconEvent::Click {
                 button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
+                button_state,
+                rect,
+                position,
                 ..
-            } = event
-            {
-                show_main_window(tray.app_handle());
-            }
+            } => panel::on_click(
+                tray.app_handle(),
+                matches!(button_state, MouseButtonState::Up),
+                panel::icon_area(&rect, position),
+            ),
+            TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => panel::on_double_click(tray.app_handle()),
+            _ => {}
         })
         .build(app)?;
     app.manage(Tray {
@@ -135,6 +148,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         strategies: Mutex::default(),
         status: Mutex::default(),
         building: Mutex::default(),
+        panel: panel::PanelState::default(),
     });
 
     // Что меняется не из трея: окно, автопереключение, профили сетей, подписки, проверки.

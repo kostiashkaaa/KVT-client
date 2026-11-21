@@ -59,8 +59,16 @@ pub(super) async fn quick_check(
         first: &first,
         governor: &state.governor,
     };
-    let results = ping_servers(&doh, &servers).await?;
-    Ok(keys.into_iter().zip(results).collect())
+    let results: HashMap<String, QuickResult> = keys
+        .into_iter()
+        .zip(ping_servers(&doh, &servers).await?)
+        .collect();
+    // Копия для мини-панели в трее: она пингов сама не снимает.
+    if let Ok(mut pings) = state.pings.lock() {
+        let at = Instant::now();
+        pings.extend(results.iter().map(|(k, r)| (k.clone(), (r.clone(), at))));
+    }
+    Ok(results)
 }
 
 /// TCP-пинг серверов мимо туннеля. С VPN соединение из приложения принял бы сам

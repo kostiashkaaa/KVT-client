@@ -1,6 +1,6 @@
 import { browserLang, t, type Lang, type LangChoice } from "../i18n";
 import { inTauri, invoke, listen } from "./bridge";
-import { demo, demoState } from "./preview";
+import { demo, demoState, previewNoData, previewNotice } from "./preview";
 
 // ── Этап 5.4: надёжность ──
 
@@ -17,8 +17,8 @@ export function onNotices(handler: () => void): () => void {
   return () => void off.then((f) => f());
 }
 
-/** Страница, которую открывает трей: вкладка окна, «why» или «add». */
-export type TrayPage = "home" | "zapret" | "journal" | "why" | "add";
+/** Страница, которую открывает трей или мини-панель: вкладка окна, «why» или «add». */
+export type TrayPage = "home" | "subscriptions" | "zapret" | "journal" | "settings" | "why" | "add";
 
 /** Страница, которую трей попросил открыть до появления окна. */
 export async function takePage(): Promise<TrayPage | null> {
@@ -128,8 +128,8 @@ export async function updateStatus(): Promise<UpdateStatus> {
   if (!inTauri)
     return {
       current: "0.9.4",
-      latest: demo ? "0.9.4" : "0.9.5",
-      available: !demo,
+      latest: demo && previewNotice !== "update" ? "0.9.4" : "0.9.5",
+      available: !demo || previewNotice === "update",
       checkedAt: Date.now(),
       error: null,
     };
@@ -172,7 +172,7 @@ export async function setAutostart(enabled: boolean): Promise<void> {
 
 /** Идут ли данные через туннель: null — не проверяли или VPN выключен. */
 export async function tunnelState(): Promise<boolean | null> {
-  if (!inTauri) return demo && demoState.state === "connected" ? true : null;
+  if (!inTauri) return demo && demoState.state === "connected" ? !previewNoData : null;
   return invoke<boolean | null>("tunnel_state");
 }
 

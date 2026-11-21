@@ -41,6 +41,9 @@ pub(super) struct Choice {
     /// Свой набор плиток сервисов (id); `None` — набор по умолчанию для режима. Окно
     /// поле не присылает: меняет его `services_pick`, а `set_choice` сохраняет прежнее.
     pub(crate) services: Option<Vec<String>>,
+    /// Левый клик по значку в трее открывает мини-панель; выключено — окно KVT. Окно
+    /// присылает это поле вместе с остальным выбором (переключатель в «Настройках»).
+    pub(crate) mini_panel: bool,
 }
 
 /// Сколько серверов помнит «Недавние» в трее.
@@ -75,6 +78,7 @@ impl Default for Choice {
             autostart_offered: false,
             language: lang::LangChoice::Auto,
             services: None,
+            mini_panel: true,
         }
     }
 }

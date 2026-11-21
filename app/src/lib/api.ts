@@ -132,6 +132,20 @@ export {
   onServices,
 } from "./api/services";
 export {
+  type ServerHealth,
+  type PanelServer,
+  type PanelZapret,
+  type PanelSubscription,
+  type PanelView,
+  type PanelAction,
+  type PanelPage,
+  panelSnapshot,
+  panelAct,
+  panelReady,
+  panelClose,
+  panelOpen,
+} from "./api/panel";
+export {
   type TgProxyStatus,
   tgProxyStatus,
   tgProxyOpen,

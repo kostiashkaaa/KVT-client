@@ -1,6 +1,7 @@
 import { t } from "../i18n";
 import { inTauri } from "./bridge";
-import type { Added, Group, ServerSummary, ServiceStatus } from "./connection";
+import type { Added, Group, Mode, ServerSummary, ServiceStatus } from "./connection";
+import type { PanelServer, PanelView } from "./panel";
 import type { ServicesSnapshot, ServiceTile } from "./services";
 
 // Предпросмотр интерфейса в обычном браузере (npm run dev) без Rust-части.
@@ -122,6 +123,23 @@ export function setDemoState(state: ServiceStatus): ServiceStatus {
   demoState = state;
   return state;
 }
+
+// Кадры мини-панели: `/mini.html?demo&frame=…` задаёт начальное состояние службы, а
+// `&notice=update|expiring` — напоминание. Без `?demo` служба «не запущена».
+const FRAMES: Record<string, ServiceStatus> = {
+  connecting: { state: "connecting" },
+  off: { state: "disconnected" },
+  nodata: { state: "connected", core: "xray" },
+  zapret: { state: "zapret", strategy: "general (ALT4)" },
+  blocked: { state: "failed", reason: "ядро остановилось", blocked: true },
+};
+const query = new URLSearchParams(typeof location === "undefined" ? "" : location.search);
+const frame = query.get("frame");
+if (demo && frame && frame in FRAMES) demoState = FRAMES[frame] ?? demoState;
+/** Кадр «данные не идут»: VPN подключён, а через туннель ничего не проходит. */
+export const previewNoData = demo && frame === "nodata";
+/** Напоминание в мини-панели, которое просили показать. */
+export const previewNotice = demo ? query.get("notice") : null;
 
 function demoGroups(): Group[] {
   const now = Math.floor(Date.now() / 1000);
@@ -301,4 +319,71 @@ export function previewServices(opts: { check?: boolean } = {}): ServicesSnapsho
     })),
     custom: servicesPicked !== null,
   };
+}
+
+// Мини-панель (`/mini.html`): выбор и переключатели живут до перезагрузки страницы.
+const panelPreview = { mode: (frame === "zapret" ? "zapret" : "hybrid") as Mode, ks: true, auto: true, tg: true, selected: null as string | null };
+
+/** Данные панели в превью: серверы первой подписки, пинги растут по списку. */
+export function previewPanel(): PanelView {
+  const groups = previewData();
+  const toPanel = (s: ServerSummary, i: number): PanelServer => {
+    const unknown = i === 5;
+    return {
+      key: s.key,
+      name: s.name,
+      flag: s.flag,
+      protocol: s.protocol,
+      transport: s.transport,
+      security: s.security,
+      pingMs: unknown ? null : 38 + i * 9 + (i % 3) * 4,
+      health: unknown ? "unknown" : "works",
+    };
+  };
+  const servers = (groups[0]?.servers ?? []).map(toPanel);
+  const server = servers.find((s) => s.key === panelPreview.selected) ?? servers[0] ?? null;
+  const group = groups.find((g) => g.servers.some((s) => s.key === server?.key));
+  const meta = group?.meta;
+  const day = 86400;
+  const subscription =
+    group && meta && (meta.totalBytes !== null || meta.expire !== null)
+      ? {
+          title: meta.title ?? group.title,
+          usedBytes: meta.usedBytes,
+          totalBytes: meta.totalBytes,
+          expire: previewNotice === "expiring" ? Math.floor(Date.now() / 1000) + 2 * day : meta.expire,
+        }
+      : null;
+  return {
+    mode: panelPreview.mode,
+    killSwitch: panelPreview.ks,
+    autoSwitch: panelPreview.auto,
+    telegram: panelPreview.tg,
+    server,
+    servers,
+    total: servers.length,
+    zapret: { strategy: t("Основная", "Main"), pickedFor: "Home 5G" },
+    subscription,
+  };
+}
+
+/** Действие панели в превью: переключатели меняются, подключение работает в `?demo`. */
+export async function previewPanelAct(id: string): Promise<void> {
+  if (id === "ks") panelPreview.ks = !panelPreview.ks;
+  else if (id === "auto") panelPreview.auto = !panelPreview.auto;
+  else if (id === "tg") panelPreview.tg = !panelPreview.tg;
+  else if (id.startsWith("mode:")) panelPreview.mode = id.slice(5) as Mode;
+  else if (id.startsWith("srv:")) panelPreview.selected = id.slice(4);
+  else if (id === "toggle" && demo) {
+    const running = demoState.state === "connected" || demoState.state === "zapret";
+    if (running) setDemoState({ state: "disconnected" });
+    else {
+      await new Promise((r) => setTimeout(r, 900));
+      setDemoState(
+        panelPreview.mode === "zapret"
+          ? { state: "zapret", strategy: "general (ALT4)" }
+          : { state: "connected", core: "xray" },
+      );
+    }
+  }
 }

@@ -104,6 +104,7 @@
   let notifications = $state(true);
   let connectOnStart = $state(false);
   let checkUpdates = $state(true);
+  let miniPanel = $state(true);
   /** До восстановления выбора считаем пройденным — подсказки не мелькают. */
   let onboarded = $state(true);
   let restored = $state(false);
@@ -124,6 +125,7 @@
     notifications = c.notifications ?? true;
     connectOnStart = c.connectOnStart ?? false;
     checkUpdates = c.checkUpdates ?? true;
+    miniPanel = c.miniPanel ?? true;
     onboarded = c.onboarded ?? false;
   }
 
@@ -141,6 +143,7 @@
       notifications,
       connectOnStart,
       checkUpdates,
+      miniPanel,
       onboarded,
     };
   }
@@ -586,7 +589,7 @@
     {:else if page === "settings"}
       <h1>{t("Настройки", "Settings")}</h1>
       <Settings bind:killSwitch bind:autoSwitch bind:dns bind:networks bind:notifications bind:connectOnStart
-        bind:checkUpdates
+        bind:checkUpdates bind:miniPanel
         connected={status?.state === "connected"}
         pending={status?.state === "connected" && !!connectedWith && connectedWith.settings !== settingsKey()}
         {busy}

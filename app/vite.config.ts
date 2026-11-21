@@ -11,6 +11,9 @@ export default defineConfig({
     watch: { ignored: ["**/src-tauri/**"] },
   },
   build: {
+    // Две страницы: главное окно и мини-панель из трея (кода окна в ней нет — старт
+    // быстрее, а памяти меньше). `proto.html` — только для разработки, в сборку не входит.
+    rollupOptions: { input: { main: "index.html", mini: "mini.html" } },
     target: "es2022",
     sourcemap: false,
     // Флаги — отдельными файлами: в коде только адреса, картинка грузится, когда видна.

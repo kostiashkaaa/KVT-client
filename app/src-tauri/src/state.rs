@@ -23,6 +23,9 @@ pub(crate) struct AppState {
     pub(crate) choice: Mutex<Choice>,
     /// Итоги полной проверки по ключам серверов.
     pub(crate) outcomes: Mutex<HashMap<String, Outcome>>,
+    /// Последний TCP-пинг серверов, который снимало окно, и когда. Только в памяти:
+    /// мини-панель из трея показывает его, не гоняя запросы сама.
+    pub(crate) pings: Mutex<HashMap<String, (QuickResult, Instant)>>,
     /// Когда получен каждый итог из `outcomes` (секунды Unix) — см. `outcomes.rs`.
     pub(crate) outcome_times: Mutex<HashMap<String, u64>>,
     /// Последняя проверка DNS: повтор в течение минуты отдаёт её же.
@@ -84,6 +87,7 @@ impl Default for AppState {
             checking: Default::default(),
             choice: Mutex::default(),
             outcomes: Mutex::default(),
+            pings: Mutex::default(),
             outcome_times: Mutex::default(),
             dns_report: Mutex::default(),
             health: health::client(),

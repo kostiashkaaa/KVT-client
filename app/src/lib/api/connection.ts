@@ -161,6 +161,8 @@ export interface Choice {
   checkUpdates: boolean;
   /** Подсказки первого запуска пройдены или пропущены. */
   onboarded: boolean;
+  /** Левый клик по значку в трее открывает мини-панель; выключено — окно KVT. */
+  miniPanel: boolean;
 }
 
 export interface ListInfo {

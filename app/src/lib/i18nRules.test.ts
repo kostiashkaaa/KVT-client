@@ -133,7 +133,7 @@ function moduleCode(file: string, text: string): Source[] {
   return out;
 }
 
-const sources = import.meta.glob<string>(["./**/*.ts", "./**/*.svelte", "../main.ts", "!./**/*.test.ts", "!./i18n.ts"], {
+const sources = import.meta.glob<string>(["./**/*.ts", "./**/*.svelte", "../main.ts", "../mini/**/*.ts", "../mini/**/*.svelte", "!./**/*.test.ts", "!../mini/**/*.test.ts", "!./i18n.ts"], {
   query: "?raw",
   import: "default",
   eager: true,

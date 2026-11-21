@@ -3,6 +3,7 @@
   import Flag from "./Flag.svelte";
   import Icon from "./Icon.svelte";
   import ServerName from "./ServerName.svelte";
+  import { modeHint, statusView } from "./statusView";
   import {
     formatBytes,
     formatElapsed,
@@ -60,45 +61,18 @@
 
   /** Работает только zapret, без VPN. */
   const zapretOnly = $derived(status?.state === "zapret" ? status : null);
-  const connected = $derived(status?.state === "connected" || zapretOnly !== null);
+  // Цвет точки, заголовок и вид кнопки считает общая функция: мини-панель в трее
+  // показывает то же самое, и два окна не должны расходиться.
+  const view = $derived(statusView({ status, tunnelOk, busy, serviceDown, starting, mismatch }));
+  const connected = $derived(view.connected);
   /** Ядро остановилось, а kill switch держит интернет закрытым: нужна кнопка «Отключить». */
-  const blocked = $derived(status?.state === "failed" && status.blocked === true);
+  const blocked = $derived(view.blocked);
   /** Сервер принял подключение, но данные через туннель не идут. */
-  const noData = $derived(status?.state === "connected" && tunnelOk === false);
+  const noData = $derived(view.noData);
   /** Службы нет, но окно её уже запускает: не пугаем красным «не запущена». */
-  const serviceStarting = $derived(serviceDown && starting && !mismatch);
-  const tone = $derived(
-    busy || status?.state === "connecting" || serviceStarting
-      ? "pending"
-      : noData
-        ? "warn"
-        : connected
-          ? "on"
-          : status?.state === "failed" || serviceDown
-            ? "error"
-            : "off",
-  );
-  const title = $derived(
-    serviceStarting
-      ? t("Запускаем службу KVT…", "Starting the KVT service…")
-      : tone === "pending"
-      ? t("Подключение…", "Connecting…")
-      : zapretOnly
-        ? t("Zapret работает", "Zapret is on")
-        : noData
-          ? t("Сайты не открываются", "Sites don't open")
-          : connected
-            ? t("Подключено", "Connected")
-            : blocked
-              ? t("Интернет закрыт", "Internet blocked")
-              : serviceDown && mismatch
-              ? t("Окно и служба KVT разных версий", "KVT window and service versions differ")
-              : serviceDown
-              ? t("Служба KVT не запущена", "The KVT service isn't running")
-              : tone === "error"
-                ? t("Ошибка", "Error")
-                : t("Отключено", "Disconnected"),
-  );
+  const serviceStarting = $derived(view.serviceStarting);
+  const tone = $derived(view.tone);
+  const title = $derived(view.title);
   // Служба отвечает раз в 3 с, а секунды тикают здесь: от последнего ответа.
   let received = $state({ secs: 0, at: 0 });
   let now = $state(performance.now());
@@ -128,7 +102,7 @@
   );
 
   /** Вид круглой кнопки: выключено, идёт подключение, подключено (или без данных). */
-  const power = $derived(busy ? "pending" : noData || blocked ? "on warn" : connected ? "on" : "off");
+  const power = $derived(view.power);
   /** Нажатие отключает: работает VPN или zapret, либо kill switch держит интернет. */
   const stops = $derived(connected || blocked);
   const actionLabel = $derived(
@@ -138,27 +112,9 @@
   const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
 
   const modes: { id: Mode; label: string; hint: string }[] = $derived([
-    {
-      id: "vpn",
-      label: "VPN",
-      hint: telegram
-        ? t("Весь заблокированный трафик через VPN; Telegram — через прокси", "All blocked traffic via VPN; Telegram via the proxy")
-        : t("Весь заблокированный трафик через VPN", "All blocked traffic via VPN"),
-    },
-    {
-      id: "hybrid",
-      label: t("Гибрид", "Hybrid"),
-      hint: telegram
-        ? t("YouTube и Discord через zapret, остальное через VPN; Telegram — через прокси", "YouTube and Discord via zapret, the rest via VPN; Telegram via the proxy")
-        : t("YouTube и Discord через zapret, остальное через VPN", "YouTube and Discord via zapret, the rest via VPN"),
-    },
-    {
-      id: "zapret",
-      label: "Zapret",
-      hint: telegram
-        ? t("Без VPN: YouTube и Discord через zapret, Telegram Desktop через прокси", "No VPN: YouTube and Discord via zapret, Telegram Desktop via the proxy")
-        : t("Без VPN: только обход DPI для YouTube и Discord", "No VPN: only the DPI bypass for YouTube and Discord"),
-    },
+    { id: "vpn", label: "VPN", hint: modeHint("vpn", telegram) },
+    { id: "hybrid", label: t("Гибрид", "Hybrid"), hint: modeHint("hybrid", telegram) },
+    { id: "zapret", label: "Zapret", hint: modeHint("zapret", telegram) },
   ]);
   const modeIndex = $derived(Math.max(0, modes.findIndex((m) => m.id === mode)));
 </script>

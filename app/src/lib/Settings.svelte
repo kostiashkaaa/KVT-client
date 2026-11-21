@@ -34,6 +34,7 @@
     notifications = $bindable(),
     connectOnStart = $bindable(),
     checkUpdates = $bindable(),
+    miniPanel = $bindable(),
     connected,
     pending,
     busy,
@@ -47,6 +48,8 @@
     notifications: boolean;
     connectOnStart: boolean;
     checkUpdates: boolean;
+    /** Мини-панель у значка в трее вместо окна по левому клику. */
+    miniPanel: boolean;
     /** Работает VPN (в режиме «VPN» или «Гибрид»). */
     connected: boolean;
     /** Kill switch или DNS изменены после подключения. */
@@ -294,6 +297,17 @@
       <input type="checkbox" role="switch" bind:checked={notifications} />
       <span aria-hidden="true"></span>
       <span class="sr">{t("Уведомления Windows", "Windows notifications")}</span>
+    </label>
+  </div>
+  <div class="row">
+    <div>
+      <h3>{t("Мини-панель в трее", "Tray mini-panel")}</h3>
+      <p class="muted">{t("Мини-панель у значка в трее. Выключена — клик по значку открывает окно.", "A mini-panel by the tray icon. When off, clicking the icon opens the window.")}</p>
+    </div>
+    <label class="switch">
+      <input type="checkbox" role="switch" bind:checked={miniPanel} />
+      <span aria-hidden="true"></span>
+      <span class="sr">{t("Мини-панель в трее", "Tray mini-panel")}</span>
     </label>
   </div>
 </section>

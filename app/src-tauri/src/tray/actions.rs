@@ -32,16 +32,20 @@ pub(super) fn on_menu(app: &AppHandle, id: &str) {
         "tool:journal" => open_page(&app, "journal"),
         _ if id.starts_with("all:") => open_page(&app, "home"),
         _ => {
-            tauri::async_runtime::spawn(async move {
-                match act(&app, &id).await {
-                    // Подключение прервали «Отключить» — это не ошибка.
-                    Err(ActionError::Connection(crate::ConnectionError::Cancelled)) | Ok(()) => {}
-                    Err(e) => crate::notify::error(&app, &e.to_string()),
-                }
-                invalidate(&app);
-            });
+            tauri::async_runtime::spawn(async move { run_action(&app, &id).await });
         }
     }
+}
+
+/// Действие пункта меню или мини-панели: ошибка — уведомлением Windows, меню трея после
+/// него перестраивается.
+pub(super) async fn run_action(app: &AppHandle, id: &str) {
+    match act(app, id).await {
+        // Подключение прервали «Отключить» — это не ошибка.
+        Err(ActionError::Connection(crate::ConnectionError::Cancelled)) | Ok(()) => {}
+        Err(e) => crate::notify::error(app, &e.to_string()),
+    }
+    invalidate(app);
 }
 
 /// Работает VPN, zapret, и держит ли kill switch интернет закрытым после сбоя
@@ -154,6 +158,15 @@ pub(super) async fn act(app: &AppHandle, id: &str) -> Result<(), ActionError> {
         }
         "auto" => {
             change(app, |c| c.auto_switch = !c.auto_switch)?;
+        }
+        "tg" => {
+            // Прокси Telegram: как в окне, где смена настройки переподключает работающий
+            // VPN или zapret (правила маршрута прокси ставятся при подключении).
+            change(app, |c| c.zapret.telegram = !c.zapret.telegram)?;
+            crate::tgproxy::kick(app);
+            if running {
+                reconnect(app).await?;
+            }
         }
         "tool:refresh" => {
             let failed = crate::subs::refresh_all(app).await?;
