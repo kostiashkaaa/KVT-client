@@ -58,7 +58,7 @@ switch — и пока он переподключается или упал); �
 
 1. `crates/kvt-service/src/pipe.rs`, `access.rs`, `handler.rs`, `manifest.rs` — кто может управлять
    службой и какие команды она принимает.
-2. `crates/kvt-service/src/wfp.rs`, `supervisor/killswitch.rs` — kill switch и DNS
+2. `crates/kvt-service/src/wfp/`, `supervisor/killswitch.rs` — kill switch и DNS
    только через туннель, восстановление после падения службы.
 3. `crates/kvt-service/src/dirs.rs`, `win.rs` — права на каталоги и подмена файлов.
 4. `crates/kvt-core/src/parser/`, `subscription.rs`, `compile/` — разбор недоверенных
