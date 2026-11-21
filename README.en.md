@@ -65,6 +65,11 @@ language.
   </tr>
 </table>
 
+<p>
+  <img src="assets/screenshots/mini-en.png" width="360" alt="Mini panel from the tray: status and session time, mode, server, service tiles and toggles near the clock icon">
+  <br><sub>The mini panel from the tray — left-click the icon</sub>
+</p>
+
 ## Features
 
 - **Subscriptions and keys in one list.** Paste a subscription URL or `vless://`,
@@ -92,7 +97,9 @@ language.
   one takes: the VPN, zapret, the proxy or a direct connection. If one doesn't open,
   "Why?" tells you what to try.
 - **Runs from the tray.** Change the server, mode or kill switch from the tray menu.
-  Connection time and traffic are shown on the home screen and in the tray.
+  A left click on the icon opens the mini panel: status, server, service tiles and
+  toggles — like the menu, but easier to read. Connection time and traffic are shown
+  on the home screen and in the tray.
 - **Moving from another client.** Subscriptions and keys from v2rayN, Hiddify and
   NekoRay/Throne carry over in a couple of clicks.
 
