@@ -60,6 +60,11 @@ pub fn spawn_verify(app: AppHandle) {
                 if let Some(entry) = state.selected() {
                     crate::outcomes::worked(&state, &entry.key, ms);
                 }
+                // Туннель и zapret «Гибрида» встали: самое время узнать, открываются
+                // ли сервисы. Сюда приходят подключения с проверкой туннеля (окно, трей,
+                // профиль сети, сон); без неё (автопереключение) проверку сервисов
+                // запускает `connect_current`.
+                crate::services::spawn_after_connect(app.clone(), Duration::ZERO);
             }
             // Сбой уже подтверждён несколькими попытками: автопереключение берётся
             // за него сразу, а не на следующей минутной проверке.

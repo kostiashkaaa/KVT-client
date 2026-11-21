@@ -112,6 +112,19 @@ pub(super) async fn connect_current(
     if verify && matches!(status, ServiceStatus::Connected { .. }) {
         tunnel::spawn_verify(app.clone());
     }
+    // Итог сервисов после подключения уже сброшен. Проверку запускает `spawn_verify`
+    // (подключение с проверкой туннеля); здесь — остальные: режим «Zapret» без туннеля и
+    // автопереключение, которое проверяет туннель само. У winws есть несколько секунд,
+    // чтобы встать.
+    let tunnel_checked = verify && matches!(status, ServiceStatus::Connected { .. });
+    if !tunnel_checked
+        && matches!(
+            status,
+            ServiceStatus::Zapret { .. } | ServiceStatus::Connected { .. }
+        )
+    {
+        services::spawn_after_connect(app.clone(), std::time::Duration::from_secs(3));
+    }
     Ok(status)
 }
 
@@ -124,8 +137,12 @@ pub(crate) enum Plan {
 
 /// Подключение к выбранному серверу (или только zapret).
 pub(super) async fn send_plan(state: &AppState) -> Result<ServiceStatus, ConnectionError> {
+    let mut with = None;
     let request = match build_plan(state)? {
-        Plan::Vpn(plan) => Request::Connect(plan),
+        Plan::Vpn(plan) => {
+            with = Some((plan.routing.clone(), plan.zapret.is_some()));
+            Request::Connect(plan)
+        }
         Plan::Zapret(plan) => Request::StartZapret(Box::new(plan)),
     };
     match service_client::call(request).await? {
@@ -133,6 +150,8 @@ pub(super) async fn send_plan(state: &AppState) -> Result<ServiceStatus, Connect
             if let Ok(mut s) = state.session.lock() {
                 *s = session;
             }
+            // Плитки сервисов считают путь по плану, с которым подключились.
+            state.services.connected_with(&status, with);
             Ok(status)
         }
         Response::Error { message } => Err(ConnectionError::remote(message)),

@@ -69,6 +69,8 @@ pub(crate) struct AppState {
     pub(crate) epoch: std::sync::atomic::AtomicU64,
     /// `epoch` последнего отключения по воле пользователя (`user_disconnected`).
     pub(crate) disconnected_at: std::sync::atomic::AtomicU64,
+    /// Итог проверки сервисов на главной (YouTube, Discord…): его читают окно и трей.
+    pub(crate) services: services::Cache,
 }
 
 impl Default for AppState {
@@ -103,6 +105,7 @@ impl Default for AppState {
             pending_page: Mutex::default(),
             epoch: Default::default(),
             disconnected_at: Default::default(),
+            services: Default::default(),
         }
     }
 }

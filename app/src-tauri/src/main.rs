@@ -29,6 +29,7 @@ mod outcomes;
 mod power;
 mod prober;
 mod service_client;
+mod services;
 mod settings;
 mod state;
 mod store;
@@ -163,6 +164,8 @@ fn main() {
             dns_catalog,
             dnscheck::dns_check,
             troubleshoot::troubleshoot,
+            services::services_last,
+            services::services_check,
             netprofile::current_network,
             zapret::zapret_strategies,
             tgproxy::tg_proxy_status,
