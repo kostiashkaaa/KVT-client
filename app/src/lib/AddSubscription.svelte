@@ -1,6 +1,7 @@
 <script lang="ts">
   import { count, t } from "./i18n";
   import Icon from "./Icon.svelte";
+  import { addLines, imageFromPaste, readClipboard, scanImage, type ScanError } from "./qr/scan";
 
   let {
     onadd,
@@ -13,18 +14,76 @@
     oncancel?: () => void;
   } = $props();
   let value = $state("");
+  /** Идёт поиск QR-кода на картинке. */
+  let scanning = $state(false);
+  /** Что не вышло с картинкой (или «ищу»); пусто — подсказка про найденное. */
+  let note = $state("");
+  let fileInput = $state<HTMLInputElement>();
 
   function focus(node: HTMLTextAreaElement) {
     if (oncancel) node.focus();
   }
 
-  // Буфер обмена читается только по нажатию — никакого фонового чтения.
+  // Буфер обмена читается только по нажатию — никакого фонового чтения. В нём может
+  // лежать и картинка с QR-кодом (снимок экрана): её читаем так же, как файл.
   async function paste() {
     try {
-      value = await navigator.clipboard.readText();
+      const clip = await readClipboard();
+      if (clip.image) {
+        await scan(clip.image);
+      } else {
+        value = clip.text;
+        note = "";
+      }
     } catch {
       /* доступ к буферу запрещён — пользователь вставит вручную */
     }
+  }
+
+  /** QR-код с картинки — в поле, как вставка: проверить глазами и нажать «Добавить». */
+  async function scan(image: Blob) {
+    if (scanning) return;
+    scanning = true;
+    note = t("Ищу QR-код…", "Looking for a QR code…");
+    try {
+      const result = await scanImage(image);
+      if ("texts" in result) {
+        value = addLines(value, result.texts);
+        note = "";
+      } else {
+        note = errorText(result.error);
+      }
+    } finally {
+      scanning = false;
+    }
+  }
+
+  function errorText(error: ScanError): string {
+    switch (error) {
+      case "not_found":
+        return t("На картинке нет QR-кода. Нужна картинка, где код виден целиком.", "No QR code in the image. The whole code must be visible.");
+      case "unreadable":
+        return t("QR-код нашёл, но не прочитал: картинка мелкая или размытая. Попробуйте крупнее.", "Found a QR code but couldn't read it: the image is small or blurry. Try a larger one.");
+      case "too_big":
+        return t("Файл больше 20 МБ — это не похоже на снимок QR-кода.", "The file is over 20 MB — that doesn't look like a QR code snapshot.");
+      default:
+        return t("Не удалось открыть картинку.", "Couldn't open the image.");
+    }
+  }
+
+  function pickFile(e: Event & { currentTarget: HTMLInputElement }) {
+    const file = e.currentTarget.files?.[0];
+    // Тот же файл можно выбрать ещё раз: без сброса событие не повторится.
+    e.currentTarget.value = "";
+    if (file) void scan(file);
+  }
+
+  // Ctrl+V с картинкой в буфере: текст вставляется как обычно, картинку читаем сами.
+  function onpaste(e: ClipboardEvent) {
+    const image = imageFromPaste(e.clipboardData);
+    if (!image) return;
+    e.preventDefault();
+    void scan(image);
   }
 
   // Подсказка «что найдено» — грубый подсчёт для глаз, разбирает вставку Rust.
@@ -63,11 +122,11 @@
   });
 </script>
 
-<section class="card empty" class:dialog={!!oncancel}>
+<section class="card empty" class:dialog={!!oncancel} {onpaste}>
   <div class="icon" aria-hidden="true"><Icon name="shield" size={32} /></div>
   <h2 id="add-title">{oncancel ? t("Добавить подписку или ключ", "Add a subscription or key") : t("Добавьте подписку", "Add a subscription")}</h2>
   <p class="muted">
-    {t("Ссылка на подписку (https://…), ключи серверов или конфиг Xray / sing-box. Можно несколько сразу и вместе с текстом из письма провайдера — KVT найдёт нужное.", "A subscription link (https://…), server keys or an Xray / sing-box config. You can paste several at once, even with the text of your provider's email — KVT will find what it needs.")}
+    {t("Ссылка на подписку (https://…), ключи серверов или конфиг Xray / sing-box. Можно несколько сразу и вместе с текстом из письма провайдера — KVT найдёт нужное. QR-код — из файла или из буфера обмена.", "A subscription link (https://…), server keys or an Xray / sing-box config. You can paste several at once, even with the text of your provider's email — KVT will find what it needs. A QR code works too — from a file or the clipboard.")}
   </p>
 
   <textarea
@@ -79,6 +138,7 @@
     disabled={busy}
     aria-label={t("Ссылки или подписка", "Links or subscription")}
     use:focus
+    oninput={() => (note = "")}
     onkeydown={(e) => {
       if (e.key === "Escape" && oncancel) oncancel();
       if (e.key === "Enter" && e.ctrlKey && value.trim() && !busy) onadd(value);
@@ -88,6 +148,8 @@
   <p class="caption found" aria-live="polite">
     {#if busy && found.urls > 1}
       {t("Загружаю подписки по очереди — к одному провайдеру KVT ходит с паузой, это может занять минуту.", "Loading subscriptions one by one — KVT pauses between requests to the same provider, this may take a minute.")}
+    {:else if note}
+      {note}
     {:else if found.text}
       {found.text}
     {:else}
@@ -99,7 +161,16 @@
     {#if oncancel}
       <button class="btn" disabled={busy} onclick={oncancel}>{t("Отмена", "Cancel")}</button>
     {/if}
-    <button class="btn" disabled={busy} onclick={paste}><Icon name="paste" size={16} />{t("Вставить из буфера", "Paste from clipboard")}</button>
+    <input bind:this={fileInput} class="file" type="file" accept="image/*" tabindex="-1" aria-hidden="true" onchange={pickFile} />
+    <button
+      class="btn"
+      disabled={busy || scanning}
+      title={t("QR-код из файла с картинкой", "QR code from an image file")}
+      onclick={() => fileInput?.click()}
+    >
+      <Icon name="qr" size={16} />{t("Из картинки", "From an image")}
+    </button>
+    <button class="btn" disabled={busy || scanning} onclick={paste}><Icon name="paste" size={16} />{t("Вставить из буфера", "Paste from clipboard")}</button>
     <button
       class="btn btn-primary"
       class:busy
@@ -170,6 +241,11 @@
     max-width: 520px;
     min-height: 18px;
     margin-top: calc(-1 * var(--space-1));
+  }
+
+  /* Выбор файла открывает кнопка «Из картинки»; сам элемент не показываем. */
+  .file {
+    display: none;
   }
 
   .actions {

@@ -21,6 +21,7 @@ pub mod model;
 pub mod netlog;
 pub mod parser;
 pub mod probe;
+pub mod qr;
 pub mod redact;
 pub mod routing;
 pub mod rulesync;

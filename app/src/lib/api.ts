@@ -72,6 +72,11 @@ export {
   siteCheck,
 } from "./api/sitecheck";
 export {
+  type QrOutcome,
+  type GrayImage,
+  qrDecode,
+} from "./api/qr";
+export {
   type VpnSideView,
   type VpnSide,
   type VpnPathSide,

@@ -11,6 +11,9 @@ base64.workspace = true
 percent-encoding.workspace = true
 # DoH для имён серверов при проверке (`dns::names`). Schannel, как у окна и службы.
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "native-tls-alpn", "http2"] }
+# Распознавание QR-кода на картинке (`qr`): чистый Rust, без сети; картинку в яркости
+# отдаёт окно, поэтому декодеры изображений (feature `img`) не нужны.
+rqrr = { version = "0.11", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
@@ -23,6 +26,8 @@ zeroize.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Рисует QR-коды для тестов распознавания; в сборку не входит.
+qrcode = { version = "0.15", default-features = false }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

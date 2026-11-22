@@ -28,6 +28,7 @@ mod notify;
 mod outcomes;
 mod power;
 mod prober;
+mod qr;
 mod service_client;
 mod services;
 mod settings;
@@ -143,6 +144,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             subs::add_input,
+            qr::qr_decode,
             subs::rename_subscription,
             subs::refresh_all_subscriptions,
             subs::open_subscription_link,

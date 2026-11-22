@@ -15,6 +15,7 @@ KVT распространяется по лицензии GNU GPL версии 
 | Cygwin (cygwin1.dll) | Библиотека, нужная winws | LGPL-3.0 | https://cygwin.com |
 | tg-ws-proxy-rs (valnesfjord) | Прокси для Telegram Desktop в режимах «Zapret» и «Гибрид»; порт программы tg-ws-proxy (Flowseal, MIT) | MIT | https://github.com/valnesfjord/tg-ws-proxy-rs |
 | flag-icons | Флаги стран в списке серверов | MIT | https://github.com/lipis/flag-icons |
+| rqrr (по мотивам quirc) | Чтение QR-кода с картинки при добавлении подписки | (MIT или Apache-2.0) и ISC | https://github.com/WanzenBug/rqrr |
 | Tauri | Окно приложения и трей | MIT / Apache-2.0 | https://github.com/tauri-apps/tauri |
 | Svelte | Интерфейс | MIT | https://github.com/sveltejs/svelte |
 | Списки itdoginfo (podkop) | Маршрутизация: что открывать через VPN | по условиям репозитория | https://github.com/itdoginfo/allow-domains |
