@@ -12,6 +12,7 @@ pub mod core_select;
 pub mod diaglog;
 pub mod dns;
 pub mod flag;
+pub mod geo;
 pub mod governor;
 pub mod i18n;
 pub mod ipc;

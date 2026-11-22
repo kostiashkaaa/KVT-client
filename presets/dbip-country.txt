@@ -1,0 +1,10 @@
+source=dbip-country-lite-2026-11.csv.gz
+url=https://download.db-ip.com/free/dbip-country-lite-2026-11.csv.gz
+sha256_csv_gz=e5c8459d638a272ece7f4d7cfa49dce18d91b4f403f6940ba9249bf0db3781fd
+license=CC BY 4.0 https://creativecommons.org/licenses/by/4.0/
+attribution=IP Geolocation by DB-IP https://db-ip.com
+changes=repacked into the compact KVT format (crates/kvt-core/src/geo)
+countries=251
+ranges_v4=362998
+ranges_v6=365305
+bytes=4372645

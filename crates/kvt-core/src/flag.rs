@@ -41,6 +41,13 @@ fn known(code: &str) -> bool {
     KNOWN.split_whitespace().any(|k| k == code)
 }
 
+/// Флаг по коду страны из базы IP-адресов (`geo`): строчный код, если для него есть
+/// картинка. Незнакомые («ZZ» — адрес не распределён или частный) флага не дают.
+pub fn from_country(code: [u8; 2]) -> Option<String> {
+    let code = std::str::from_utf8(&code).ok()?.to_ascii_lowercase();
+    known(&code).then_some(code)
+}
+
 /// Флаг-эмодзи в начале `chars`: код страны (`"ru"`), даже если картинки для него нет.
 fn flag_at(chars: &[char]) -> Option<String> {
     let a = regional(*chars.first()?)?;
