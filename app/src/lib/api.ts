@@ -72,6 +72,14 @@ export {
   siteCheck,
 } from "./api/sitecheck";
 export {
+  type VpnSideView,
+  type VpnSide,
+  type VpnPathSide,
+  type VpnSkipped,
+  type VpnReport,
+  vpnCheck,
+} from "./api/vpncheck";
+export {
   type PathStatus,
   type ResolverReport,
   type SpoofFinding,

@@ -101,8 +101,9 @@ fn report(
     }
 }
 
-/// Что сейчас работает и включён ли kill switch.
-async fn detect(state: &AppState) -> (Running, bool) {
+/// Что сейчас работает и включён ли kill switch. Пользуется и «Проверить VPN»
+/// (`vpncheck`): пути и подписи у проверок одни и те же.
+pub(crate) async fn detect(state: &AppState) -> (Running, bool) {
     let kill_switch = state.choice.lock().map(|c| c.kill_switch).unwrap_or(false);
     let running = match crate::query_status().await.ok().flatten() {
         Some(ServiceStatus::Connected { .. }) => {

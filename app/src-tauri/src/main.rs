@@ -41,6 +41,7 @@ mod troubleshoot;
 mod tunnel;
 mod updates;
 mod view;
+mod vpncheck;
 mod watchdog;
 mod winreg;
 mod zapret;
@@ -166,6 +167,7 @@ fn main() {
             dnscheck::dns_check,
             troubleshoot::troubleshoot,
             sitecheck::site_check,
+            vpncheck::vpn_check,
             services::services_last,
             services::services_check,
             services::services_pick,

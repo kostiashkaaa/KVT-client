@@ -30,6 +30,7 @@ pub mod sitecheck;
 pub mod subscription;
 pub mod tester;
 pub mod tgproxy;
+pub mod vpncheck;
 pub mod zapret;
 
 pub use model::Server;

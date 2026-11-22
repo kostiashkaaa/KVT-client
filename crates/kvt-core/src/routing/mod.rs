@@ -66,6 +66,38 @@ pub struct RoutingPlan {
 pub const HEALTH_URL: &str = "http://www.cloudflare.com/cdn-cgi/trace";
 pub const HEALTH_HOST: &str = "www.cloudflare.com";
 
+/// Источники «Проверить VPN»: `(адрес, подпись)` по порядку, пока один не
+/// ответит. Cloudflare может быть недоступен из России — у каждого назначения
+/// есть запасные: sypexgeo — российский сервис (ближе всех к «напрямую» из
+/// России), ipwho.is — HTTPS. Ответ каждого разбирается отдельно (`vpncheck`).
+pub const TRACE_URLS: &[(&str, &str)] = &[
+    ("http://www.cloudflare.com/cdn-cgi/trace", "cloudflare"),
+    ("http://api.sypexgeo.net/", "sypexgeo"),
+    ("https://ipwho.is/", "ipwho.is"),
+];
+
+/// Замер скорости: читаем до конца окна (5 с), размер файла больше окна.
+/// Запасной — файл OVH: проверить его доступность из России вживую; если не
+/// отвечает, скорость просто «не измерилась», проверка от этого не ломается.
+pub const SPEED_URLS: &[(&str, &str)] = &[
+    (
+        "http://speed.cloudflare.com/__down?bytes=4000000",
+        "cloudflare",
+    ),
+    ("http://proof.ovh.net/files/10Mb.dat", "ovh"),
+];
+
+/// Имена источников «Проверить VPN» — их ведёт через VPN системное правило
+/// (`with_health_check`): иначе при «остальное напрямую» пробы шли бы мимо
+/// туннеля, и «через VPN» показывал бы домашний адрес.
+pub const PROBE_HOSTS: &[&str] = &[
+    "www.cloudflare.com",
+    "speed.cloudflare.com",
+    "api.sypexgeo.net",
+    "ipwho.is",
+    "proof.ovh.net",
+];
+
 /// Откуда KVT и служба скачивают списки и комплект zapret.
 pub const UPDATE_HOSTS: &[&str] = &[
     "api.github.com",
@@ -176,14 +208,24 @@ impl RoutingPlan {
         self
     }
 
-    /// Проверка связи через туннель всегда идёт через VPN, в любом режиме
-    /// маршрутизации: иначе при «остальное напрямую» она проверяла бы не туннель.
+    /// Проверка связи через туннель и «Проверить VPN» (адрес выхода и скорость)
+    /// всегда идут через VPN, в любом режиме маршрутизации: иначе при «остальном
+    /// напрямую» они проверяли бы не туннель.
     pub fn with_health_check(mut self) -> Self {
-        self.rules.push(Rule {
-            layer: Layer::System,
-            matcher: Matcher::DomainSuffix(HEALTH_HOST.into()),
-            action: Action::Proxy,
-        });
+        for host in PROBE_HOSTS {
+            // Область проверки туннеля оставлена суффиксом, как была; остальные
+            // имена — точные, чтобы не тащить за VPN чужие поддомены.
+            let matcher = if *host == HEALTH_HOST {
+                Matcher::DomainSuffix((*host).into())
+            } else {
+                Matcher::Domain((*host).into())
+            };
+            self.rules.push(Rule {
+                layer: Layer::System,
+                matcher,
+                action: Action::Proxy,
+            });
+        }
         self
     }
 

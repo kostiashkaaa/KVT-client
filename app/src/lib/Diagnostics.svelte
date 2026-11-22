@@ -24,6 +24,7 @@
   import PcAudit from "./PcAudit.svelte";
   import SiteCheck from "./sitecheck/SiteCheck.svelte";
   import ServiceTiles from "./services/ServiceTiles.svelte";
+  import VpnCheck from "./vpncheck/VpnCheck.svelte";
   import {
     dnsCatalog,
     dnsCheck,
@@ -205,6 +206,8 @@
     <DiagExport />
   </div>
 </section>
+
+<VpnCheck />
 
 <SiteCheck />
 

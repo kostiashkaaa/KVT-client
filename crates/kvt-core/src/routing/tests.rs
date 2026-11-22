@@ -29,6 +29,12 @@ fn health_check_goes_through_vpn_even_when_everything_else_is_direct() {
     });
     assert!(plan.validate().is_ok());
     assert_eq!(plan.resolve_domain(HEALTH_HOST), Action::Proxy);
+    // Источники «Проверить VPN» — тоже через туннель, включая запасные.
+    for host in PROBE_HOSTS {
+        let resolved = plan.resolve_domain(host);
+        assert_eq!(resolved, Action::Proxy, "{host}");
+    }
+    assert_eq!(plan.resolve_domain("other.cloudflare.com"), Action::Direct);
 }
 
 #[test]
