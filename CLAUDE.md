@@ -101,6 +101,9 @@ kill switch. Rust (Tauri 2) + Svelte 5. Сборка, запуск службы,
 - Версия живёт в трёх местах: `Cargo.toml` (workspace), `app/package.json`,
   `app/src-tauri/tauri.conf.json`; `release.yml` сверяет тег с `tauri.conf.json`. Плюс
   раздел в `CHANGELOG.md`.
+- PowerShell портит UTF-8 без BOM: `Get-Content` читает кириллицу как CP1251, и запись
+  назад (`WriteAllLines` и подобное) оставляет двойную кодировку. Правки файлов — только
+  инструментами редактирования, PowerShell — для команд сборки.
 
 ## Порядок работы
 
