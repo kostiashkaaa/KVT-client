@@ -75,8 +75,8 @@ language.
 - **Subscriptions and keys in one list.** Paste a subscription URL or `vless://`,
   `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`, `anytls://` keys. Servers show up grouped, with country flags,
   search and a ping check. Subscriptions refresh on their own. A QR code works too:
-  from an image file or the clipboard (a screenshot), read on your computer without
-  the network.
+  from an image file, the clipboard or selected right on the screen, read on your
+  computer without the network.
 - **Split routing out of the box.** Russian sites go direct, blocked ones go through
   the VPN, based on the [itdoginfo](https://github.com/itdoginfo/allow-domains) and
   [runetfreedom](https://github.com/runetfreedom/russia-v2ray-rules-dat) lists.

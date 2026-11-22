@@ -28,6 +28,22 @@ export function packQrRequest(image: GrayImage): Uint8Array {
   return body;
 }
 
+/** Чем кончилось выделение области экрана; сам снимок — в буфере обмена после `captured`. */
+export type ScreenClip = "captured" | "cancelled" | "timed_out" | "unsupported" | "busy";
+
+/**
+ * Выделить область экрана системным инструментом снимков (как Win+Shift+S): окно KVT
+ * сворачивается, а команда ждёт снимка в буфере обмена и возвращает окно.
+ */
+export async function qrScreenClip(): Promise<ScreenClip> {
+  if (!inTauri) {
+    // Превью без Rust: инструмента снимков нет — окно покажет подсказку про Win+Shift+S.
+    await new Promise((r) => setTimeout(r, 1500));
+    return "unsupported";
+  }
+  return invoke<ScreenClip>("qr_screen_clip");
+}
+
 /** Найти QR-коды на картинке и прочитать их. */
 export async function qrDecode(image: GrayImage): Promise<QrOutcome> {
   if (!inTauri) {

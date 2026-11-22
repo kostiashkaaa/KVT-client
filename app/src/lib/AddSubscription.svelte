@@ -1,7 +1,8 @@
 <script lang="ts">
   import { count, t } from "./i18n";
   import Icon from "./Icon.svelte";
-  import { addLines, imageFromPaste, readClipboard, scanImage, type ScanError } from "./qr/scan";
+  import { qrScreenClip, type ScreenClip } from "./api";
+  import { addLines, imageFromPaste, readClipboard, scanImage, waitForFocus, type ScanError } from "./qr/scan";
 
   let {
     onadd,
@@ -44,17 +45,71 @@
   async function scan(image: Blob) {
     if (scanning) return;
     scanning = true;
-    note = t("Ищу QR-код…", "Looking for a QR code…");
     try {
-      const result = await scanImage(image);
-      if ("texts" in result) {
-        value = addLines(value, result.texts);
-        note = "";
-      } else {
-        note = errorText(result.error);
-      }
+      await decode(image);
     } finally {
       scanning = false;
+    }
+  }
+
+  /** То же без флага `scanning`: его держит вызывающий. */
+  async function decode(image: Blob) {
+    note = t("Ищу QR-код…", "Looking for a QR code…");
+    const result = await scanImage(image);
+    if ("texts" in result) {
+      value = addLines(value, result.texts);
+      note = "";
+    } else {
+      note = errorText(result.error);
+    }
+  }
+
+  /**
+   * «С экрана»: окно сворачивается, область выделяет системный инструмент снимков
+   * (как Win+Shift+S), снимок приходит в буфер обмена — дальше как «Вставить из буфера».
+   */
+  async function fromScreen() {
+    if (scanning) return;
+    scanning = true;
+    note = t("Выделите область с QR-кодом на экране.", "Select the area with the QR code on the screen.");
+    try {
+      const result = await qrScreenClip();
+      if (result !== "captured") {
+        note = screenText(result);
+        return;
+      }
+      // Окно только что вернулось: без фокуса WebView не отдаст буфер обмена.
+      const hint = t(
+        "Снимок в буфере обмена. Нажмите «Вставить из буфера».",
+        "The snip is on the clipboard. Click “Paste from clipboard”.",
+      );
+      if (!(await waitForFocus())) {
+        note = hint;
+        return;
+      }
+      const clip = await readClipboard().catch(() => null);
+      if (clip?.image) await decode(clip.image);
+      else note = hint;
+    } finally {
+      scanning = false;
+    }
+  }
+
+  function screenText(result: ScreenClip): string {
+    switch (result) {
+      case "cancelled":
+        return t("Выделение отменено.", "Selection cancelled.");
+      case "timed_out":
+        return t("Область не выделили — время вышло.", "No area was selected — timed out.");
+      case "unsupported":
+        return t(
+          "Выделение области здесь недоступно. Нажмите Win+Shift+S, выделите код и «Вставить из буфера».",
+          "Area selection isn't available here. Press Win+Shift+S, select the code, then “Paste from clipboard”.",
+        );
+      case "busy":
+        return t("Выделение уже идёт.", "Selection is already in progress.");
+      default:
+        return "";
     }
   }
 
@@ -126,7 +181,7 @@
   <div class="icon" aria-hidden="true"><Icon name="shield" size={32} /></div>
   <h2 id="add-title">{oncancel ? t("Добавить подписку или ключ", "Add a subscription or key") : t("Добавьте подписку", "Add a subscription")}</h2>
   <p class="muted">
-    {t("Ссылка на подписку (https://…), ключи серверов или конфиг Xray / sing-box. Можно несколько сразу и вместе с текстом из письма провайдера — KVT найдёт нужное. QR-код — из файла или из буфера обмена.", "A subscription link (https://…), server keys or an Xray / sing-box config. You can paste several at once, even with the text of your provider's email — KVT will find what it needs. A QR code works too — from a file or the clipboard.")}
+    {t("Ссылка на подписку (https://…), ключи серверов или конфиг Xray / sing-box. Можно несколько сразу и вместе с текстом из письма провайдера — KVT найдёт нужное. QR-код — из файла, из буфера обмена или прямо с экрана.", "A subscription link (https://…), server keys or an Xray / sing-box config. You can paste several at once, even with the text of your provider's email — KVT will find what it needs. A QR code works too — from a file, the clipboard or right from the screen.")}
   </p>
 
   <textarea
@@ -169,6 +224,14 @@
       onclick={() => fileInput?.click()}
     >
       <Icon name="qr" size={16} />{t("Из картинки", "From an image")}
+    </button>
+    <button
+      class="btn"
+      disabled={busy || scanning}
+      title={t("Выделить QR-код на экране", "Select a QR code on the screen")}
+      onclick={() => void fromScreen()}
+    >
+      <Icon name="crop" size={16} />{t("С экрана", "From the screen")}
     </button>
     <button class="btn" disabled={busy || scanning} onclick={paste}><Icon name="paste" size={16} />{t("Вставить из буфера", "Paste from clipboard")}</button>
     <button

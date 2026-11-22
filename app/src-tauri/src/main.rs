@@ -145,6 +145,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             subs::add_input,
             qr::qr_decode,
+            qr::screen::qr_screen_clip,
             subs::rename_subscription,
             subs::refresh_all_subscriptions,
             subs::open_subscription_link,

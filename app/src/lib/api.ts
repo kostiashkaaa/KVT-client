@@ -74,7 +74,9 @@ export {
 export {
   type QrOutcome,
   type GrayImage,
+  type ScreenClip,
   qrDecode,
+  qrScreenClip,
 } from "./api/qr";
 export {
   type VpnSideView,

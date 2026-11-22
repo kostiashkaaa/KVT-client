@@ -27,6 +27,18 @@ export async function scanImage(blob: Blob): Promise<ScanResult> {
   }
 }
 
+/**
+ * Ждёт, пока окно получит фокус: буфер обмена WebView читает только из окна в
+ * фокусе, а после выделения области окно только что вернулось. `true` — фокус есть.
+ */
+export async function waitForFocus(timeoutMs = 2000): Promise<boolean> {
+  for (let waited = 0; !document.hasFocus(); waited += 100) {
+    if (waited >= timeoutMs) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return true;
+}
+
 /** Тексты — в поле, каждый с новой строки; то, что уже в поле, остаётся. */
 export function addLines(current: string, texts: string[]): string {
   const head = current.trimEnd();
