@@ -164,7 +164,9 @@ pub(crate) fn content(sub: &Subscription) -> (SubscriptionContent, usize) {
     let filter = &sub.options.filter;
     let before = content.servers.len();
     if !filter.is_empty() {
-        content.servers.retain(|s| filter.allows(&s.name));
+        content
+            .servers
+            .retain(|s| filter.allows(&s.name, crate::geo::address_flag(&s.address).as_deref()));
     }
     let hidden = before - content.servers.len();
     (content, hidden)
@@ -373,6 +375,39 @@ mod tests {
         assert_eq!(entries[0].server.name, "A");
         assert_eq!(groups[0].servers.len(), 1);
         assert_eq!(content(&store.subscriptions[0]).1, 1);
+    }
+
+    /// Код страны в фильтре находит сервер и по флагу, нарисованному по адресу-IP:
+    /// иначе у сервера в списке стоит 🇺🇸, а фильтр «us» его бы не оставил.
+    #[test]
+    fn filter_by_country_code_sees_the_flag_from_the_address() {
+        let mut store = Store::load(std::env::temp_dir().join("kvt-catalog-filter-geo.json"));
+        store.subscriptions.clear();
+        let us = A.replace("203.0.113.10", "8.8.8.8").replace("#A", "#Home");
+        let ru = A
+            .replace("203.0.113.10", "77.88.8.8")
+            .replace("#A", "#Office");
+        let domain = A
+            .replace("203.0.113.10", "node.example.com")
+            .replace("#A", "#Cloud");
+        let id = store.add(
+            None,
+            format!(
+                "{us}
+{ru}
+{domain}"
+            ),
+            Default::default(),
+            0,
+        );
+        let options = crate::store::SubOptions {
+            filter: kvt_core::subscription::NameFilter::parse("us", "").unwrap(),
+            ..Default::default()
+        };
+        store.set_options(&id, options, crate::store::OwnHwid::Keep);
+        let (_, entries) = build(&store);
+        let names: Vec<&str> = entries.iter().map(|e| e.server.name.as_str()).collect();
+        assert_eq!(names, ["Home"]);
     }
 
     /// Подписка до и после обновления провайдером: выбранный — первый сервер «до».

@@ -9,12 +9,23 @@ pub(crate) fn display_name(s: &Server) -> String {
     kvt_core::flag::plain_name(&s.name)
 }
 
+/// Название без ведущего флага и флаг страны для картинки: из названия, а если его
+/// нет — по адресу-IP сервера (`geo`). Одно правило для всех мест, где окно рисует
+/// флаг (список, главная, трей, ключи вручную); фильтр «Расширенных» (`catalog`)
+/// видит тот же флаг.
+pub(crate) fn name_and_flag(s: &Server) -> (String, Option<String>) {
+    let f = kvt_core::flag::split_flags(&s.name);
+    let flag = f.flag.or_else(|| crate::geo::address_flag(&s.address));
+    (f.name, flag)
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerSummary {
     pub(crate) key: String,
     pub(crate) name: String,
-    /// Страна по первому флагу в названии (`nl`).
+    /// Страна (`nl`): по первому флагу в названии, а если его нет — по адресу-IP
+    /// сервера (`geo`, без сети; у доменных адресов флага нет).
     pub(crate) flag: Option<String>,
     // Адреса, порта и SNI нет: окну они не нужны, а это данные сервера (CLAUDE.md).
     pub(crate) protocol: &'static str,
@@ -38,11 +49,11 @@ impl ServerSummary {
             Security::Tls(_) => "tls",
             Security::Reality(_) => "reality",
         };
-        let f = kvt_core::flag::split_flags(&s.name);
+        let (name, flag) = name_and_flag(s);
         Self {
             key: key.to_owned(),
-            name: f.name,
-            flag: f.flag,
+            name,
+            flag,
             protocol: s.protocol.kind(),
             transport,
             security,
@@ -140,4 +151,33 @@ pub(super) fn list_catalog() -> &'static [kvt_core::lists::ListInfo] {
 #[tauri::command]
 pub(super) fn check_route_target(target: String) -> Result<String, String> {
     Ok(presets::custom_display(&target)?.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kvt_core::parser::{parse_uri, Entry as Parsed};
+
+    fn summary(address: &str, name: &str) -> ServerSummary {
+        let uri = format!(
+            "vless://b831381d-6324-4d53-ad4f-8cda48b30811@{address}:443?security=reality&sni=a.com&pbk=Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw#{name}"
+        );
+        match parse_uri(&uri).unwrap() {
+            Parsed::Server(s) => ServerSummary::new(&s, "k"),
+            Parsed::Info(_) => panic!("ожидался сервер"),
+        }
+    }
+
+    #[test]
+    fn flag_comes_from_the_name_else_from_an_ip_address() {
+        // Нет эмодзи, адрес — IP: флаг по адресу, название как есть.
+        let s = summary("8.8.8.8", "Home");
+        assert_eq!((s.flag.as_deref(), s.name.as_str()), (Some("us"), "Home"));
+        // Эмодзи в названии главнее адреса: провайдер знает лучше.
+        let s = summary("8.8.8.8", "%F0%9F%87%B3%F0%9F%87%B1%20Home");
+        assert_eq!((s.flag.as_deref(), s.name.as_str()), (Some("nl"), "Home"));
+        // Домен — страну без DNS не узнать; частный адрес страны не имеет.
+        assert_eq!(summary("node.example.com", "Cloud").flag, None);
+        assert_eq!(summary("192.168.1.10", "Lan").flag, None);
+    }
 }

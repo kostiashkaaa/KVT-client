@@ -93,6 +93,7 @@ export interface ManualKey {
   name: string;
   /** Название без ведущего флага — для списка; он рисуется картинкой (`flag`). */
   title: string;
+  /** Страна: из флага в названии, а если его нет — по адресу-IP сервера. */
   flag: string | null;
   protocol: string;
   transport: string;

@@ -191,10 +191,14 @@ impl NameFilter {
         self.keep.is_empty() && self.drop.is_empty()
     }
 
-    pub fn allows(&self, name: &str) -> bool {
+    /// Подходит ли сервер. Код страны находит его по видимому флагу: флаг из названия,
+    /// а если его нет — флаг по адресу-IP (`geo`), который окно рисует вместо
+    /// эмодзи. Иначе «NL» не находил бы сервер, у которого в списке стоит 🇳🇱.
+    pub fn allows(&self, name: &str, address_flag: Option<&str>) -> bool {
         let lower = name.to_lowercase();
-        let flag = crate::flag::split_flags(name).flag;
-        let hit = |w: &String| lower.contains(w.as_str()) || flag.as_deref() == Some(w.as_str());
+        let name_flag = crate::flag::split_flags(name).flag;
+        let flag = name_flag.as_deref().or(address_flag);
+        let hit = |w: &String| lower.contains(w.as_str()) || flag == Some(w.as_str());
         (self.keep.is_empty() || self.keep.iter().any(hit)) && !self.drop.iter().any(hit)
     }
 }
@@ -651,15 +655,35 @@ X-Evil: 1"
     #[test]
     fn name_filter_keeps_and_drops() {
         let f = NameFilter::parse("NL, германия", "резерв").unwrap();
-        assert!(f.allows("🇳🇱 Amsterdam"));
-        assert!(f.allows("Германия 1"));
-        assert!(!f.allows("🇳🇱 Amsterdam резерв"));
-        assert!(!f.allows("🇫🇮 Helsinki"));
+        assert!(f.allows("🇳🇱 Amsterdam", None));
+        assert!(f.allows("Германия 1", None));
+        assert!(!f.allows("🇳🇱 Amsterdam резерв", None));
+        assert!(!f.allows("🇫🇮 Helsinki", None));
         // Пустой «оставить» — всё, кроме убранного.
-        let f = NameFilter::parse("", "Test;\nTEST").unwrap();
+        let f = NameFilter::parse(
+            "",
+            "Test;
+TEST",
+        )
+        .unwrap();
         assert_eq!(f.drop, ["test"]);
-        assert!(f.allows("Рабочий") && !f.allows("Test server"));
+        assert!(f.allows("Рабочий", None) && !f.allows("Test server", None));
         assert!(NameFilter::parse(" , ;", "").unwrap().is_empty());
+    }
+
+    #[test]
+    fn name_filter_matches_the_flag_the_list_shows() {
+        // Сервер без флага в названии, но с флагом по адресу: код страны его находит.
+        let keep = NameFilter::parse("nl", "").unwrap();
+        assert!(keep.allows("Home", Some("nl")));
+        assert!(!keep.allows("Home", Some("de")));
+        assert!(!keep.allows("Home", None));
+        let drop = NameFilter::parse("", "ru").unwrap();
+        assert!(!drop.allows("Home", Some("ru")));
+        assert!(drop.allows("Home", Some("nl")));
+        // Флаг из названия главнее адреса: список рисует именно его.
+        assert!(!keep.allows("🇩🇪 Berlin", Some("nl")));
+        assert!(keep.allows("🇳🇱 Amsterdam", Some("de")));
     }
 
     #[test]

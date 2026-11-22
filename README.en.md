@@ -73,7 +73,7 @@ language.
 ## Features
 
 - **Subscriptions and keys in one list.** Paste a subscription URL or `vless://`,
-  `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`, `anytls://` keys. Servers show up grouped, with country flags,
+  `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`, `anytls://` keys. Servers show up grouped, with country flags (taken from a local database when the name has none and the address is an IP),
   search and a ping check. Subscriptions refresh on their own. A QR code works too:
   from an image file, the clipboard or selected right on the screen, read on your
   computer without the network.

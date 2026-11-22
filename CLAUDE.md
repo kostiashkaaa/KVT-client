@@ -18,7 +18,8 @@ kill switch. Rust (Tauri 2) + Svelte 5. Сборка, запуск службы,
   Две страницы: окно — `index.html` (`src/main.ts`), мини-панель из трея — `mini.html`
   (`src/mini/`, в превью `/mini.html?demo`; Rust — `tray/panel/`). `proto.html` — прототип.
 - `presets/` — данные (сетевая политика, правила ошибок ядер, `services.json` — сервисы
-  для плиток на вкладке «Проверка»), не код.
+  для плиток на вкладке «Проверка», `dbip-country.bin` — база стран по IP для флагов,
+  вшита в `kvt.exe`, обновляет `scripts/update-dbip.ps1`), не код.
 - `ARCHITECTURE.md` — открытое устройство и «Чего не делаем». `docs/` — локальный план
   (`docs/ARCHITECTURE.md` — открытые этапы и «Чего не делаем», `docs/HISTORY.md` — закрытые
   этапы и релизы, чек-лист релиза), в git не идёт.

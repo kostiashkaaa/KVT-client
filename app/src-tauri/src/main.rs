@@ -17,6 +17,7 @@ mod dnscheck;
 mod dpapi;
 mod errors;
 mod fetch;
+mod geo;
 mod health;
 mod journal;
 mod lang;

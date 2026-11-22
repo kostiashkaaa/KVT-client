@@ -61,6 +61,14 @@ Windows 10 или 11, Rust (stable, MSVC), Node.js 20+, Visual Studio Build Tool
 Служба принимает команды только от `kvt.exe` из своего каталога, поэтому окно и
 служба для разработки должны лежать в одном `target\debug`.
 
+### База стран по IP
+
+Флаги серверов без эмодзи берутся из `presets/dbip-country.bin` (DB-IP Country Lite,
+CC BY 4.0), он вшит в `kvt.exe`. Обновлять перед выпуском:
+`powershell -ExecutionPolicy Bypass -File scripts\update-dbip.ps1` (скачивает
+свежий месячный CSV, упаковывает и пишет `presets/dbip-country.txt` с SHA-256).
+Атрибуция DB-IP — в «О программе» и `THIRD-PARTY-NOTICES.md`.
+
 ### Проверки, которым нужны права или сеть
 
 - Kill switch (на несколько секунд закроет интернет этому тесту), из терминала

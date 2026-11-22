@@ -470,13 +470,15 @@
     </label>
   </div>
   <p class="muted">
-    {t("KVT — свободная программа под лицензией GPL-3.0. В составе: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret и Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0).", "KVT is free software under the GPL-3.0 license. Includes: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret and Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0).")}
+    {t("KVT — свободная программа под лицензией GPL-3.0. В составе: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret и Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0). Страна сервера по IP-адресу — база DB-IP Country Lite (CC BY 4.0).", "KVT is free software under the GPL-3.0 license. Includes: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret and Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0). The country of a server by its IP address comes from the DB-IP Country Lite database (CC BY 4.0).")}
   </p>
   <div class="links">
     <button class="btn" onclick={onrestartonboarding}>{t("Подсказки первого запуска", "First-run tips")}</button>
     <button class="btn" onclick={() => void open("releases")}>{t("Страница загрузки", "Download page")}</button>
     <button class="btn" onclick={() => void open("source")}>{t("Исходники", "Source code")}</button>
     <button class="btn" onclick={() => void open("channel")}>{t("Новости в Telegram", "News on Telegram")}</button>
+    <!-- Название и надпись — как просит лицензия DB-IP, на любом языке одинаковые. -->
+    <button class="btn" onclick={() => void open("dbip")}>IP Geolocation by DB-IP</button>
     {#if about?.licenses}
       <button class="btn" onclick={() => void open("licenses")}>{t("Тексты лицензий", "License texts")}</button>
     {/if}

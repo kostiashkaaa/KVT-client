@@ -124,11 +124,24 @@ pub struct ManualKey {
     name: String,
     /// Название без флагов — для списка: Windows рисует флаги-эмодзи буквами.
     title: String,
-    /// Страна из флага — для картинки флага.
+    /// Страна (из флага в названии или по IP-адресу) — для картинки флага.
     flag: Option<String>,
     protocol: &'static str,
     /// Транспорт (`tcp`, `xhttp`…): адрес сервера в окно не уходит.
     transport: &'static str,
+}
+
+/// Ключ, добавленный вручную, для списка: флаг — как у серверов (из названия или по IP).
+fn manual_key(e: &catalog::Entry) -> ManualKey {
+    let (title, flag) = crate::view::name_and_flag(&e.server);
+    ManualKey {
+        key: e.key.clone(),
+        name: e.server.name.clone(),
+        title,
+        flag,
+        protocol: e.server.protocol.kind(),
+        transport: catalog::transport_kind(&e.server.transport),
+    }
 }
 
 #[tauri::command]
@@ -170,17 +183,7 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
                     entries
                         .iter()
                         .filter(|e| e.sub == s.id)
-                        .map(|e| {
-                            let f = kvt_core::flag::split_flags(&e.server.name);
-                            ManualKey {
-                                key: e.key.clone(),
-                                name: e.server.name.clone(),
-                                title: f.name,
-                                flag: f.flag,
-                                protocol: e.server.protocol.kind(),
-                                transport: catalog::transport_kind(&e.server.transport),
-                            }
-                        })
+                        .map(manual_key)
                         .collect()
                 },
                 hidden,
@@ -200,4 +203,47 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
             }
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kvt_core::parser::{parse_uri, Entry as Parsed};
+
+    fn entry(uri: &str) -> catalog::Entry {
+        let server = match parse_uri(uri).unwrap() {
+            Parsed::Server(s) => *s,
+            Parsed::Info(_) => panic!("ожидался сервер"),
+        };
+        catalog::Entry {
+            key: "k".into(),
+            sub: "s".into(),
+            server,
+            same_as: None,
+        }
+    }
+
+    const KEY: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@ADDR:443?security=reality&sni=a.com&pbk=Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw#NAME";
+
+    #[test]
+    fn manual_key_without_emoji_gets_the_flag_from_its_ip() {
+        let key = manual_key(&entry(
+            &KEY.replace("ADDR", "8.8.8.8").replace("NAME", "Home"),
+        ));
+        assert_eq!(
+            (key.flag.as_deref(), key.title.as_str()),
+            (Some("us"), "Home")
+        );
+        // Название для правки остаётся как в ссылке.
+        assert_eq!(key.name, "Home");
+        // Эмодзи главнее адреса; у домена флага нет.
+        let emoji = KEY
+            .replace("ADDR", "8.8.8.8")
+            .replace("NAME", "%F0%9F%87%B3%F0%9F%87%B1%20Home");
+        assert_eq!(manual_key(&entry(&emoji)).flag.as_deref(), Some("nl"));
+        let domain = KEY
+            .replace("ADDR", "node.example.com")
+            .replace("NAME", "Cloud");
+        assert_eq!(manual_key(&entry(&domain)).flag, None);
+    }
 }

@@ -104,9 +104,9 @@ export async function aboutInfo(): Promise<About> {
 }
 
 /** Что окно может открыть: список зашит в Rust (`about.rs`), адрес окно не задаёт. */
-export type LinkTarget = "source" | "releases" | "latest" | "channel" | "licenses";
+export type LinkTarget = "source" | "releases" | "latest" | "channel" | "licenses" | "dbip";
 
-/** Открывает исходники, страницу загрузки, канал или папку лицензий — только их. */
+/** Открывает исходники, страницу загрузки, канал, папку лицензий или DB-IP — только их. */
 export async function openLink(target: LinkTarget): Promise<void> {
   if (inTauri) await invoke("open_link", { target });
 }
