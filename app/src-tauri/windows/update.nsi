@@ -160,7 +160,9 @@ Section "Update"
   SetOutPath "$INSTDIR"
 
   DetailPrint "$(KvtClosing)"
-  nsExec::Exec 'taskkill /F /IM kvt.exe'
+  ; Полный путь: без него CreateProcess сначала ищет taskkill.exe в каталоге
+  ; установщика (обычно «Загрузки») и запустил бы подложенный файл с правами администратора.
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM kvt.exe'
   Pop $1
 
   DetailPrint "$(KvtStopping)"
