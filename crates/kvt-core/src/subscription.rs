@@ -522,6 +522,13 @@ PrivateKey = x
         let got = split_input(conf);
         assert!(got.urls.is_empty());
         assert_eq!(got.rest, conf.trim());
+        // Комментарий в строке заголовка и одиночный `\r` — тоже `.conf`.
+        for conf in [
+            "# Панель: https://panel.example.com/clients/7\n[Interface] # main\nPrivateKey = x\n",
+            "# Панель: https://panel.example.com/clients/7\r[Interface]\rPrivateKey = x\r",
+        ] {
+            assert!(split_input(conf).urls.is_empty(), "{conf:?}");
+        }
         let link = "kvt-wg://W0ludGVyZmFjZV0";
         assert_eq!(split_input(link).rest, link);
     }

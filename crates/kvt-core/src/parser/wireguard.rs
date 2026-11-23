@@ -40,11 +40,22 @@ fn bad(field: &'static str) -> ParseError {
 
 /// Похоже ли на `.conf`: есть строка `[Interface]`.
 pub fn looks_like_conf(text: &str) -> bool {
-    text.lines().any(is_interface_header)
+    conf_lines(text).any(is_interface_header)
 }
 
+/// Строки `.conf`: кроме `\n` и `\r\n`, бывает одиночный `\r` (старые редакторы,
+/// буфер обмена) — `str::lines` его не делит. Лишние пустые строки разбор пропускает.
+fn conf_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.split(['\r', '\n'])
+}
+
+/// `[Interface]`, в том числе с комментарием в строке (`[Interface] # дом`), —
+/// как его понимает разбор (`parse_conf` снимает `#…`).
 fn is_interface_header(line: &str) -> bool {
     line.trim_start_matches('\u{feff}')
+        .split('#')
+        .next()
+        .unwrap_or("")
         .trim()
         .eq_ignore_ascii_case("[interface]")
 }
@@ -60,7 +71,7 @@ pub(super) fn split_confs(text: &str) -> Vec<String> {
     let mut blocks: Vec<Vec<&str>> = vec![Vec::new()];
     let mut pending: Vec<&str> = Vec::new();
     let mut current_has_interface = false;
-    for line in text.lines() {
+    for line in conf_lines(text) {
         if is_comment_or_blank(line) {
             pending.push(line);
             continue;
@@ -155,7 +166,7 @@ pub(super) fn parse_conf(text: &str) -> Result<Server, ParseError> {
     let mut peers: Vec<PeerBuf> = Vec::new();
     let mut name: Option<String> = None;
 
-    for raw in text.lines() {
+    for raw in conf_lines(text) {
         let line = raw.trim_start_matches('\u{feff}').trim();
         if line.is_empty() {
             continue;
@@ -425,6 +436,17 @@ mod tests {
         assert_eq!(s.protocol.kind(), "wireguard");
         assert!(s.protocol.is_udp_only());
         assert_eq!(check_server(&s), Ok(()));
+    }
+
+    /// Одиночный `\r` вместо перевода строки и комментарий в строке `[Interface]`.
+    #[test]
+    fn lone_cr_and_header_comment_are_understood() {
+        let conf = wg_conf().replace("[Interface]", "[Interface] # дом");
+        assert!(looks_like_conf(&conf));
+        assert!(parse_conf(&conf).is_ok());
+        let conf = wg_conf().replace('\n', "\r");
+        assert!(looks_like_conf(&conf));
+        assert_eq!(wg_of(&parse_conf(&conf).unwrap()).peers.len(), 1);
     }
 
     #[test]
