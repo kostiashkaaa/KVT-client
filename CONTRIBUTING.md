@@ -29,7 +29,7 @@ scripts/             загрузка ядер и zapret, сборка уста�
 
 ## Что нужно
 
-Windows 10 или 11, Rust (stable, MSVC), Node.js 20+, Visual Studio Build Tools с C++.
+Windows 10 или 11, Rust (stable, MSVC), Node.js 22+, Visual Studio Build Tools с C++.
 
 ## Запуск из исходников
 

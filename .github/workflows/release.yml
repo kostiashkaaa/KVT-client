@@ -5,9 +5,10 @@
 #   gh attestation verify KVT-x.y.z-setup.exe --repo kostiashkaaa/KVT-client
 #
 # Запуск — тегом `vX.Y.Z` или вручную (Actions → Release → Run workflow) для уже
-# существующего тега. Релиз публикуется сразу на странице Releases с описанием из
-# раздела `## X.Y.Z` в CHANGELOG.md; если релиз с этим тегом уже есть (например,
-# черновик), он обновляется и публикуется, файлы заменяются.
+# существующего тега. Релиз создаётся черновиком с описанием из раздела `## X.Y.Z`
+# в CHANGELOG.md: опубликовать его — после чек-листа на чистой машине
+# (docs/RELEASE-CHECKLIST.md). Если релиз с этим тегом уже есть, файлы и описание
+# заменяются, а опубликован он или нет — не меняется.
 
 name: Release
 
@@ -36,13 +37,17 @@ jobs:
         with:
           ref: ${{ env.TAG }}
           fetch-depth: 0
+          # Токен с правом записи не остаётся в .git/config: скрипты npm и build.rs
+          # зависимостей его не прочитают.
+          persist-credentials: false
       # Действия закреплены по SHA: тег можно переписать, коммит — нет.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
+          components: rustfmt, clippy
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Версия тега совпадает с tauri.conf.json
         shell: pwsh
@@ -52,11 +57,21 @@ jobs:
             throw "Тег $env:TAG, а в tauri.conf.json — $version"
           }
 
-      - name: Тесты
+      # Те же проверки, что в CI: релиз не должен зависеть от того, прошёл ли CI
+      # на коммите тега. Код выхода — после каждой команды (pwsh смотрит только на
+      # последнюю).
+      - name: Проверки и тесты
         shell: pwsh
         run: |
-          cd app; npm ci; npm run build; cd ..
-          cargo test --workspace --locked
+          cd app
+          npm ci; if ($LASTEXITCODE -ne 0) { throw 'npm ci' }
+          npm run check; if ($LASTEXITCODE -ne 0) { throw 'npm run check' }
+          npm test; if ($LASTEXITCODE -ne 0) { throw 'npm test' }
+          npm run build; if ($LASTEXITCODE -ne 0) { throw 'npm run build' }
+          cd ..
+          cargo fmt --all -- --check; if ($LASTEXITCODE -ne 0) { throw 'cargo fmt' }
+          cargo clippy --workspace --all-targets --locked -- -D warnings; if ($LASTEXITCODE -ne 0) { throw 'cargo clippy' }
+          cargo test --workspace --locked; if ($LASTEXITCODE -ne 0) { throw 'cargo test' }
 
       # Подпись включится, когда появится сертификат (секрет KVT_SIGN_COMMAND).
       - name: Сборка установщиков
@@ -137,8 +152,8 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload $env:TAG @files --clobber
             if ($LASTEXITCODE -ne 0) { throw 'не удалось загрузить файлы' }
-            gh release edit $env:TAG --draft=false --latest --title $title --notes-file release-notes.md
+            gh release edit $env:TAG --title $title --notes-file release-notes.md
           } else {
-            gh release create $env:TAG --latest --title $title --notes-file release-notes.md @files
+            gh release create $env:TAG --draft --title $title --notes-file release-notes.md @files
           }
           if ($LASTEXITCODE -ne 0) { throw 'не удалось опубликовать релиз' }
