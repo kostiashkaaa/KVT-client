@@ -69,6 +69,10 @@ kill switch. Rust (Tauri 2) + Svelte 5. Сборка, запуск службы,
 
 ## Подводные камни
 
+- AmneziaWG — третье ядро `CoreKind::SingBoxAwg` (`sing-box-awg.exe`, форк sing-box-lx,
+  `scripts/fetch-cores.ps1`); WireGuard без обфускации — штатный sing-box. `.conf` в ручной
+  группе хранится ссылкой `kvt-wg://`; в конфиге sing-box это `endpoints`. `real_cores.rs`
+  без `sing-box-awg.exe` пропускает AWG молча.
 - Второй `kvt.exe` не запустится, пока открыт другой (single-instance), — он передаст
   управление первому и выйдет. Окно рядом с установленным KVT: собрать с
   `TAURI_CONFIG='{"identifier":"dev.kvt.test"}'`, запускать с `LOCALAPPDATA` во временной

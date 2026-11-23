@@ -106,8 +106,10 @@ language.
   NekoRay/Throne carry over in a couple of clicks.
 
 Protocols: VLESS (Reality, XTLS Vision; TCP, WebSocket, gRPC, HTTPUpgrade, XHTTP),
-VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS. Cores: [Xray](https://github.com/XTLS/Xray-core) and
-[sing-box](https://github.com/SagerNet/sing-box); KVT chooses the right one per server.
+VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, WireGuard and AmneziaWG (paste the whole
+`.conf`). Cores: [Xray](https://github.com/XTLS/Xray-core) and
+[sing-box](https://github.com/SagerNet/sing-box); KVT chooses the right one per server. AmneziaWG
+servers run on a [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) build.
 
 ## Install
 

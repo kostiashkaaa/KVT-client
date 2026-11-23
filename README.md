@@ -99,8 +99,10 @@ YouTube и Discord работают даже без VPN-подписки.
   переносятся в пару кликов.
 
 Протоколы: VLESS (Reality, XTLS Vision; TCP, WebSocket, gRPC, HTTPUpgrade, XHTTP),
-VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS. Ядра — [Xray](https://github.com/XTLS/Xray-core) и
-[sing-box](https://github.com/SagerNet/sing-box), подходящее KVT выбирает сам.
+VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, WireGuard и AmneziaWG (вставьте `.conf`
+целиком). Ядра — [Xray](https://github.com/XTLS/Xray-core) и
+[sing-box](https://github.com/SagerNet/sing-box), подходящее KVT выбирает сам; для серверов
+AmneziaWG — сборка [sing-box-lx](https://github.com/Leadaxe/sing-box-lx).
 
 ## Установка
 
