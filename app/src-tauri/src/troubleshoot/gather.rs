@@ -114,7 +114,7 @@ pub(super) async fn gather(state: &AppState, focus: Option<ServiceFact>) -> Fact
     f.server = Some(display_name(server));
 
     let connected = matches!(f.service, Some(ServiceStatus::Connected { .. }));
-    if !server.protocol.is_quic() {
+    if !server.protocol.is_udp_only() {
         // При подключённом VPN пингует служба мимо туннеля: соединение окна принял
         // бы сам TUN за 0 мс, и мёртвый сервер выглядел бы рабочим.
         let first = state.doh_first();

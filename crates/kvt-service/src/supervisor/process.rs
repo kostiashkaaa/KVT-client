@@ -32,20 +32,30 @@ impl CoreSpec {
                 env: Vec::new(),
                 run_dir: paths.run.clone(),
             },
+            // Тот же sing-box, но сборка с AmneziaWG: свой exe и свой файл конфига.
+            CoreKind::SingBoxAwg => Self {
+                exe: paths.cores.join("sing-box-awg.exe"),
+                config_name: "sing-box-awg.json",
+                core,
+                env: Vec::new(),
+                run_dir: paths.run.clone(),
+            },
         }
     }
 
     pub(super) fn check_args(&self, config: &Path) -> Vec<OsString> {
         match self.core {
             CoreKind::Xray => vec!["run".into(), "-test".into(), "-c".into(), config.into()],
-            CoreKind::SingBox => vec!["check".into(), "-c".into(), config.into()],
+            CoreKind::SingBox | CoreKind::SingBoxAwg => {
+                vec!["check".into(), "-c".into(), config.into()]
+            }
         }
     }
 
     pub(super) fn run_args(&self, config: &Path) -> Vec<OsString> {
         match self.core {
             CoreKind::Xray => vec!["run".into(), "-c".into(), config.into()],
-            CoreKind::SingBox => vec![
+            CoreKind::SingBox | CoreKind::SingBoxAwg => vec![
                 "run".into(),
                 "-c".into(),
                 config.into(),

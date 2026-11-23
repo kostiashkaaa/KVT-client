@@ -209,8 +209,13 @@ impl CoreProber {
                 c.args(["run", "-c"]).arg(&path);
                 c
             }
-            CoreKind::SingBox => {
-                let mut c = tokio::process::Command::new(self.cores.join("sing-box.exe"));
+            CoreKind::SingBox | CoreKind::SingBoxAwg => {
+                let exe = if core == CoreKind::SingBoxAwg {
+                    "sing-box-awg.exe"
+                } else {
+                    "sing-box.exe"
+                };
+                let mut c = tokio::process::Command::new(self.cores.join(exe));
                 c.args(["run", "-c"]).arg(&path).arg("-D").arg(&self.work);
                 c
             }
@@ -244,8 +249,9 @@ impl Prober for CoreProber {
             dns_resolved: true,
             ..Default::default()
         };
-        // Сначала дешёвая проверка TCP (без TLS); Hysteria2 работает по UDP — её не проверить так.
-        if !server.protocol.is_quic() {
+        // Сначала дешёвая проверка TCP (без TLS); Hysteria2 и WireGuard работают по UDP —
+        // их не проверить так.
+        if !server.protocol.is_udp_only() {
             match self.ping(&server).await {
                 Some(QuickResult::DnsFailed) => {
                     obs.dns_resolved = false;

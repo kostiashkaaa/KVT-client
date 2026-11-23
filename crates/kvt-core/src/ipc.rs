@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 /// Сколько адресов можно пингнуть одной командой `Ping`.
 pub const MAX_PING_TARGETS: usize = 1024;
 /// Сколько адресов серверов может быть открыто тестовому ядру сразу (`ProbeOpen`).

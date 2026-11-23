@@ -12,10 +12,12 @@ mod trojan;
 mod tuic;
 mod vless;
 mod vmess;
+mod wireguard;
 mod xhttp_extra;
 mod xray_json;
 
 pub use http::is_proxy_link as is_http_proxy_link;
+pub use wireguard::looks_like_conf as is_wireguard_conf;
 
 use crate::model::Server;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
@@ -84,7 +86,20 @@ pub struct SubscriptionContent {
 /// Разбирает одну ссылку `scheme://...`.
 pub fn parse_uri(input: &str) -> Result<Entry, ParseError> {
     let input = input.trim();
-    if input.len() > MAX_URI_LEN {
+    // Ссылка `kvt-wg://` несёт целый `.conf`, и ей положен больший предел.
+    let is_wireguard = input
+        .as_bytes()
+        .get(..wireguard::SCHEME.len() + 3)
+        .is_some_and(|p| {
+            let (name, rest) = p.split_at(wireguard::SCHEME.len());
+            name.eq_ignore_ascii_case(wireguard::SCHEME.as_bytes()) && rest == b"://"
+        });
+    let limit = if is_wireguard {
+        wireguard::MAX_LINK_LEN
+    } else {
+        MAX_URI_LEN
+    };
+    if input.len() > limit {
         return Err(ParseError::TooLong);
     }
     let scheme = input
@@ -104,16 +119,22 @@ pub fn parse_uri(input: &str) -> Result<Entry, ParseError> {
         // Только ссылки вида прокси (логин и пустой путь); сайт или подписка — ошибка
         // «неизвестная схема», как раньше.
         "http" | "https" => http::parse(input)?,
+        wireguard::SCHEME => wireguard::parse_link(input)?,
         other => {
             let shown: String = other.chars().take(16).collect();
             return Err(ParseError::UnknownScheme(shown));
         }
     };
 
+    Ok(server_entry(server))
+}
+
+/// Служебная запись провайдера или сервер.
+fn server_entry(server: Server) -> Entry {
     if is_info_entry(&server) {
-        return Ok(Entry::Info(server.name));
+        return Entry::Info(server.name);
     }
-    Ok(Entry::Server(Box::new(server)))
+    Entry::Server(Box::new(server))
 }
 
 /// Разбирает тело подписки: список ссылок, в том числе в base64, или конфиги Xray.
@@ -148,6 +169,16 @@ fn parse_chunk(
     } else {
         trimmed
     };
+
+    // `.conf` WireGuard / AmneziaWG: многострочный, поэтому не строка-ссылка; в одной
+    // вставке их может быть несколько. Номер «строки» в ошибках — номер конфига.
+    if wireguard::looks_like_conf(text) {
+        for (idx, conf) in wireguard::split_confs(text).iter().enumerate() {
+            let entry = wireguard::parse_conf(conf).map(server_entry);
+            add_entry(out, seen, offset + idx + 1, entry);
+        }
+        return text.lines().count();
+    }
 
     let is_json = text.starts_with('{') || text.starts_with('[');
     // Конфиги sing-box и Xray: номер «строки» в ошибках — номер подключения или
@@ -217,6 +248,16 @@ pub fn normalize_pasted(body: &str) -> String {
     } else {
         trimmed
     };
+    // `.conf` WireGuard / AmneziaWG — в ссылки `kvt-wg://`: одна строка на сервер.
+    // Непригодный `.conf` пропускается, как конфиг JSON без подключений.
+    if wireguard::looks_like_conf(text) {
+        return wireguard::split_confs(text)
+            .iter()
+            .filter(|conf| wireguard::parse_conf(conf).is_ok())
+            .map(|conf| wireguard::to_link(conf))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
     if text.starts_with('{') || text.starts_with('[') {
         if let Some(links) = sing_box_json::links(text).or_else(|| xray_json::links(text)) {
             // Конфиг без поддерживаемого подключения пропускается — как и при разборе.
@@ -431,9 +472,16 @@ pub fn check_server(s: &Server) -> Result<(), ParseError> {
                 password.as_ref().map(crate::Secret::expose),
             );
         }
+        // Своя проверка: ключи, адреса и параметры AmneziaWG разобраны по полям.
+        Protocol::WireGuard(wg) => {
+            crate::wireguard::validate(wg).map_err(invalid)?;
+            if !matches!(s.transport, Transport::Udp) || !matches!(s.security, Security::None) {
+                return Err(invalid("transport"));
+            }
+        }
     }
     match &s.transport {
-        Transport::Tcp | Transport::Quic => {}
+        Transport::Tcp | Transport::Quic | Transport::Udp => {}
         Transport::Ws { path, host } | Transport::HttpUpgrade { path, host } => {
             add(&mut texts, "path", Some(path.as_str()));
             add(&mut texts, "host", host.as_deref());

@@ -197,7 +197,7 @@ pub enum QuickResult {
     },
     Unreachable,
     DnsFailed,
-    /// UDP-протоколы (Hysteria2) TCP-пингом не проверить.
+    /// UDP-протоколы (Hysteria2, WireGuard) TCP-пингом не проверить.
     NotApplicable,
 }
 
@@ -211,8 +211,8 @@ pub async fn quick_check(
     let targets: Vec<Option<(String, u16)>> = servers
         .iter()
         .map(|s| {
-            // UDP-протоколы (Hysteria2) TCP-пингом не проверить.
-            (!s.protocol.is_quic()).then(|| (s.address.clone(), s.port))
+            // UDP-протоколы (Hysteria2, WireGuard) TCP-пингом не проверить.
+            (!s.protocol.is_udp_only()).then(|| (s.address.clone(), s.port))
         })
         .collect();
     ping_all(&targets, doh, None, Origin::App, timeout, parallel).await

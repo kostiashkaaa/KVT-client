@@ -62,15 +62,15 @@ pub fn required_files(plan: &RoutingPlan, core: CoreKind) -> Vec<RuleFile> {
         .into_iter()
         .filter_map(RuleSetRef::parse)
         .map(|set| match (core, &set) {
-            (CoreKind::SingBox, RuleSetRef::Itdog(id)) => RuleFile {
+            (CoreKind::SingBox | CoreKind::SingBoxAwg, RuleSetRef::Itdog(id)) => RuleFile {
                 local: set.srs_file(),
                 origin: Origin::ItdogAsset(format!("{id}.srs")),
             },
-            (CoreKind::SingBox, RuleSetRef::RfSite(name)) => RuleFile {
+            (CoreKind::SingBox | CoreKind::SingBoxAwg, RuleSetRef::RfSite(name)) => RuleFile {
                 local: set.srs_file(),
                 origin: Origin::RfFile(format!("sing-box/rule-set-geosite/geosite-{name}.srs")),
             },
-            (CoreKind::SingBox, RuleSetRef::RfIp(code)) => RuleFile {
+            (CoreKind::SingBox | CoreKind::SingBoxAwg, RuleSetRef::RfIp(code)) => RuleFile {
                 local: set.srs_file(),
                 origin: Origin::RfFile(format!("sing-box/rule-set-geoip/geoip-{code}.srs")),
             },

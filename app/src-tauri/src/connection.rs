@@ -89,7 +89,7 @@ pub(crate) async fn ping_servers(
     let targets = servers
         .iter()
         .map(|s| {
-            (!s.protocol.is_quic()).then(|| ipc::PingTarget {
+            (!s.protocol.is_udp_only()).then(|| ipc::PingTarget {
                 host: s.address.clone(),
                 port: s.port,
             })

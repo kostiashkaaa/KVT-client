@@ -378,7 +378,12 @@ pub struct SplitInput {
 /// подписок с ключами. base64 и JSON целиком уходят в `rest` как есть.
 pub fn split_input(input: &str) -> SplitInput {
     let trimmed = input.trim().trim_start_matches('\u{feff}').trim_start();
-    if trimmed.starts_with('{') || trimmed.starts_with('[') || !trimmed.contains("://") {
+    // `.conf` WireGuard — целиком ключи: ссылка в его комментарии не подписка.
+    if trimmed.starts_with('{')
+        || trimmed.starts_with('[')
+        || !trimmed.contains("://")
+        || crate::parser::is_wireguard_conf(trimmed)
+    {
         return SplitInput {
             urls: Vec::new(),
             rest: trimmed.to_owned(),
@@ -506,6 +511,19 @@ mod tests {
         let json = r#"{"outbounds":[],"remarks":"https://example.com"}"#;
         assert_eq!(split_input(json).rest, json);
         assert!(split_input(json).urls.is_empty());
+    }
+
+    #[test]
+    fn wireguard_conf_is_keys_even_with_a_link_in_a_comment() {
+        let conf = "# Панель: https://panel.example.com/clients/7
+[Interface]
+PrivateKey = x
+";
+        let got = split_input(conf);
+        assert!(got.urls.is_empty());
+        assert_eq!(got.rest, conf.trim());
+        let link = "kvt-wg://W0ludGVyZmFjZV0";
+        assert_eq!(split_input(link).rest, link);
     }
 
     #[test]

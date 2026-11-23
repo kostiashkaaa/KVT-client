@@ -9,6 +9,17 @@ use serde::{Deserialize, Serialize};
 pub enum CoreKind {
     Xray,
     SingBox,
+    /// sing-box со сборкой AmneziaWG (`sing-box-awg.exe`): запускается только для
+    /// серверов AmneziaWG, у остальных — штатный `SingBox` (в форке подменены
+    /// сетевые библиотеки, чужим серверам они не нужны).
+    SingBoxAwg,
+}
+
+impl CoreKind {
+    /// Конфиг в формате sing-box: `SingBox` и `SingBoxAwg` читают один и тот же.
+    pub fn is_sing_box(self) -> bool {
+        matches!(self, Self::SingBox | Self::SingBoxAwg)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +46,20 @@ pub fn select_core(server: &Server) -> CoreChoice {
             required_by: Some("VLESS Encryption"),
         };
     }
+    if let Protocol::WireGuard(wg) = &server.protocol {
+        // Xray умеет WireGuard, но без обфускации и без нашего TUN-пути: берём sing-box.
+        return if wg.awg.is_some() {
+            CoreChoice {
+                core: CoreKind::SingBoxAwg,
+                required_by: Some("AmneziaWG"),
+            }
+        } else {
+            CoreChoice {
+                core: CoreKind::SingBox,
+                required_by: None,
+            }
+        };
+    }
     let core = match server.protocol {
         // REALITY и Vision — родная территория Xray.
         Protocol::Vless { .. } | Protocol::Trojan { .. } | Protocol::Vmess { .. } => CoreKind::Xray,
@@ -44,6 +69,7 @@ pub fn select_core(server: &Server) -> CoreChoice {
         | Protocol::AnyTls { .. }
         | Protocol::Socks { .. }
         | Protocol::Http { .. } => CoreKind::SingBox,
+        Protocol::WireGuard(_) => CoreKind::SingBox,
     };
     CoreChoice {
         core,

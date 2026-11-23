@@ -244,6 +244,15 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
                 ),
             })
         }
+        Protocol::WireGuard(_) => {
+            return Err(CompileError::Unsupported {
+                core: CORE,
+                feature: crate::i18n::tr(
+                    "WireGuard (используйте sing-box)",
+                    "WireGuard (use sing-box)",
+                ),
+            })
+        }
     };
     let mut out = json!({
         "tag": TAG_PROXY,
@@ -295,7 +304,7 @@ fn stream_settings(s: &Server) -> Result<Value, CompileError> {
             }
             ("xhttp", Some("xhttpSettings"), v)
         }
-        Transport::Quic => {
+        Transport::Quic | Transport::Udp => {
             return Err(CompileError::Unsupported {
                 core: CORE,
                 feature: crate::i18n::tr("QUIC-транспорт", "QUIC transport"),

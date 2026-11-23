@@ -480,6 +480,14 @@ mod tests {
             "ключ vless://*** и всё"
         );
         assert_eq!(text_with("ss://YWVzOnB3@h:1", &none()), "ss://***");
+        // `.conf` WireGuard лежит в ссылке в base64: подстрокой ключ не найти.
+        assert_eq!(
+            text_with(
+                "ключ kvt-wg://W0ludGVyZmFjZV0KUHJpdmF0ZUtleQ#Имя и всё",
+                &none()
+            ),
+            "ключ kvt-wg://*** и всё"
+        );
     }
 
     #[test]

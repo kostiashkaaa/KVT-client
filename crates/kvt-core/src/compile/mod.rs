@@ -4,6 +4,7 @@
 //! прокси-портов — единственный inbound это TUN.
 
 mod sing_box;
+mod sing_box_wg;
 mod xray;
 
 use crate::core_select::CoreKind;
@@ -170,7 +171,7 @@ pub fn compile(core: CoreKind, input: &CompileInput<'_>) -> Result<Compiled, Com
     crate::parser::check_server(input.server)?;
     match core {
         CoreKind::Xray => compile_xray(input),
-        CoreKind::SingBox => compile_sing_box(input),
+        CoreKind::SingBox | CoreKind::SingBoxAwg => compile_sing_box(core, input),
     }
 }
 
@@ -252,7 +253,7 @@ pub fn compile_probe(
 ) -> Result<Value, CompileError> {
     match core {
         CoreKind::Xray => xray::probe_config(server, inbound),
-        CoreKind::SingBox => sing_box::probe_config(server, inbound),
+        CoreKind::SingBox | CoreKind::SingBoxAwg => sing_box::probe_config(server, inbound),
     }
 }
 

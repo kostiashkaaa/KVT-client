@@ -18,15 +18,28 @@ pub(super) fn clear_marker(marker: &Path) {
 }
 
 impl Supervisor {
-    /// Ядра и служба. Оба ядра: тестовое ядро проверки серверов бывает не тем,
-    /// что подключено.
+    /// Все ядра, которым kill switch разрешает выход: тестовое ядро проверки
+    /// серверов бывает не тем, что подключено. Ядро AmneziaWG — только если оно
+    /// есть: WFP не выдаёт идентификатор несуществующего файла, и без этой проверки
+    /// kill switch не включался бы у тех, кто AmneziaWG не пользуется.
+    fn core_exes(paths: &Paths) -> Vec<PathBuf> {
+        let mut exes = vec![
+            CoreSpec::new(CoreKind::Xray, paths).exe,
+            CoreSpec::new(CoreKind::SingBox, paths).exe,
+        ];
+        let awg = CoreSpec::new(CoreKind::SingBoxAwg, paths).exe;
+        if awg.is_file() {
+            exes.push(awg);
+        }
+        exes
+    }
+
+    /// Ядра и служба.
     pub(super) fn trusted_apps(&self) -> Result<Vec<PathBuf>, ConnectError> {
         let service = std::env::current_exe().map_err(ConnectError::wfp)?;
-        Ok(vec![
-            CoreSpec::new(CoreKind::Xray, &self.paths).exe,
-            CoreSpec::new(CoreKind::SingBox, &self.paths).exe,
-            service,
-        ])
+        let mut apps = Self::core_exes(&self.paths);
+        apps.push(service);
+        Ok(apps)
     }
 
     /// `block_ipv6` — TUN поднят без IPv6: IPv6 мимо туннеля тоже закрывается.
@@ -152,10 +165,7 @@ impl Supervisor {
         if ks.probe_len() + ips.len() > kvt_core::ipc::MAX_PROBE_ADDRS {
             return Err(ConnectError::TooManyProbeAddresses);
         }
-        let cores = [
-            CoreSpec::new(CoreKind::Xray, &self.paths).exe,
-            CoreSpec::new(CoreKind::SingBox, &self.paths).exe,
-        ];
+        let cores = Self::core_exes(&self.paths);
         let cores: Vec<&Path> = cores.iter().map(PathBuf::as_path).collect();
         ks.open_probe(&cores, &ips).map_err(ConnectError::wfp)?;
         self.probe_until = Some(Instant::now() + PROBE_TTL);

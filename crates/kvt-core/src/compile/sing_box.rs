@@ -15,12 +15,17 @@ const DNS_REMOTE: &str = "dns-remote";
 const DNS_LOCAL: &str = "dns-local";
 const DNS_HOSTS: &str = "dns-hosts";
 
-pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
+pub fn compile(core: CoreKind, input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
+    let (mut outbounds, endpoints) = match proxy_entry(input.server)? {
+        Proxy::Outbound(o) => (vec![o], Vec::new()),
+        Proxy::Endpoint(e) => (Vec::new(), vec![e]),
+    };
+    outbounds.push(json!({ "type": "direct", "tag": TAG_DIRECT }));
     let mut config = json!({
         "log": { "level": "warn" },
         "dns": {
             "servers": [
-                { "type": "https", "tag": DNS_REMOTE, "server": input.dns.remote_doh, "detour": TAG_PROXY },
+                dns_remote(input),
                 { "type": "udp", "tag": DNS_LOCAL, "server": input.dns.local }
             ],
             "rules": dns_rules(input),
@@ -38,10 +43,7 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
             "strict_route": true,
             "stack": "mixed"
         }],
-        "outbounds": [
-            outbound(input.server)?,
-            { "type": "direct", "tag": TAG_DIRECT }
-        ],
+        "outbounds": outbounds,
         "route": {
             "rules": route_rules(input),
             "rule_set": rule_set_defs(input),
@@ -50,6 +52,10 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
             "default_domain_resolver": DNS_LOCAL
         }
     });
+    let has_endpoint = !endpoints.is_empty();
+    if has_endpoint {
+        config["endpoints"] = endpoints.into();
+    }
     // Имя сервера — адресами, которые служба нашла через DoH, а не локальным
     // резолвером (`default_domain_resolver` остаётся для прямых соединений).
     let hosts = super::tunnel_hosts(input.server, input.hosts);
@@ -60,13 +66,44 @@ pub fn compile(input: &CompileInput<'_>) -> Result<Compiled, CompileError> {
         {
             servers.push(json!({ "type": "hosts", "tag": DNS_HOSTS, "predefined": hosts }));
         }
-        config["outbounds"][0]["domain_resolver"] = DNS_HOSTS.into();
+        let proxy_at = if has_endpoint {
+            "/endpoints/0"
+        } else {
+            "/outbounds/0"
+        };
+        if let Some(proxy) = config.pointer_mut(proxy_at) {
+            proxy["domain_resolver"] = DNS_HOSTS.into();
+        }
     }
     Ok(Compiled {
-        core: CORE,
+        core,
         config,
         warnings: Vec::new(),
     })
+}
+
+/// Прокси-выход: обычный outbound или (WireGuard, AmneziaWG) конечная точка.
+enum Proxy {
+    Outbound(Value),
+    Endpoint(Value),
+}
+
+fn proxy_entry(s: &Server) -> Result<Proxy, CompileError> {
+    match &s.protocol {
+        Protocol::WireGuard(wg) => Ok(Proxy::Endpoint(super::sing_box_wg::endpoint(wg))),
+        _ => outbound(s).map(Proxy::Outbound),
+    }
+}
+
+/// Удалённый DNS в туннеле: у WireGuard — частный DNS из `.conf` (сервер перехватывает
+/// порт 53 внутри туннеля), иначе DoH через туннель.
+fn dns_remote(input: &CompileInput<'_>) -> Value {
+    if let Protocol::WireGuard(wg) = &input.server.protocol {
+        if let Some(ip) = super::sing_box_wg::private_dns(wg) {
+            return json!({ "type": "udp", "tag": DNS_REMOTE, "server": ip, "detour": TAG_PROXY });
+        }
+    }
+    json!({ "type": "https", "tag": DNS_REMOTE, "server": input.dns.remote_doh, "detour": TAG_PROXY })
 }
 
 /// Условие правила sing-box для одного матчера.
@@ -242,6 +279,13 @@ fn outbound(s: &Server) -> Result<Value, CompileError> {
                 o.insert("password".into(), p.expose().into());
             }
         }
+        // WireGuard — конечная точка, а не выход (`proxy_entry`).
+        Protocol::WireGuard(_) => {
+            return Err(CompileError::Unsupported {
+                core: CORE,
+                feature: "WireGuard outbound",
+            })
+        }
     }
 
     if let Some(transport) = transport(&s.transport)? {
@@ -270,7 +314,7 @@ fn server_ports(port: u16, ranges: &str) -> Vec<String> {
 
 fn transport(t: &Transport) -> Result<Option<Value>, CompileError> {
     Ok(match t {
-        Transport::Tcp | Transport::Quic => None,
+        Transport::Tcp | Transport::Quic | Transport::Udp => None,
         Transport::Ws { path, host } => {
             let mut v = json!({ "type": "ws", "path": path });
             if let Some(h) = host {
@@ -342,7 +386,9 @@ fn probe_outbound(
     server: &Server,
     inbound: &super::ProbeInbound<'_>,
 ) -> Result<Value, CompileError> {
-    let mut out = outbound(server)?;
+    let mut out = match proxy_entry(server)? {
+        Proxy::Outbound(o) | Proxy::Endpoint(o) => o,
+    };
     if let Some(source) = inbound.source {
         out = with(out, "inet4_bind_address", source.to_string().into());
     }
@@ -362,7 +408,8 @@ pub(super) fn probe_config(
     } else {
         json!({ "type": "hosts", "tag": "local", "predefined": hosts })
     };
-    Ok(json!({
+    let probe = probe_outbound(server, inbound)?;
+    let mut config = json!({
         "log": { "level": "warn" },
         "dns": { "servers": [dns] },
         "inbounds": [{
@@ -372,9 +419,16 @@ pub(super) fn probe_config(
             "listen_port": inbound.port,
             "users": [{ "username": inbound.user, "password": inbound.password }]
         }],
-        "outbounds": [probe_outbound(server, inbound)?],
+        "outbounds": [probe],
         "route": { "final": TAG_PROXY, "default_domain_resolver": "local" }
-    }))
+    });
+    if matches!(server.protocol, Protocol::WireGuard(_)) {
+        // Конечная точка — не outbound: переносим её, а в `outbounds` остаётся прямой выход.
+        let endpoint = config["outbounds"][0].take();
+        config["endpoints"] = json!([endpoint]);
+        config["outbounds"] = json!([{ "type": "direct", "tag": TAG_DIRECT }]);
+    }
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -387,14 +441,17 @@ mod tests {
         let s = server(uri);
         let plan = hybrid_plan(&s);
         let dns = DnsPlan::default();
-        compile(&CompileInput {
-            server: &s,
-            routing: &plan,
-            dns: &dns,
-            rule_set_dir: "C:\\ProgramData\\KVT\\rules\\",
-            ipv6: true,
-            hosts: &[],
-        })
+        compile(
+            CORE,
+            &CompileInput {
+                server: &s,
+                routing: &plan,
+                dns: &dns,
+                rule_set_dir: "C:\\ProgramData\\KVT\\rules\\",
+                ipv6: true,
+                hosts: &[],
+            },
+        )
         .unwrap()
     }
 
@@ -543,14 +600,17 @@ mod tests {
         let plan = hybrid_plan(&s);
         let dns = DnsPlan::default();
         assert_eq!(
-            compile(&CompileInput {
-                server: &s,
-                routing: &plan,
-                dns: &dns,
-                rule_set_dir: "r",
-                ipv6: true,
-                hosts: &[],
-            })
+            compile(
+                CORE,
+                &CompileInput {
+                    server: &s,
+                    routing: &plan,
+                    dns: &dns,
+                    rule_set_dir: "r",
+                    ipv6: true,
+                    hosts: &[],
+                }
+            )
             .unwrap_err(),
             CompileError::Unsupported {
                 core: CoreKind::SingBox,

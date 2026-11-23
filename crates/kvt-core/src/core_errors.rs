@@ -58,7 +58,7 @@ struct RulesFile {
 fn core_name(core: CoreKind) -> &'static str {
     match core {
         CoreKind::Xray => "xray",
-        CoreKind::SingBox => "sing-box",
+        CoreKind::SingBox | CoreKind::SingBoxAwg => "sing-box",
     }
 }
 

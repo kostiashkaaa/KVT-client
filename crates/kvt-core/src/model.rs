@@ -2,6 +2,7 @@
 //! Clash YAML) приводится к ней, а конфиги ядер генерируются только из неё.
 
 use crate::secret::Secret;
+use crate::wireguard::WireGuard;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,11 +104,16 @@ pub enum Protocol {
         username: Option<Secret>,
         password: Option<Secret>,
     },
+    /// WireGuard из `.conf`; с параметрами обфускации — AmneziaWG (ядро-форк).
+    /// `Server::address` и `port` — первый пир.
+    WireGuard(Box<WireGuard>),
 }
 
 impl Protocol {
     pub fn kind(&self) -> &'static str {
         match self {
+            Protocol::WireGuard(wg) if wg.awg.is_some() => "amneziawg",
+            Protocol::WireGuard(_) => "wireguard",
             Protocol::Vless { .. } => "vless",
             Protocol::Trojan { .. } => "trojan",
             Protocol::Shadowsocks { .. } => "shadowsocks",
@@ -120,9 +126,15 @@ impl Protocol {
         }
     }
 
-    /// Работает поверх QUIC (UDP): TCP-пинг к такому серверу ничего не говорит.
+    /// Работает поверх QUIC (UDP): у него есть TLS-настройки, но нет uTLS-отпечатка.
     pub fn is_quic(&self) -> bool {
         matches!(self, Protocol::Hysteria2 { .. } | Protocol::Tuic { .. })
+    }
+
+    /// Говорит с сервером только по UDP: TCP-пинг к такому серверу ничего не
+    /// говорит, а недоступным его по нему считать нельзя.
+    pub fn is_udp_only(&self) -> bool {
+        self.is_quic() || matches!(self, Protocol::WireGuard(_))
     }
 }
 
@@ -147,12 +159,23 @@ impl Server {
                     .map(Secret::expose)
                     .collect()
             }
+            Protocol::WireGuard(wg) => wg.secrets(),
         }
     }
 
-    /// Адреса, с которыми соединяется ядро: сервер и, у XHTTP с раздельной загрузкой,
-    /// сервер загрузки. Все они — мимо zapret и скрываются в журналах.
+    /// Адреса, с которыми соединяется ядро: сервер (у WireGuard — все пиры) и, у
+    /// XHTTP с раздельной загрузкой, сервер загрузки. Все они — мимо zapret и
+    /// скрываются в журналах.
     pub fn endpoints(&self) -> Vec<String> {
+        if let Protocol::WireGuard(wg) = &self.protocol {
+            let mut out: Vec<String> = Vec::new();
+            for peer in &wg.peers {
+                if !out.iter().any(|h| h.eq_ignore_ascii_case(&peer.host)) {
+                    out.push(peer.host.clone());
+                }
+            }
+            return out;
+        }
         let mut out = vec![self.address.clone()];
         if let Some(download) = self.download_address() {
             if download != self.address {
@@ -178,8 +201,7 @@ impl Server {
     /// отбрасывается молча. Тексты без секретов: они уходят в окно.
     pub fn warnings(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
-        let sing_box =
-            crate::core_select::select_core(self).core == crate::core_select::CoreKind::SingBox;
+        let sing_box = crate::core_select::select_core(self).core.is_sing_box();
         if sing_box && self.fragment.is_some() && !crate::compile::sing_box_fragments(self) {
             out.push(crate::i18n::tr(
                 "фрагментация от провайдера не применяется — ядро sing-box делает её только для TLS",
@@ -191,6 +213,14 @@ impl Server {
                 "mux от провайдера не применяется — он работает только в ядре Xray и не с Vision или XHTTP",
                 "the provider's mux isn't applied — it only works in the Xray core and not with Vision or XHTTP",
             ));
+        }
+        if let Protocol::WireGuard(wg) = &self.protocol {
+            if wg.awg.as_ref().is_some_and(|a| !a.ignored.is_empty()) {
+                out.push(crate::i18n::tr(
+                    "часть параметров из .conf не применяется — если соединение не поднимается, сверьте их с сервером",
+                    "some .conf parameters aren't applied — if the connection doesn't come up, compare them with the server",
+                ));
+            }
         }
         // `insecure` из ссылки провайдера отключает проверку сертификата: активный
         // посредник (ТСПУ, провайдер) может перехватить рукопожатие и весь трафик.
@@ -264,6 +294,8 @@ pub enum Transport {
     },
     /// Hysteria2 и другие протоколы поверх QUIC, у которых нет отдельного транспорта.
     Quic,
+    /// WireGuard: свой протокол поверх UDP, без отдельного транспорта и TLS.
+    Udp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

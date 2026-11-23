@@ -68,6 +68,7 @@ pub(crate) fn transport_kind(t: &Transport) -> &'static str {
         Transport::HttpUpgrade { .. } => "httpupgrade",
         Transport::Xhttp { .. } => "xhttp",
         Transport::Quic => "quic",
+        Transport::Udp => "udp",
     }
 }
 
