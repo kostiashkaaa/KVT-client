@@ -91,7 +91,14 @@ impl Supervisor {
     pub(super) fn mark_kill_switch(&self, on: bool) {
         let marker = self.paths.run.join(KILL_SWITCH_MARKER);
         let result = if on {
-            std::fs::write(&marker, b"")
+            // Отметка уже есть (переподключение, откат) — в ней SID владельца
+            // (`mark_kill_switch_owner`): не стирать, иначе после сбоя службы
+            // закрытым интернетом смог бы управлять любой пользователь.
+            if std::fs::metadata(&marker).is_ok() {
+                Ok(())
+            } else {
+                std::fs::write(&marker, b"")
+            }
         } else {
             match std::fs::remove_file(&marker) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

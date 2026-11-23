@@ -379,6 +379,19 @@ async fn connect(state: &mut State, plan: &ConnectPlan) -> Response {
             message: kvt_core::compile::CompileError::from(e).to_string(),
         };
     }
+    // Ядро служба выбирает сама по серверу, как окно: форк для AmneziaWG
+    // (`sing-box-awg.exe`) не должен запускаться для чужих серверов.
+    let expected = kvt_core::core_select::select_core(&plan.server).core;
+    if plan.core != expected {
+        tracing::warn!(requested = ?plan.core, ?expected, "план с чужим ядром отклонён");
+        return Response::Error {
+            message: kvt_core::i18n::tr(
+                "Окно выбрало не то ядро для этого сервера — обновите KVT",
+                "The window picked the wrong core for this server — update KVT",
+            )
+            .into(),
+        };
+    }
     state.begin();
     state.status = ServiceStatus::Connecting;
     match state.supervisor.start(plan).await {
@@ -679,6 +692,27 @@ mod tests {
         let plan = ConnectPlan {
             core: CoreKind::Xray,
             server,
+            routing: RoutingPlan::new(Action::Proxy),
+            kill_switch: false,
+            dns: Default::default(),
+            zapret: None,
+        };
+        let mut st = state();
+        let resp = handle(&mut st, Request::Connect(Box::new(plan))).await;
+        assert!(matches!(resp, Response::Error { .. }), "{resp:?}");
+        assert_eq!(st.status, ServiceStatus::Disconnected);
+    }
+
+    /// Форк AmneziaWG — только для серверов AmneziaWG: чужое ядро в плане — отказ.
+    #[tokio::test]
+    async fn plan_with_wrong_core_is_rejected() {
+        let Entry::Server(server) = parse_uri("trojan://p@vpn.example.com:443").expect("ссылка")
+        else {
+            panic!("ожидался сервер")
+        };
+        let plan = ConnectPlan {
+            core: CoreKind::SingBoxAwg,
+            server: *server,
             routing: RoutingPlan::new(Action::Proxy),
             kill_switch: false,
             dns: Default::default(),
