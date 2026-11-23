@@ -8,6 +8,7 @@ KVT распространяется по лицензии GNU GPL версии 
 |---|---|---|---|
 | Xray-core | VPN-ядро (VLESS, Reality, XHTTP и др.) | MPL-2.0 | https://github.com/XTLS/Xray-core |
 | sing-box | VPN-ядро (Hysteria2, TUIC и др.) | GPL-3.0-or-later | https://github.com/SagerNet/sing-box |
+| sing-box-lx (Leadaxe) | Ядро для серверов AmneziaWG (`sing-box-awg.exe`, версия `1.14.4-lx.35`): sing-box 1.14.4 с поддержкой AmneziaWG и его собственными библиотеками; запускается только для таких серверов. Исходники сборки — тег `v1.14.4-lx.35` | GPL-3.0-or-later (к лицензии sing-box добавлено условие об имени: производные работы не вправе использовать имя и подразумевать связь без согласия) | https://github.com/Leadaxe/sing-box-lx |
 | Wintun | Драйвер виртуального адаптера (TUN) | Prebuilt Binaries License (WireGuard LLC) — только готовые подписанные файлы, без изменений | https://www.wintun.net |
 | zapret (winws) | Обход DPI | MIT | https://github.com/bol-van/zapret |
 | zapret-discord-youtube (Flowseal) | Стратегии и списки для winws | MIT | https://github.com/Flowseal/zapret-discord-youtube |
@@ -22,9 +23,10 @@ KVT распространяется по лицензии GNU GPL версии 
 | Списки itdoginfo (podkop) | Маршрутизация: что открывать через VPN | по условиям репозитория | https://github.com/itdoginfo/allow-domains |
 | Списки runetfreedom | Маршрутизация: полный реестр блокировок | по условиям репозитория | https://github.com/runetfreedom/russia-v2ray-rules-dat |
 
-Ядра, Wintun, zapret и прокси для Telegram KVT берёт из официальных релизов по
+Ядра, Wintun, zapret и прокси для Telegram KVT берёт из релизов авторов по
 зафиксированным SHA-256 (`scripts/fetch-cores.ps1`, `scripts/fetch-zapret.ps1`,
-`scripts/fetch-tgproxy.ps1`) и не изменяет. Списки
+`scripts/fetch-tgproxy.ps1`) и не изменяет; ядро для AmneziaWG — готовая сборка
+форка sing-box-lx, а не релиз самого sing-box. Списки
 маршрутизации служба загружает сама и в установщик они не входят.
 
 Библиотеки Rust и JavaScript, из которых собраны `kvt.exe` и `kvt-service.exe`, —

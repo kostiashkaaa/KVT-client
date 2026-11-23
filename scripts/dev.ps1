@@ -24,6 +24,7 @@ function Install-Bundles {
     $debug = Join-Path $root 'target\debug'
     $bundles = @(
         @{ File = 'cores\xray.exe'; Script = 'fetch-cores.ps1'; Dir = 'cores' },
+        @{ File = 'cores\sing-box-awg.exe'; Script = 'fetch-cores.ps1'; Dir = 'cores' },
         @{ File = 'zapret\bin\winws.exe'; Script = 'fetch-zapret.ps1'; Dir = 'zapret' },
         @{ File = 'tgproxy\tg-ws-proxy.exe'; Script = 'fetch-tgproxy.ps1'; Dir = 'tgproxy' }
     )

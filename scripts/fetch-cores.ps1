@@ -1,4 +1,4 @@
-﻿# Скачивает ядра (Xray, sing-box) и Wintun для разработки.
+﻿# Скачивает ядра (Xray, sing-box, sing-box для AmneziaWG) и Wintun для разработки.
 # Списки маршрутизации скачивает служба: kvt-service update-rules --dir <каталог>.
 # Версии и SHA-256 зафиксированы: при несовпадении хэша скрипт останавливается.
 #
@@ -31,6 +31,19 @@ $packages = @(
         Sha256   = '99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df'
         Files    = @{ 'sing-box-1.14.4-windows-amd64\sing-box.exe' = 'sing-box.exe' }
         Licenses = @{ 'sing-box-1.14.4-windows-amd64\LICENSE' = 'sing-box-LICENSE.txt' }
+    },
+    @{
+        # Форк Leadaxe/sing-box-lx (тот же sing-box 1.14.4 + AmneziaWG): запускается только для
+        # серверов AmneziaWG, у остальных — официальный sing-box выше (в форке подменены sing-tun,
+        # gvisor и utls). Один сопровождающий — следим за выпусками и обновляем вручную.
+        # libcronet.dll из архива не берём: он нужен только naive-выходу, которого у нас нет.
+        Name     = 'sing-box-lx 1.14.4-lx.35 (AmneziaWG)'
+        Id       = 'sing-box-awg'
+        Version  = '1.14.4-lx.35'
+        Url      = 'https://github.com/Leadaxe/sing-box-lx/releases/download/v1.14.4-lx.35/sing-box-1.14.4-lx.35-windows-amd64.zip'
+        Sha256   = '3645e69677f69a69358860bb971dacece75758258f53ad8bdff659e0413f92d7'
+        Files    = @{ 'sing-box-1.14.4-lx.35-windows-amd64\sing-box.exe' = 'sing-box-awg.exe' }
+        Licenses = @{ 'sing-box-1.14.4-lx.35-windows-amd64\LICENSE' = 'sing-box-lx-LICENSE.txt' }
     }
 )
 

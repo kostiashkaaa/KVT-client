@@ -110,7 +110,7 @@ finally {
 $baseline = Get-Content (Join-Path $PSScriptRoot 'update-baseline.json') -Raw | ConvertFrom-Json
 $cores = Get-Content (Join-Path $release 'cores\versions.json') -Raw | ConvertFrom-Json
 $coresChanged = $false
-foreach ($name in 'xray', 'sing-box', 'wintun') {
+foreach ($name in 'xray', 'sing-box', 'sing-box-awg', 'wintun') {
     if ($cores.$name -ne $baseline.components.cores.$name) { $coresChanged = $true }
 }
 $zapretVersion = (Get-Content (Join-Path $release 'zapret\VERSION') -Raw).Trim()
