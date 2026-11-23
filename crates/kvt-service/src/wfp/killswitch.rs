@@ -71,6 +71,29 @@ impl KillSwitch {
         self.probe.len()
     }
 
+    /// Сколько из `ips` ещё не открыто (без повторов).
+    pub fn probe_fresh(&self, ips: &[IpAddr]) -> usize {
+        let mut fresh: Vec<IpAddr> = ips
+            .iter()
+            .copied()
+            .filter(|ip| !self.probe.iter().any(|(open, _)| open == ip))
+            .collect();
+        fresh.sort_unstable();
+        fresh.dedup();
+        fresh.len()
+    }
+
+    /// Закрывает `count` самых давно открытых адресов: их серверы уже проверены —
+    /// одновременно проверяется лишь несколько серверов.
+    pub fn close_oldest_probe(&mut self, count: usize) {
+        let count = count.min(self.probe.len());
+        for (_, ids) in self.probe.drain(..count) {
+            for id in ids {
+                self.filters.delete(id);
+            }
+        }
+    }
+
     /// Закрывает всё, что открыл `open_probe`.
     pub fn close_probe(&mut self) {
         for (_, ids) in self.probe.drain(..) {

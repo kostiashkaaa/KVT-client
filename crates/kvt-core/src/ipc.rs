@@ -16,6 +16,10 @@ pub const PIPE_NAME: &str = r"\\.\pipe\kvt-service";
 pub const PROTOCOL_VERSION: u32 = 13;
 /// Сколько адресов можно пингнуть одной командой `Ping`.
 pub const MAX_PING_TARGETS: usize = 1024;
+/// Сколько адресов служба пингует за `PING_WINDOW`: на «Проверить» всех серверов
+/// хватает, на перебор портов — нет. Окно выдерживает этот бюджет само.
+pub const PING_PER_WINDOW: usize = 2 * MAX_PING_TARGETS;
+pub const PING_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 /// Сколько адресов серверов может быть открыто тестовому ядру сразу (`ProbeOpen`).
 pub const MAX_PROBE_ADDRS: usize = 2048;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;

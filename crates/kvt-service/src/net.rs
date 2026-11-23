@@ -10,7 +10,9 @@
 use kvt_core::captive;
 use kvt_core::dns::names::Lookup;
 use kvt_core::governor::{Decision, NetGovernor, NetPolicy};
-use kvt_core::ipc::{Captive, PingTarget, Response, MAX_PING_TARGETS};
+use kvt_core::ipc::{
+    Captive, PingTarget, Response, MAX_PING_TARGETS, PING_PER_WINDOW, PING_WINDOW,
+};
 use kvt_core::netlog::{self, Origin, Outcome, Purpose, Route};
 use kvt_core::rulesync::Http;
 use kvt_core::tester::Doh;
@@ -292,10 +294,6 @@ pub async fn ping(targets: Vec<Option<PingTarget>>, doh: &str) -> Response {
 
 /// Пинг серверов — по одной команде за раз (`ping`).
 static PING_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-/// Сколько адресов служба пингует за `PING_WINDOW`: на «Проверить» всех серверов
-/// хватает, на перебор портов — нет.
-const PING_PER_WINDOW: usize = 2 * MAX_PING_TARGETS;
-const PING_WINDOW: Duration = Duration::from_secs(60);
 /// Когда и сколько адресов пинговали за последнее окно.
 static PING_SPENT: Mutex<VecDeque<(Instant, usize)>> = Mutex::new(VecDeque::new());
 

@@ -169,8 +169,15 @@ impl Supervisor {
             .copied()
             .filter(|ip| global_address(*ip))
             .collect();
-        if ks.probe_len() + ips.len() > kvt_core::ipc::MAX_PROBE_ADDRS {
+        let fresh = ks.probe_fresh(&ips);
+        if fresh > kvt_core::ipc::MAX_PROBE_ADDRS {
             return Err(ConnectError::TooManyProbeAddresses);
+        }
+        // Окно закрывает адреса только в конце всей проверки: на больших группах
+        // место освобождают самые давние — их серверы уже проверены.
+        let over = (ks.probe_len() + fresh).saturating_sub(kvt_core::ipc::MAX_PROBE_ADDRS);
+        if over > 0 {
+            ks.close_oldest_probe(over);
         }
         let cores = Self::core_exes(&self.paths);
         let cores: Vec<&Path> = cores.iter().map(PathBuf::as_path).collect();

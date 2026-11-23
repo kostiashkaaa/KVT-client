@@ -86,24 +86,69 @@ pub(crate) async fn ping_servers(
     ) {
         return Ok(tester::quick_check(servers, doh, Duration::from_secs(3), 8).await);
     }
-    let targets = servers
-        .iter()
-        .map(|s| {
-            (!s.protocol.is_udp_only()).then(|| ipc::PingTarget {
-                host: s.address.clone(),
-                port: s.port,
+    let mut all = Vec::with_capacity(servers.len());
+    for chunk in servers.chunks(PING_CHUNK) {
+        wait_ping_budget(chunk.len()).await;
+        let targets = chunk
+            .iter()
+            .map(|s| {
+                (!s.protocol.is_udp_only()).then(|| ipc::PingTarget {
+                    host: s.address.clone(),
+                    port: s.port,
+                })
             })
-        })
-        .collect();
-    let request = Request::Ping {
-        targets,
-        doh: doh.first.to_owned(),
-    };
-    match service_client::call(request).await {
-        Ok(Response::Ping { results }) if results.len() == servers.len() => Ok(results),
-        Ok(Response::Error { message }) => Err(ConnectionError::remote(message)),
-        Ok(_) => Err(ConnectionError::Unexpected),
-        Err(e) => Err(e.into()),
+            .collect();
+        let request = Request::Ping {
+            targets,
+            doh: doh.first.to_owned(),
+        };
+        match service_client::call(request).await {
+            Ok(Response::Ping { results }) if results.len() == chunk.len() => all.extend(results),
+            Ok(Response::Error { message }) => return Err(ConnectionError::remote(message)),
+            Ok(_) => return Err(ConnectionError::Unexpected),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(all)
+}
+
+/// Серверов в одной команде `Ping`: 8 потоков × 3 с таймаута — до 24 с на пачку,
+/// с запасом до дедлайна вызова службы (60 с). Большие группы — несколькими пачками.
+const PING_CHUNK: usize = 64;
+
+/// Сколько адресов окно отдало службе на пинг за последнее `ipc::PING_WINDOW`.
+static PING_SPENT: std::sync::Mutex<std::collections::VecDeque<(std::time::Instant, usize)>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// Ждёт, пока `count` адресов уложатся в минутный бюджет службы
+/// (`ipc::PING_PER_WINDOW`): иначе служба откажет всей пачке.
+async fn wait_ping_budget(count: usize) {
+    loop {
+        let wait = {
+            let Ok(mut spent) = PING_SPENT.lock() else {
+                return;
+            };
+            let now = std::time::Instant::now();
+            while spent
+                .front()
+                .is_some_and(|(at, _)| now.duration_since(*at) >= ipc::PING_WINDOW)
+            {
+                spent.pop_front();
+            }
+            let used: usize = spent.iter().map(|(_, n)| n).sum();
+            if used + count <= ipc::PING_PER_WINDOW {
+                spent.push_back((now, count));
+                return;
+            }
+            spent.front().map(|(at, _)| {
+                ipc::PING_WINDOW.saturating_sub(now.duration_since(*at))
+                    + Duration::from_millis(100)
+            })
+        };
+        match wait {
+            Some(d) => tokio::time::sleep(d).await,
+            None => return,
+        }
     }
 }
 
