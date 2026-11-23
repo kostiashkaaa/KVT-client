@@ -63,13 +63,33 @@ pub struct WgPeer {
 /// (`jc`, `s1`, `h1`, `header_protection_key`…), значения — проверенный текст.
 /// Отсортированная карта: одна и та же настройка — одна и та же строка (ключ
 /// дубликатов, `Server` целиком в JSON).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Awg {
     pub params: BTreeMap<String, String>,
     /// Имена параметров из `.conf`, которые KVT не применяет (`J1`–`J3`, `Itime`
     /// из AmneziaWG 1.5 и неизвестные): о них говорит `Server::warnings`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ignored: Vec<String>,
+}
+
+/// Ключевые параметры (`AwgKind::Key`) — секреты: `{:?}` печатает их как `Secret`.
+impl std::fmt::Debug for Awg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: BTreeMap<&str, &str> = self
+            .params
+            .iter()
+            .map(|(k, v)| {
+                let secret = AWG_KEYS
+                    .iter()
+                    .any(|a| a.json == k && matches!(a.kind, AwgKind::Key));
+                (k.as_str(), if secret { "***" } else { v.as_str() })
+            })
+            .collect();
+        f.debug_struct("Awg")
+            .field("params", &params)
+            .field("ignored", &self.ignored)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -588,5 +608,29 @@ mod tests {
             ignored: vec![],
         });
         assert_eq!(wg.secrets(), vec![KEY, KEY2, KEY]);
+    }
+
+    #[test]
+    fn debug_hides_awg_keys() {
+        let awg = Awg {
+            params: [
+                ("header_protection_key".to_owned(), KEY.to_owned()),
+                ("jc".to_owned(), "4".to_owned()),
+            ]
+            .into(),
+            ignored: vec![],
+        };
+        let text = format!("{awg:?}");
+        assert!(!text.contains(KEY), "{text}");
+        assert!(text.contains("\"jc\": \"4\""), "{text}");
+    }
+
+    #[test]
+    fn diagnostics_json_hides_header_protection_key() {
+        // `/` делит ключ на части короче порога эвристики токенов.
+        let key = "abcdefghij0123456789/ABCDEFGHIJ0123456789ab=";
+        let config = serde_json::json!({ "endpoints": [{ "header_protection_key": key }] });
+        let text = crate::redact::json(&config).to_string();
+        assert!(!text.contains(key), "{text}");
     }
 }

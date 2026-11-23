@@ -395,6 +395,8 @@ const SECRET_KEYS: &[&str] = &[
     "short_id",
     "psk",
     "pre_shared_key",
+    // Ключ обфускации AmneziaWG 2.0+: base64 с `/` эвристика токенов не ловит.
+    "header_protection_key",
     "pinsha256",
     "certificate_public_key_sha256",
     "user",
