@@ -12,8 +12,8 @@ KVT распространяется по лицензии GNU GPL версии 
 | Wintun | Драйвер виртуального адаптера (TUN) | Prebuilt Binaries License (WireGuard LLC) — только готовые подписанные файлы, без изменений | https://www.wintun.net |
 | zapret (winws) | Обход DPI | MIT | https://github.com/bol-van/zapret |
 | zapret-discord-youtube (Flowseal) | Стратегии и списки для winws | MIT | https://github.com/Flowseal/zapret-discord-youtube |
-| WinDivert | Драйвер перехвата пакетов для winws | LGPL-3.0 (или GPL-2.0) | https://github.com/basil00/WinDivert |
-| Cygwin (cygwin1.dll) | Библиотека, нужная winws | LGPL-3.0 | https://cygwin.com |
+| WinDivert | Драйвер перехвата пакетов для winws (версия 2.2) | LGPL-3.0 (или GPL-2.0 — на выбор); текст — `WinDivert-LICENSE.txt` в папке `licenses` | https://github.com/basil00/WinDivert |
+| Cygwin (cygwin1.dll) | Библиотека, нужная winws (версия 3.4.10) | LGPL-3.0 или новее с исключением о линковке; тексты — `Cygwin-CYGWIN_LICENSE.txt`, `Cygwin-COPYING.LIB.txt` и `Cygwin-COPYING.txt` в папке `licenses` | https://cygwin.com |
 | tg-ws-proxy-rs (valnesfjord) | Прокси для Telegram Desktop в режимах «Zapret» и «Гибрид»; порт программы tg-ws-proxy (Flowseal, MIT) | MIT | https://github.com/valnesfjord/tg-ws-proxy-rs |
 | flag-icons | Флаги стран в списке серверов | MIT | https://github.com/lipis/flag-icons |
 | DB-IP Country Lite | Страна сервера по IP-адресу, если в названии нет флага; база вшита в `kvt.exe` (`presets/dbip-country.bin`, источник и SHA-256 — `presets/dbip-country.txt`) | CC BY 4.0, https://creativecommons.org/licenses/by/4.0/ ; изменения: перепакована в компактный формат; IP Geolocation by DB-IP | https://db-ip.com |

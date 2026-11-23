@@ -60,6 +60,13 @@ if (Test-Path $coreLicenses) {
     Remove-Item -Recurse -Force $coreLicenses
 }
 Copy-Item (Join-Path $release 'zapret\LICENSE.txt') (Join-Path $licenses 'zapret-discord-youtube-LICENSE.txt')
+# Лицензии WinDivert и cygwin1.dll, которые поставляются в комплекте zapret.
+$zapretLicenses = Join-Path $release 'zapret\licenses'
+if (-not (Test-Path $zapretLicenses)) {
+    throw 'нет текстов лицензий WinDivert и cygwin1.dll: их кладёт fetch-zapret.ps1'
+}
+Copy-Item (Join-Path $zapretLicenses '*') $licenses
+Remove-Item -Recurse -Force $zapretLicenses
 Copy-Item (Join-Path $release 'tgproxy\LICENSE.txt') (Join-Path $licenses 'tg-ws-proxy-rs-LICENSE.txt')
 
 Push-Location $app

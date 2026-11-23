@@ -22,6 +22,32 @@ $license = @{
     Url    = "https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/$version/LICENSE.txt"
     Sha256 = 'fe3983a1e91206ad1a530bcfae01fad207020cb61882edd62c1e3cb5f8d5d430'
 }
+# Тексты лицензий библиотек из комплекта, по тегам, а не по ветке: WinDivert 2.2.2
+# (драйвер 2.2 из комплекта; LGPL-3.0 или GPL-2.0) и Cygwin 3.4.10, как cygwin1.dll
+# (LGPL-3.0+ с исключением о линковке). Кладутся в licenses\, build-release.ps1 переносит
+# их в папку лицензий установщика.
+$dependencyLicenses = @(
+    @{
+        Name   = 'WinDivert-LICENSE.txt'
+        Url    = 'https://raw.githubusercontent.com/basil00/WinDivert/v2.2.2/LICENSE'
+        Sha256 = '14a0cb5214d536e4fdae6aa3f5696f981eeda106cd026e9794bba489ee79d628'
+    },
+    @{
+        Name   = 'Cygwin-CYGWIN_LICENSE.txt'
+        Url    = 'https://raw.githubusercontent.com/cygwin/cygwin/cygwin-3.4.10/winsup/CYGWIN_LICENSE'
+        Sha256 = '794433752103cf4bbb4a84a1bdb8fbc150abb1762704bb35fecc9f7f820be984'
+    },
+    @{
+        Name   = 'Cygwin-COPYING.LIB.txt'
+        Url    = 'https://raw.githubusercontent.com/cygwin/cygwin/cygwin-3.4.10/winsup/COPYING.LIB'
+        Sha256 = 'da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768'
+    },
+    @{
+        Name   = 'Cygwin-COPYING.txt'
+        Url    = 'https://raw.githubusercontent.com/cygwin/cygwin/cygwin-3.4.10/winsup/COPYING'
+        Sha256 = '8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903'
+    }
+)
 # Те же хэши проверяет служба перед запуском (kvt_core::zapret::BINARY_HASHES).
 $binaries = @{
     'winws.exe'       = 'affb4f69d2ea302a7abccd5325d81826e140ddae014f1e070bc4a6c0dd555188'
@@ -65,6 +91,11 @@ try {
     }
 
     Get-Verified $license.Url $license.Sha256 (Join-Path $Dest 'LICENSE.txt')
+    $licensesDir = Join-Path $Dest 'licenses'
+    New-Item -ItemType Directory -Force $licensesDir | Out-Null
+    foreach ($l in $dependencyLicenses) {
+        Get-Verified $l.Url $l.Sha256 (Join-Path $licensesDir $l.Name)
+    }
     Set-Content -Path (Join-Path $Dest 'VERSION') -Value $version -Encoding ASCII
     $count = (Get-ChildItem (Join-Path $Dest 'strategies') -Filter '*.bat').Count
     Write-Host "  готово: $count стратегий -> $Dest"
