@@ -216,19 +216,25 @@ pub fn validate_url(raw: &str) -> Result<Url, FetchError> {
     let unwrapped = kvt_core::subscription::unwrap_app_link(raw).map_err(FetchError::AppLink)?;
     let raw = unwrapped.as_deref().unwrap_or(raw);
     let url = Url::parse(raw.trim()).map_err(|_| FetchError::BrokenLink)?;
+    check_target(&url)?;
+    Ok(url)
+}
+
+/// https и не этот компьютер / локальная сеть: и для ссылки, и для каждого
+/// перенаправления — иначе сервер подписки отправил бы окно на роутер.
+fn check_target(url: &Url) -> Result<(), FetchError> {
     if url.scheme() != "https" {
         return Err(FetchError::NotHttps);
     }
     // Подписка с этого компьютера или из локальной сети — не запрашиваем:
     // наружу окно такие адреса не спрашивает.
     match url.host() {
-        Some(url::Host::Ipv4(v4)) if local_v4(v4) => return Err(FetchError::LocalNetwork),
-        Some(url::Host::Ipv6(v6)) if local_v6(v6) => return Err(FetchError::LocalNetwork),
-        Some(url::Host::Domain(d)) if is_localhost(d) => return Err(FetchError::LocalNetwork),
-        None => return Err(FetchError::NoHost),
-        _ => {}
+        Some(url::Host::Ipv4(v4)) if local_v4(v4) => Err(FetchError::LocalNetwork),
+        Some(url::Host::Ipv6(v6)) if local_v6(v6) => Err(FetchError::LocalNetwork),
+        Some(url::Host::Domain(d)) if is_localhost(d) => Err(FetchError::LocalNetwork),
+        None => Err(FetchError::NoHost),
+        _ => Ok(()),
     }
-    Ok(url)
 }
 
 /// Адрес этого компьютера или локальной сети (по записи в самой ссылке,
@@ -528,14 +534,8 @@ async fn fetch_as(
             answer = Some(resp);
             break;
         };
-        // Перенаправление — только на https с адресом, как и исходная ссылка.
-        if next.scheme() != "https" || next.host_str().is_none() {
-            return Err(if next.scheme() != "https" {
-                FetchError::NotHttps
-            } else {
-                FetchError::NoHost
-            });
-        }
+        // Перенаправление — по тем же правилам, что и исходная ссылка.
+        check_target(&next)?;
         // ID устройства и метки версии — только хосту подписки, как reqwest
         // поступает с Authorization.
         if !same_host(&next, url) {
@@ -730,6 +730,27 @@ mod tests {
         // Обычный адрес и IP из публичных сетей — проходят.
         assert!(validate_url("https://sub.example.com/abc").is_ok());
         assert!(validate_url("https://203.0.113.7/abc").is_ok());
+    }
+
+    /// Перенаправление на этот компьютер или в локальную сеть — тот же отказ.
+    #[test]
+    fn redirect_to_local_network_is_refused() {
+        let base = Url::parse("https://sub.example.com/abc").unwrap();
+        for location in [
+            "https://192.168.1.1/admin",
+            "https://[::1]:8080/",
+            "https://localhost/",
+        ] {
+            let next = base.join(location).unwrap();
+            assert_eq!(
+                check_target(&next),
+                Err(FetchError::LocalNetwork),
+                "{location}"
+            );
+        }
+        let next = base.join("http://sub.example.com/abc").unwrap();
+        assert_eq!(check_target(&next), Err(FetchError::NotHttps));
+        assert!(check_target(&base.join("/other").unwrap()).is_ok());
     }
 
     #[test]
