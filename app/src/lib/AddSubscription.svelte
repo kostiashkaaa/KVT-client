@@ -149,6 +149,17 @@
   const found = $derived.by(() => {
     const text = value.trim();
     if (!text) return { urls: 0, text: "" };
+    // `.conf` WireGuard / AmneziaWG начинается с «[Interface]» — это не JSON.
+    const confs = (text.match(/^\s*\[interface\]\s*$/gim) ?? []).length;
+    if (confs)
+      return {
+        urls: 0,
+        text: `${t("Найдено", "Found")}: ${count(
+          confs,
+          ["конфиг WireGuard / AmneziaWG", "конфига WireGuard / AmneziaWG", "конфигов WireGuard / AmneziaWG"],
+          ["WireGuard / AmneziaWG config", "WireGuard / AmneziaWG configs"],
+        )}`,
+      };
     if (/^[[{]/.test(text)) return { urls: 0, text: t("Похоже на конфиг в JSON", "Looks like a JSON config") };
     if (!text.includes("://")) return { urls: 0, text: t("Похоже на подписку в base64", "Looks like a base64 subscription") };
     let urls = 0;
@@ -181,7 +192,7 @@
   <div class="icon" aria-hidden="true"><Icon name="shield" size={32} /></div>
   <h2 id="add-title">{oncancel ? t("Добавить подписку или ключ", "Add a subscription or key") : t("Добавьте подписку", "Add a subscription")}</h2>
   <p class="muted">
-    {t("Ссылка на подписку (https://…), ключи серверов или конфиг Xray / sing-box. Можно несколько сразу и вместе с текстом из письма провайдера — KVT найдёт нужное. QR-код — из файла, из буфера обмена или прямо с экрана.", "A subscription link (https://…), server keys or an Xray / sing-box config. You can paste several at once, even with the text of your provider's email — KVT will find what it needs. A QR code works too — from a file, the clipboard or right from the screen.")}
+    {t("Ссылка на подписку (https://…), ключи серверов, конфиг Xray / sing-box или .conf WireGuard / AmneziaWG. Можно несколько сразу и вместе с текстом из письма провайдера — KVT найдёт нужное. QR-код — из файла, из буфера обмена или прямо с экрана.", "A subscription link (https://…), server keys, an Xray / sing-box config or a WireGuard / AmneziaWG .conf. You can paste several at once, even with the text of your provider's email — KVT will find what it needs. A QR code works too — from a file, the clipboard or right from the screen.")}
   </p>
 
   <textarea
@@ -208,7 +219,7 @@
     {:else if found.text}
       {found.text}
     {:else}
-      {t("VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP-прокси", "VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP proxy")}
+      {t("VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, WireGuard, AmneziaWG, SOCKS5, HTTP-прокси", "VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, WireGuard, AmneziaWG, SOCKS5, HTTP proxy")}
     {/if}
   </p>
 

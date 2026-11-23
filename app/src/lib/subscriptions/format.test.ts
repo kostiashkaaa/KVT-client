@@ -55,7 +55,9 @@ describe("protocolTitle", () => {
     expect(protocolTitle("vless")).toBe("VLESS");
     expect(protocolTitle("hysteria2")).toBe("Hysteria2");
     expect(protocolTitle("socks")).toBe("SOCKS5");
-    expect(protocolTitle("wireguard")).toBe("WIREGUARD");
+    expect(protocolTitle("wireguard")).toBe("WireGuard");
+    expect(protocolTitle("amneziawg")).toBe("AmneziaWG");
+    expect(protocolTitle("mieru")).toBe("MIERU");
   });
 
   it("HTTP-прокси называется на языке окна", () => {

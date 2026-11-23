@@ -17,7 +17,7 @@ export interface ServerSummary {
   protocol: string;
   transport: string;
   security: string;
-  core: "xray" | "sing-box";
+  core: "xray" | "sing-box" | "sing-box-awg";
   /** Тот же сервер, что у ключа выше в списке: провайдер повторил его под другим
    *  названием. Автопереключение такой повтор не перебирает. */
   sameAs: string | null;
@@ -112,7 +112,7 @@ export async function quickCheck(
 export type ServiceStatus =
   | { state: "disconnected" }
   | { state: "connecting" }
-  | { state: "connected"; core: "xray" | "sing-box" }
+  | { state: "connected"; core: "xray" | "sing-box" | "sing-box-awg" }
   | { state: "zapret"; strategy: string }
   /** `blocked` — ядро остановилось, а kill switch держит интернет закрытым. */
   | { state: "failed"; reason: string; blocked?: boolean };

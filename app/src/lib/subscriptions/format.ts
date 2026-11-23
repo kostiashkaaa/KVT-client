@@ -21,6 +21,8 @@ const PROTOCOLS: Record<string, string> = {
   tuic: "TUIC",
   anytls: "AnyTLS",
   socks: "SOCKS5",
+  wireguard: "WireGuard",
+  amneziawg: "AmneziaWG",
 };
 
 export const protocolTitle = (p: string): string =>

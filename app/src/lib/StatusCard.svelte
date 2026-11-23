@@ -87,7 +87,8 @@
     cancelable ? t("Отменить подключение", "Cancel connection") : stops ? t("Отключить", "Disconnect") : busy ? t("Подключение…", "Connecting…") : t("Подключить", "Connect"),
   );
 
-  const coreName = $derived(status?.state === "connected" ? (status.core === "xray" ? "Xray" : "sing-box") : null);
+  const CORE_NAMES = { xray: "Xray", "sing-box": "sing-box", "sing-box-awg": "sing-box (AmneziaWG)" } as const;
+  const coreName = $derived(status?.state === "connected" ? CORE_NAMES[status.core] : null);
 
   const modes: { id: Mode; label: string; hint: string }[] = $derived([
     { id: "vpn", label: "VPN", hint: modeHint("vpn", telegram) },

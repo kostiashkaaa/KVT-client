@@ -10,7 +10,7 @@ export function protoLabel(s: Pick<PanelServer, "protocol" | "transport" | "secu
   const tail =
     s.security === "reality"
       ? "REALITY"
-      : s.transport !== "tcp"
+      : s.transport !== "tcp" && s.transport !== "udp"
         ? s.transport.toUpperCase()
         : s.security === "tls"
           ? "TLS"

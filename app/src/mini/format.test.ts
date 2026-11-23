@@ -40,6 +40,7 @@ describe("protoLabel", () => {
     expect(protoLabel(server({ security: "tls", transport: "xhttp" }))).toBe("VLESS · XHTTP");
     expect(protoLabel(server({ security: "tls" }))).toBe("VLESS · TLS");
     expect(protoLabel(server({ protocol: "shadowsocks", security: "none" }))).toBe("Shadowsocks");
+    expect(protoLabel(server({ protocol: "amneziawg", transport: "udp", security: "none" }))).toBe("AmneziaWG");
   });
 });
 

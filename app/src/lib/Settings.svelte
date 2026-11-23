@@ -51,7 +51,12 @@
       .then((z) => (flowseal = z.version))
       .catch(() => (flowseal = null));
   });
-  const coreTitles: Record<string, string> = { xray: "Xray", "sing-box": "sing-box", wintun: "Wintun" };
+  const coreTitles: Record<string, string> = {
+    xray: "Xray",
+    "sing-box": "sing-box",
+    "sing-box-awg": "sing-box (AmneziaWG)",
+    wintun: "Wintun",
+  };
   // Новая версия: что известно из фоновой проверки, и кнопка «Проверить сейчас».
   const release = $derived(newVersion.status);
   let checking = $state(false);
@@ -470,7 +475,7 @@
     </label>
   </div>
   <p class="muted">
-    {t("KVT — свободная программа под лицензией GPL-3.0. В составе: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret и Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0). Страна сервера по IP-адресу — база DB-IP Country Lite (CC BY 4.0).", "KVT is free software under the GPL-3.0 license. Includes: Xray (MPL-2.0), sing-box (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret and Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0). The country of a server by its IP address comes from the DB-IP Country Lite database (CC BY 4.0).")}
+    {t("KVT — свободная программа под лицензией GPL-3.0. В составе: Xray (MPL-2.0), sing-box и его форк sing-box-lx для AmneziaWG (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret и Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0). Страна сервера по IP-адресу — база DB-IP Country Lite (CC BY 4.0).", "KVT is free software under the GPL-3.0 license. Includes: Xray (MPL-2.0), sing-box and its sing-box-lx fork for AmneziaWG (GPL-3.0), Wintun, WinDivert (LGPL-3.0), zapret and Flowseal (MIT), flag-icons (MIT), Tauri (MIT / Apache-2.0). The country of a server by its IP address comes from the DB-IP Country Lite database (CC BY 4.0).")}
   </p>
   <div class="links">
     <button class="btn" onclick={onrestartonboarding}>{t("Подсказки первого запуска", "First-run tips")}</button>

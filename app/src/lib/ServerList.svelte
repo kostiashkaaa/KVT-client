@@ -96,7 +96,7 @@
   }
 
   function label(s: ServerSummary): string {
-    const parts = [s.protocol, s.transport, s.security].filter((p) => p && p !== "none" && p !== "tcp");
+    const parts = [s.protocol, s.transport, s.security].filter((p) => p && p !== "none" && p !== "tcp" && p !== "udp");
     return parts.join(" · ").toUpperCase();
   }
 
