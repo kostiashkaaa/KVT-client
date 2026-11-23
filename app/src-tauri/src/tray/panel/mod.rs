@@ -424,8 +424,10 @@ fn fresh_pings(state: &AppState) -> HashMap<String, kvt_core::tester::QuickResul
 }
 
 /// Данные панели: выбор, серверы с пингом, подписка выбранного сервера.
+/// `async` — не на главном потоке: панель спрашивает раз в 3 с, а сборка
+/// клонирует и сортирует весь каталог.
 #[tauri::command]
-pub fn panel_snapshot(
+pub async fn panel_snapshot(
     window: WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<PanelView, String> {

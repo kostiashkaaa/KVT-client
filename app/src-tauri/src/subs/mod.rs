@@ -63,16 +63,18 @@ pub fn rebuild(state: &AppState) -> Result<(), SubsError> {
         store.as_ref().map(catalog::build).unwrap_or_default()
     };
     // Итоги проверок привязаны к ключам: у исчезнувших серверов они не нужны.
+    // Множество ключей — иначе на 10 000 серверов это 10^8 сравнений под замком.
+    let keys: std::collections::HashSet<&str> = entries.iter().map(|e| e.key.as_str()).collect();
     state
         .outcomes
         .lock()
         .map_err(lock_err)?
-        .retain(|key, _| entries.iter().any(|e| &e.key == key));
+        .retain(|key, _| keys.contains(key.as_str()));
     state
         .outcome_times
         .lock()
         .map_err(lock_err)?
-        .retain(|key, _| entries.iter().any(|e| &e.key == key));
+        .retain(|key, _| keys.contains(key.as_str()));
     // Адреса и пароли серверов не должны попасть в журналы и экспорт диагностики.
     kvt_core::redact::set_servers(entries.iter().flat_map(|e| e.server.endpoints()));
     kvt_core::redact::set_secrets(entries.iter().flat_map(|e| e.server.secrets()));

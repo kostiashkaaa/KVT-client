@@ -144,8 +144,12 @@ fn manual_key(e: &catalog::Entry) -> ManualKey {
     }
 }
 
+/// `async`: синхронная команда Tauri выполняется на главном потоке, а разбор всех
+/// подписок на больших списках заметно его держит.
 #[tauri::command]
-pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<SubscriptionItem>, String> {
+pub async fn list_subscriptions(
+    state: State<'_, AppState>,
+) -> Result<Vec<SubscriptionItem>, String> {
     let guard = state.store.lock().map_err(lock_err)?;
     let Some(store) = guard.as_ref() else {
         return Ok(Vec::new());
