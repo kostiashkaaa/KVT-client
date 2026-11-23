@@ -71,11 +71,23 @@ if ($Service) {
     return
 }
 
-# Окно KVT — один экземпляр: если открыт установленный KVT или окно прошлого запуска,
-# новое окно сразу закроется. Поэтому их закрываем.
+# Окно KVT — один экземпляр: если открыт другой KVT, новое окно сразу закроется.
+# Окно прошлого запуска из target закрываем сами; установленный KVT — нет: на нём
+# может держаться VPN (см. CLAUDE.md, «Окно рядом с установленным KVT»).
+$target = Join-Path $root 'target'
+$foreign = @()
 Get-Process kvt -ErrorAction SilentlyContinue | ForEach-Object {
-    Write-Host "Закрываю запущенный KVT: $($_.Path)"
-    Stop-Process -Id $_.Id -ErrorAction SilentlyContinue
+    if ($_.Path -and $_.Path.StartsWith($target, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host "Закрываю окно прошлого запуска: $($_.Path)"
+        Stop-Process -Id $_.Id -ErrorAction SilentlyContinue
+    } else {
+        $foreign += $_
+    }
+}
+if ($foreign.Count -gt 0) {
+    Write-Host "Открыт другой KVT ($($foreign[0].Path)) — новое окно не запустится." -ForegroundColor Yellow
+    Write-Host 'Закройте его сами (на нём может держаться VPN) и запустите скрипт снова.' -ForegroundColor Yellow
+    exit 1
 }
 Clear-Target
 Install-Bundles
